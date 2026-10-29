@@ -1,0 +1,62 @@
+# ---- 构建产物 ----
+build/
+obj/
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+
+# ---- 编译中间文件 ----
+*.d
+*.gcda
+*.gcno
+*.gcov
+
+# ---- 运行产物 ----
+experiments/results/*.csv
+experiments/results/*.json
+!experiments/results/.gitkeep
+experiments/logs/*
+!experiments/logs/.gitkeep
+*.log
+core
+core.*
+
+# ---- 数据 ----
+data/raw/
+*.bin
+*.dat
+*.db
+*.sqlite
+*.sqlite3
+
+# ---- 文档中间产物 ----
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.out
+*.synctex.gz
+*.toc
+docs/survey/**/*.pdf
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ---- 编辑器与系统 ----
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ---- 凭据 ----
+.env
+*.pem
+*.key
+id_rsa*

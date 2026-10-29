@@ -92,3 +92,7 @@ RdmaRangeLock/
 - 任何性能结论必须附 `experiments/configs/` 里的配置文件与 `results/` 里的原始数据
 - 图必须由 `scripts/` 下的脚本生成，`figures/` 只存产物
 - 原始数据集、编译产物、运行日志不入库（见 `.gitignore`）
+
+---
+
+代码层面的硬约束见 [CONSTRAINTS.md](CONSTRAINTS.md)；违反其中任何一条，对应提交直接回退。

@@ -1,0 +1,12 @@
+{
+  "index": "v2",
+  "cc": "next-key",
+  "workload": "ycsb-e",
+  "keys": 10000,
+  "transactions": 5000,
+  "operations": 10,
+  "range": 32,
+  "threads": 4,
+  "zipf": 0.99,
+  "seed": 7
+}

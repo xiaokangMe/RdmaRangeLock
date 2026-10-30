@@ -48,3 +48,11 @@ v3 → v5 → v4 → v6。
 ## v4 当前实现
 
 un_gap_lock() 在 v3 的记录锁外增加开区间 Gap S 锁和边界 Gap S 锁；插入使用目标 key 的 Gap X 锁。对应的范围交集和冲突仍由 LockManager 完成，正确性证据在 	est/v4_gap_lock_test.cpp。
+
+## v5 当前实现
+
+`run_next_key_lock()` 位于 `src/txn/workload.cpp`。范围扫描按 `(prev, curr]` 分解，并补充 `(last, supremum]` 尾区间；插入、更新和删除使用点 next-key X 锁。`test/v5_next_key_test.cpp` 验证间隙插入冲突和范围外插入放行。
+
+## v6 当前实现
+
+`run_hierarchical_lock()` 使用逻辑根节点和可配置 key bucket 表示多粒度锁。范围读采用 Root IS + bucket S，写操作采用 Root IX + bucket X；`--bucket` 控制桶宽。`test/v6_hierarchical_lock_test.cpp` 验证意向锁兼容、同桶冲突和模式升级。

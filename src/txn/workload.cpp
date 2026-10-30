@@ -6,6 +6,7 @@
 #include <cctype>
 #include <random>
 #include <thread>
+#include <limits>
 namespace rrl { namespace {
 struct Zipf { std::vector<double> c; explicit Zipf(size_t n,double theta):c(n){ double z=0; for(size_t i=1;i<=n;i++)z+=1.0/std::pow(double(i),theta); double s=0; for(size_t i=1;i<=n;i++){s+=(1.0/std::pow(double(i),theta))/z;c[i-1]=s;} if(!c.empty())c.back()=1; } idx_key_t get(std::mt19937_64& g)const{if(c.empty())return 0;double x=std::generate_canonical<double,53>(g);return idx_key_t(std::lower_bound(c.begin(),c.end(),x)-c.begin());}};
 idx_key_t key(std::mt19937_64& g,const WorkloadConfig& c,const Zipf& z){if(!c.key_count)return 0;return c.zipf_theta>0?z.get(g):std::uniform_int_distribution<idx_key_t>(0,c.key_count-1)(g);}
@@ -141,3 +142,213 @@ RunStats run_gap_lock(BTreeIndex& index, LockManager& locks, const WorkloadTrace
     result.elapsed_ns=std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count(); return result;
 }
 }
+namespace rrl {
+namespace {
+
+void seed_index(BTreeIndex& index, const WorkloadTrace& trace, std::vector<uint64_t>& seed) {
+    const size_t seed_n = std::max(trace.config().key_count, trace.max_key() + 1);
+    seed.resize(seed_n);
+    for (size_t k = 0; k < trace.config().key_count; ++k) {
+        seed[k] = k;
+        index.insert(k, &seed[k]);
+    }
+    for (const auto& txn : trace.transactions()) {
+        for (const auto& op : txn.operations) {
+            if (op.kind == OperationKind::Insert || op.kind == OperationKind::Delete) continue;
+            seed[op.key] = op.key;
+            void* existing = nullptr;
+            if (!index.lookup(op.key, existing)) index.insert(op.key, &seed[op.key]);
+        }
+    }
+}
+
+struct ProtocolAcc {
+    std::atomic<uint64_t> tx{0}, committed{0}, aborted{0}, ops{0}, reads{0};
+    std::atomic<uint64_t> updates{0}, inserts{0}, deletes{0}, ranges{0};
+    std::atomic<uint64_t> found{0}, scanned{0}, acquires{0}, conflicts{0};
+    std::atomic<uint64_t> checksum{0};
+};
+
+RunStats finish_protocol(const ProtocolAcc& a, std::chrono::steady_clock::time_point begin) {
+    RunStats result;
+    result.transactions = a.tx; result.committed = a.committed; result.aborted = a.aborted;
+    result.operations = a.ops; result.reads = a.reads; result.updates = a.updates;
+    result.inserts = a.inserts; result.deletes = a.deletes; result.range_reads = a.ranges;
+    result.rows_found = a.found; result.rows_scanned = a.scanned;
+    result.lock_acquires = a.acquires; result.lock_conflicts = a.conflicts;
+    result.checksum = a.checksum;
+    result.elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - begin).count();
+    return result;
+}
+
+KeyRangeEnt right_closed(idx_key_t left, idx_key_t right) {
+    KeyRangeEnt range;
+    range.StartKey = left; range.EndKey = right;
+    range.has_start = true; range.has_end = true;
+    range.start_bound = Bound::Open; range.end_bound = Bound::Closed;
+    return range;
+}
+
+}  // namespace
+
+RunStats run_next_key_lock(BTreeIndex& index, LockManager& locks,
+                           const WorkloadTrace& trace, size_t threads) {
+    if (!threads) threads = 1;
+    std::vector<uint64_t> seed;
+    seed_index(index, trace, seed);
+    ProtocolAcc a;
+    const auto begin = std::chrono::steady_clock::now();
+    const size_t worker_count = std::min(threads, std::max<size_t>(1, trace.transactions().size()));
+    std::vector<std::thread> workers;
+    for (size_t worker = 0; worker < worker_count; ++worker) {
+        workers.emplace_back([&, worker] {
+            auto acquire = [&](txnid_t txn, LockMode mode, const KeyRangeEnt& range) {
+                ++a.acquires;
+                if (locks.lock(txn, mode, range, LockKind::NextKey) != RCOK) {
+                    ++a.conflicts; return false;
+                }
+                return true;
+            };
+            for (size_t i = worker; i < trace.transactions().size(); i += worker_count) {
+                const auto& txn = trace.transactions()[i];
+                bool ok = true;
+                std::vector<const Operation*> writes;
+                for (const Operation& op : txn.operations) {
+                    ++a.ops;
+                    if (op.kind == OperationKind::RangeRead) {
+                        ++a.ranges;
+                        const auto rows = index.scan_range(KeyRangeEnt::half_open(op.key, op.end_key));
+                        a.scanned += rows.size(); a.found += rows.size();
+                        idx_key_t previous = op.key;
+                        for (const auto& row : rows) {
+                            const KeyRangeEnt interval = row.key == previous
+                                ? KeyRangeEnt::point(row.key)
+                                : right_closed(previous, row.key);
+                            if (!acquire(txn.txn_id, LockMode::S, interval)) { ok = false; break; }
+                            previous = row.key;
+                            a.checksum += row.key ^ *static_cast<uint64_t*>(row.value);
+                        }
+                        if (ok) {
+                            // The supremum next-key interval protects the tail
+                            // gap, including an insertion at the range end.
+                            const KeyRangeEnt tail = (previous == op.end_key)
+                                ? KeyRangeEnt::point(previous)
+                                : right_closed(previous, op.end_key);
+                            if (!acquire(txn.txn_id, LockMode::S, tail)) ok = false;
+                            if (ok) {
+                                // Recheck after installing locks so a writer
+                                // that committed in the scan-to-lock window
+                                // cannot create an undetected phantom.
+                                const auto verify = index.scan_range(KeyRangeEnt::half_open(op.key, op.end_key));
+                                a.scanned += verify.size();
+                                if (verify.size() != rows.size()) ok = false;
+                                else for (size_t n = 0; n < rows.size(); ++n)
+                                    if (verify[n].key != rows[n].key) { ok = false; break; }
+                            }
+                        }
+                    } else if (op.kind == OperationKind::Read) {
+                        if (!acquire(txn.txn_id, LockMode::S, KeyRangeEnt::point(op.key))) { ok = false; break; }
+                        ++a.reads;
+                        void* value = nullptr;
+                        if (index.lookup(op.key, value)) { ++a.found; a.checksum += op.key ^ *static_cast<uint64_t*>(value); }
+                    } else {
+                        if (!acquire(txn.txn_id, LockMode::X, KeyRangeEnt::point(op.key))) { ok = false; break; }
+                        if (op.kind == OperationKind::Update) { ++a.updates; writes.push_back(&op); }
+                        else if (op.kind == OperationKind::Insert) { ++a.inserts; writes.push_back(&op); }
+                        else if (op.kind == OperationKind::Delete) { ++a.deletes; writes.push_back(&op); }
+                    }
+                    if (!ok) break;
+                }
+                if (ok) {
+                    for (const Operation* op : writes) {
+                        if (op->kind == OperationKind::Delete) index.erase(op->key);
+                        else index.insert(op->key, const_cast<uint64_t*>(&op->value));
+                    }
+                    ++a.committed;
+                } else ++a.aborted;
+                locks.unlock_all(txn.txn_id);
+                ++a.tx;
+            }
+        });
+    }
+    for (auto& worker : workers) worker.join();
+    return finish_protocol(a, begin);
+}
+
+RunStats run_hierarchical_lock(BTreeIndex& index, LockManager& locks,
+                               const WorkloadTrace& trace, size_t threads) {
+    if (!threads) threads = 1;
+    std::vector<uint64_t> seed;
+    seed_index(index, trace, seed);
+    ProtocolAcc a;
+    const auto begin = std::chrono::steady_clock::now();
+    const size_t width = std::max<size_t>(1, trace.config().hierarchy_bucket_width);
+    const size_t worker_count = std::min(threads, std::max<size_t>(1, trace.transactions().size()));
+    std::vector<std::thread> workers;
+    for (size_t worker = 0; worker < worker_count; ++worker) {
+        workers.emplace_back([&, worker] {
+            auto bucket = [&](idx_key_t key) {
+                const idx_key_t base = (key / width) * width;
+                const idx_key_t end = base > std::numeric_limits<idx_key_t>::max() - (width - 1)
+                    ? std::numeric_limits<idx_key_t>::max() : base + width - 1;
+                return KeyRangeEnt::closed(base, end);
+            };
+            auto acquire = [&](txnid_t txn, LockMode mode, const KeyRangeEnt& range, LockKind kind) {
+                ++a.acquires;
+                if (locks.lock(txn, mode, range, kind) != RCOK) { ++a.conflicts; return false; }
+                return true;
+            };
+            for (size_t i = worker; i < trace.transactions().size(); i += worker_count) {
+                const auto& txn = trace.transactions()[i];
+                bool ok = true;
+                std::vector<const Operation*> writes;
+                for (const Operation& op : txn.operations) {
+                    ++a.ops;
+                    if (op.kind == OperationKind::RangeRead) {
+                        ++a.ranges;
+                        if (!acquire(txn.txn_id, LockMode::IS, KeyRangeEnt::unbounded(), LockKind::Node)) { ok = false; break; }
+                        const idx_key_t last = op.end_key > op.key ? op.end_key - 1 : op.key;
+                        idx_key_t first_bucket = (op.key / width) * width;
+                        const idx_key_t last_bucket = (last / width) * width;
+                        for (idx_key_t base = first_bucket;;) {
+                            if (!acquire(txn.txn_id, LockMode::S, bucket(base), LockKind::Node)) { ok = false; break; }
+                            if (base == last_bucket || base > std::numeric_limits<idx_key_t>::max() - width) break;
+                            base += width;
+                        }
+                        if (!ok) break;
+                        const auto rows = index.scan_range(KeyRangeEnt::half_open(op.key, op.end_key));
+                        a.scanned += rows.size(); a.found += rows.size();
+                        for (const auto& row : rows) a.checksum += row.key ^ *static_cast<uint64_t*>(row.value);
+                    } else {
+                        const bool read = op.kind == OperationKind::Read;
+                        const LockMode root_mode = read ? LockMode::IS : LockMode::IX;
+                        const LockMode bucket_mode = read ? LockMode::S : LockMode::X;
+                        if (!acquire(txn.txn_id, root_mode, KeyRangeEnt::unbounded(), LockKind::Node) ||
+                            !acquire(txn.txn_id, bucket_mode, bucket(op.key), LockKind::Node)) { ok = false; break; }
+                        if (read) {
+                            ++a.reads; void* value = nullptr;
+                            if (index.lookup(op.key, value)) { ++a.found; a.checksum += op.key ^ *static_cast<uint64_t*>(value); }
+                        } else if (op.kind == OperationKind::Update) { ++a.updates; writes.push_back(&op); }
+                        else if (op.kind == OperationKind::Insert) { ++a.inserts; writes.push_back(&op); }
+                        else if (op.kind == OperationKind::Delete) { ++a.deletes; writes.push_back(&op); }
+                    }
+                    if (!ok) break;
+                }
+                if (ok) {
+                    for (const Operation* op : writes) {
+                        if (op->kind == OperationKind::Delete) index.erase(op->key);
+                        else index.insert(op->key, const_cast<uint64_t*>(&op->value));
+                    }
+                    ++a.committed;
+                } else ++a.aborted;
+                locks.unlock_all(txn.txn_id);
+                ++a.tx;
+            }
+        });
+    }
+    for (auto& worker : workers) worker.join();
+    return finish_protocol(a, begin);
+}
+
+}  // namespace rrl

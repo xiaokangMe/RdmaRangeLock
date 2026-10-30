@@ -1,0 +1,11 @@
+{
+  "version": "v2",
+  "index": "btree_latch_coupling",
+  "order": 128,
+  "key_type": "uint64",
+  "writer_threads": 4,
+  "reader_threads": 4,
+  "keys_per_writer": 512,
+  "workload": "shared_trace",
+  "range_semantics": "explicit_open_closed"
+}

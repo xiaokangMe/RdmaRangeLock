@@ -22,6 +22,12 @@ add_library(rrl_index STATIC
 target_include_directories(rrl_index PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_compile_options(rrl_index PRIVATE -Wall -Wextra -Wpedantic)
 
+add_library(rrl_index_latch STATIC
+  src/index/v2_btree_latch.cpp
+)
+target_include_directories(rrl_index_latch PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_compile_options(rrl_index_latch PRIVATE -Wall -Wextra -Wpedantic)
+
 add_executable(rrl_m1_range_lock_test
   test/m1_range_lock_test.cpp
 )
@@ -34,6 +40,13 @@ add_executable(rrl_v1_btree_test
 target_link_libraries(rrl_v1_btree_test PRIVATE rrl_index)
 target_compile_options(rrl_v1_btree_test PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(rrl_v2_btree_latch_test
+  test/v2_btree_latch_test.cpp
+)
+target_link_libraries(rrl_v2_btree_latch_test PRIVATE rrl_index_latch)
+target_compile_options(rrl_v2_btree_latch_test PRIVATE -Wall -Wextra -Wpedantic)
+
 enable_testing()
 add_test(NAME rrl_m1_range_lock_test COMMAND rrl_m1_range_lock_test)
 add_test(NAME rrl_v1_btree_test COMMAND rrl_v1_btree_test)
+add_test(NAME rrl_v2_btree_latch_test COMMAND rrl_v2_btree_latch_test)

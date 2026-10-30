@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <shared_mutex>
 #include <utility>
 #include <vector>
@@ -22,8 +23,8 @@ struct KeyValue {
     void* value{nullptr};
 };
 
-// Common page layout for v1 and v2. v1 uses the fields without latches;
-// v2 will add coupling around the same page representation.
+// Common page layout for v1 and v2. v1 leaves latch unused; v2 uses it for
+// parent-to-child latch coupling.
 struct BTreePage {
     bool is_leaf{true};
     std::vector<idx_key_t> keys;
@@ -32,10 +33,9 @@ struct BTreePage {
     BTreePage* parent{nullptr};
     BTreePage* prev{nullptr};
     BTreePage* next{nullptr};
+    mutable std::shared_mutex latch;
 };
 
-// Stable index contract shared by v1 and v2. Transaction locks never reach
-// into page layout; they use KeyRangeEnt and this interface only.
 class BTreeIndex {
 public:
     virtual ~BTreeIndex() = default;
@@ -47,44 +47,69 @@ public:
     virtual std::size_t size() const = 0;
 };
 
-// v1: single-threaded B+ tree. `order` is the maximum number of children in
-// an internal page, so each page stores at most order-1 keys.
 class BTreeSingle final : public BTreeIndex {
 public:
     BTreeSingle() = default;
     ~BTreeSingle() override = default;
-
     RC init(std::size_t order) override;
     RC insert(idx_key_t key, void* value) override;
     RC erase(idx_key_t key) override;
     bool lookup(idx_key_t key, void*& value) const override;
     std::vector<KeyValue> scan_range(const KeyRangeEnt& range) const override;
     std::size_t size() const override { return size_; }
-
     bool validate() const;
     std::size_t height() const;
     std::size_t order() const { return order_; }
 
 private:
     using Page = BTreePage;
-
     std::unique_ptr<Page> make_page(bool leaf) const;
     Page* find_leaf(idx_key_t key) const;
-    std::unique_ptr<Page> insert_recursive(Page& page, idx_key_t key,
-                                           void* value, idx_key_t& separator);
-    void split_leaf(Page& page, std::unique_ptr<Page>& right,
-                    idx_key_t& separator);
-    void split_internal(Page& page, std::unique_ptr<Page>& right,
-                        idx_key_t& separator);
+    std::unique_ptr<Page> insert_recursive(Page& page, idx_key_t key, void* value, idx_key_t& separator);
+    void split_leaf(Page& page, std::unique_ptr<Page>& right, idx_key_t& separator);
+    void split_internal(Page& page, std::unique_ptr<Page>& right, idx_key_t& separator);
     bool refresh_separators(Page& page, idx_key_t& first_key);
-    bool validate_page(const Page* page, const Page* expected_parent,
-                      idx_key_t* min_key, idx_key_t* max_key,
-                      std::size_t* leaf_count) const;
+    bool validate_page(const Page* page, const Page* expected_parent, idx_key_t* min_key,
+                       idx_key_t* max_key, std::size_t* leaf_count) const;
     static bool range_ended(const KeyRangeEnt& range, idx_key_t key);
+    std::size_t order_{0};
+    std::size_t size_{0};
+    std::unique_ptr<Page> root_;
+};
+
+// v2: concurrent B+ tree using shared/exclusive page latches and crabbing.
+// Writers are serialized only at the root-update boundary; ordinary readers
+// use shared latch coupling and do not take the writer mutex.
+class BTreeLatch final : public BTreeIndex {
+public:
+    BTreeLatch() = default;
+    ~BTreeLatch() override = default;
+    RC init(std::size_t order) override;
+    RC insert(idx_key_t key, void* value) override;
+    RC erase(idx_key_t key) override;
+    bool lookup(idx_key_t key, void*& value) const override;
+    std::vector<KeyValue> scan_range(const KeyRangeEnt& range) const override;
+    std::size_t size() const override;
+    bool validate() const;
+    std::size_t height() const;
+    std::size_t order() const { return order_; }
+
+private:
+    using Page = BTreePage;
+    std::unique_ptr<Page> make_page(bool leaf) const;
+    std::unique_ptr<Page> insert_recursive(Page& page, idx_key_t key, void* value, idx_key_t& separator);
+    void split_leaf(Page& page, std::unique_ptr<Page>& right, idx_key_t& separator);
+    void split_internal(Page& page, std::unique_ptr<Page>& right, idx_key_t& separator);
+    static bool range_ended(const KeyRangeEnt& range, idx_key_t key);
+    static idx_key_t first_key(const Page& page);
+    bool validate_page(const Page* page, const Page* expected_parent, idx_key_t* min_key,
+                       idx_key_t* max_key, std::size_t* leaf_count) const;
 
     std::size_t order_{0};
     std::size_t size_{0};
     std::unique_ptr<Page> root_;
+    mutable std::shared_mutex root_guard_;
+    mutable std::mutex writer_guard_;
 };
 
 }  // namespace rrl

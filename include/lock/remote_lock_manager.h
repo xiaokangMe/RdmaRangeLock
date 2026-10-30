@@ -1,8 +1,10 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -44,14 +46,15 @@ struct alignas(64) RemoteLockRegion {
 
 class RemoteLockManager final : public IRangeLockManager {
 public:
-    RemoteLockManager() = default;
-    ~RemoteLockManager() override = default;
+    RemoteLockManager();
+    ~RemoteLockManager() override;
     RemoteLockManager(const RemoteLockManager&) = delete;
     RemoteLockManager& operator=(const RemoteLockManager&) = delete;
 
     bool connect(const std::string& host, std::uint16_t port);
     void set_bucket_width(std::uint64_t width);
-    bool connected() const { return connection_.connected(); }
+    void set_connection_count(std::size_t count);
+    bool connected() const;
     RC lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& range,
             LockKind kind = LockKind::Predicate,
             std::vector<txnid_t>* conflicts = nullptr) override;
@@ -61,6 +64,7 @@ public:
     std::size_t get_lock_count(txnid_t txn_id = 0) const override;
 
 private:
+    struct ConnectionSlot;
     std::vector<std::size_t> shard_ids(const KeyRangeEnt& range) const;
     bool enter_shards(const std::vector<std::size_t>& ids,
                       std::vector<std::size_t>& acquired) const;
@@ -68,19 +72,23 @@ private:
     bool load_slots(std::size_t shard, std::vector<RemoteLockSlot>& slots) const;
     bool store_active_slots(std::size_t shard, std::uint64_t count) const;
     std::uint64_t shard_base(std::size_t shard) const;
+    ConnectionSlot& current_slot() const;
+    RdmaConnection& current_connection() const;
+    std::uint64_t current_owner_token() const;
+    std::uint64_t current_namespace_token() const;
     static RangeLock decode(const RemoteLockSlot& slot);
     static void encode(RemoteLockSlot& slot, std::uint64_t owner,
                        txnid_t txn_id, LockMode mode, LockKind kind,
                        const KeyRangeEnt& range);
     txnid_t wire_txn(txnid_t txn_id) const;
 
-    mutable std::mutex io_mutex_;
-    mutable RdmaConnection connection_;
+    mutable std::vector<std::unique_ptr<ConnectionSlot>> connections_;
+    std::size_t connection_count_{1};
+    mutable std::atomic<std::size_t> next_connection_{0};
+    std::uint64_t connection_generation_{0};
     std::uint64_t shards_address_{0};
     std::uint32_t shards_rkey_{0};
     std::uint64_t bucket_width_{64};
-    std::uint64_t owner_token_{0};
-    std::uint64_t namespace_token_{0};
 };
 
 }  // namespace rrl

@@ -56,6 +56,7 @@ int main(int argc, char** argv) {
         LockManager locks; stats = run_hierarchical_lock(*index, locks, trace, config.threads);
     } else if (cc == "rdma-next-key" || cc == "rdma-hierarchical") {
         RemoteLockManager locks;
+        locks.set_connection_count(config.threads);
         if (!locks.connect(rdma_host, rdma_port)) {
             std::cerr << "failed to connect RDMA lock server at " << rdma_host << ":" << rdma_port << "\n";
             return 2;

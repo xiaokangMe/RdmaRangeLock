@@ -79,7 +79,8 @@ RdmaRangeLock/
 
 - [x] M1 接口与区间锁表示：完成 deneva 风格类型、显式区间和 LockManager，Debug/Release 均通过
 - [x] M2 v1 正确性：单线程 B+树通过插入/删除/范围扫描测试
-- [ ] M3 v2 并发：latch coupling 在 64 核下无死锁、无结构破坏（压力测试 1 小时）
+- [ ] M3 v2 并发：已加入 64 线程可配置压力测试；完整 1 小时压力运行仍需单独执行
+  压力测试命令：`scripts/run_v2_stress.sh [threads] [seconds] [keys_per_thread]`。
 - [x] M4 v3~v5 语义：三个版本跑同一组幻读用例，结果可解释
 - [x] M5 v6 层级锁：意向锁传播正确，大范围扫描锁数量下降可量化
 - [ ] M6 综述初稿：分类学表格 + 六组对比数据齐备
@@ -109,4 +110,4 @@ build-rdma/rrl_workload_runner --index v2 --cc rdma-hierarchical \
   --rdma-host 127.0.0.1 --rdma-port 19890 --bucket 64 --workload ycsb-e
 ```
 
-当前 RDMA 锁表已经按逻辑 bucket 使用 16 个分片 CAS gate；跨 bucket 区间按 shard ID 升序获取 gate，并在每个涉及 shard 保存副本，单个 `RemoteLockManager` 仍是单 QP 串行模型。下一步是增加 per-thread QP/连接池，并在跨主机 RoCE 地址上重复实验。RDMA smoke 脚本会自动配置 `build-rdma`、启动服务端并生成规范 CSV。
+当前 RDMA 锁表已经按逻辑 bucket 使用 16 个分片 CAS gate；跨 bucket 区间按 shard ID 升序获取 gate，并在每个涉及 shard 保存副本。工作负载 runner 会按线程数建立 per-thread QP/连接池，每个连接使用独立 owner token；跨主机 RoCE 和完整性能实验仍待执行。RDMA smoke 脚本会自动配置 `build-rdma`、启动服务端并生成规范 CSV。

@@ -79,7 +79,7 @@ RdmaRangeLock/
 
 - [x] M1 接口与区间锁表示：完成 deneva 风格类型、显式区间和 LockManager，Debug/Release 均通过
 - [x] M2 v1 正确性：单线程 B+树通过插入/删除/范围扫描测试
-- [ ] M3 v2 并发：已加入 64 线程可配置压力测试；完整 1 小时压力运行仍需单独执行
+- [x] M3 v2 并发：64 线程、65536 个 key 的 1 小时压力测试通过，无死锁和结构破坏
   压力测试命令：`scripts/run_v2_stress.sh [threads] [seconds] [keys_per_thread]`。
 - [x] M4 v3~v5 语义：三个版本跑同一组幻读用例，结果可解释
 - [x] M5 v6 层级锁：意向锁传播正确，大范围扫描锁数量下降可量化

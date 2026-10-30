@@ -1,0 +1,14 @@
+{
+  "index_versions": ["v1", "v2"],
+  "workloads": ["ycsb-a", "ycsb-e", "tpcc-payment", "tpcc-new-order"],
+  "key_count": 10000,
+  "transaction_count": 5000,
+  "operations_per_transaction": 10,
+  "range_length": 20,
+  "threads_v1": 1,
+  "threads_v2": 4,
+  "zipf_theta": 0.99,
+  "seed": 7,
+  "tpcc_items_per_order": 5,
+  "runner": "rrl_workload_runner"
+}

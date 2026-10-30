@@ -18,7 +18,8 @@ public:
     virtual RC lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& range,
                     LockKind kind = LockKind::Predicate,
                     std::vector<txnid_t>* conflicts = nullptr) = 0;
-    virtual RC unlock(txnid_t txn_id, const KeyRangeEnt& range) = 0;
+    virtual RC unlock(txnid_t txn_id, const KeyRangeEnt& range,
+                        LockKind kind = LockKind::Predicate) = 0;
     virtual RC unlock_all(txnid_t txn_id) = 0;
     virtual std::size_t get_lock_count(txnid_t txn_id = 0) const = 0;
 };
@@ -29,7 +30,8 @@ public:
             LockKind kind = LockKind::Predicate,
             std::vector<txnid_t>* conflicts = nullptr) override;
 
-    RC unlock(txnid_t txn_id, const KeyRangeEnt& range) override;
+    RC unlock(txnid_t txn_id, const KeyRangeEnt& range,
+              LockKind kind = LockKind::Predicate) override;
     RC unlock_all(txnid_t txn_id) override;
 
     std::size_t get_lock_count(txnid_t txn_id = 0) const override;

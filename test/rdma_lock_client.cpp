@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <thread>
+#include <unistd.h>
 
 using namespace rrl;
 
@@ -21,6 +22,7 @@ int main(int argc, char** argv) {
     if (locks.get_lock_count(7) != 2) return 6;
     locks.unlock_all(7);
     if (locks.lock(8, LockMode::X, KeyRangeEnt::point(15), LockKind::NextKey) != RCOK) return 7;
+    if (argc > 3 && std::string(argv[3]) == "crash") _exit(0);
     locks.unlock_all(8);
     std::cout << "RDMA remote next-key lock: OK\n";
     return 0;

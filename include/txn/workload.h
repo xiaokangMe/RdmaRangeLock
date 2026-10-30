@@ -47,9 +47,10 @@ private:
 struct RunStats {
     uint64_t transactions{0}, committed{0}, aborted{0}, operations{0};
     uint64_t reads{0}, updates{0}, inserts{0}, deletes{0};
-    uint64_t range_reads{0}, rows_found{0}, rows_scanned{0};
+    uint64_t range_reads{0}, rows_found{0}, rows_scanned{0}, rows_rechecked{0};
     uint64_t lock_acquires{0}, lock_conflicts{0}, checksum{0}, elapsed_ns{0};
     double throughput() const;
+    double attempt_throughput() const;
 };
 
 RunStats run_workload(BTreeIndex&, const WorkloadTrace&, size_t threads = 1);

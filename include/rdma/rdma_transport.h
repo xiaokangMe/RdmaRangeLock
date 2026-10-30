@@ -24,7 +24,8 @@ public:
     RdmaConnection(const RdmaConnection&) = delete;
     RdmaConnection& operator=(const RdmaConnection&) = delete;
 
-    bool connect_client(const std::string& host, std::uint16_t tcp_port);
+    bool connect_client(const std::string& host, std::uint16_t tcp_port,
+                        std::uint64_t owner_token = 0);
     bool accept_server(std::uint16_t tcp_port, void* region, std::size_t region_length);
     bool read(std::uint64_t remote_address, std::uint32_t remote_rkey,
               void* destination, std::size_t length);
@@ -36,6 +37,7 @@ public:
     bool wait_for_disconnect();
     const RdmaRemoteMemory& remote_memory() const { return remote_memory_; }
     bool connected() const { return connected_; }
+    std::uint64_t peer_owner_token() const;
 
 public:
     struct Impl;

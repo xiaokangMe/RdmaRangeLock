@@ -49,6 +49,7 @@ public:
         KeyRangeEnt r; r.EndKey = end; r.has_end = true; r.end_bound = bound; return r;
     }
     static KeyRangeEnt unbounded() { return KeyRangeEnt(); }
+    bool is_unbounded() const { return !has_start && !has_end; }
 
     bool valid() const {
         if (!has_start || !has_end) return true;
@@ -100,13 +101,12 @@ struct RangeLock {
         if (txn_id == other.txn_id || !range.overlaps(other.range) ||
             !lock_modes_conflict(mode, other.mode)) return false;
         const bool this_parent_intention = kind == LockKind::Node &&
-            !range.has_start && !range.has_end &&
-            (mode == LockMode::IS || mode == LockMode::IX);
+            range.is_unbounded() && (mode == LockMode::IS || mode == LockMode::IX);
         const bool other_parent_intention = other.kind == LockKind::Node &&
-            !other.range.has_start && !other.range.has_end &&
+            other.range.is_unbounded() &&
             (other.mode == LockMode::IS || other.mode == LockMode::IX);
-        if (this_parent_intention && other.range.has_start) return false;
-        if (other_parent_intention && range.has_start) return false;
+        if (this_parent_intention && !other.range.is_unbounded()) return false;
+        if (other_parent_intention && !range.is_unbounded()) return false;
         return true;
     }
 };

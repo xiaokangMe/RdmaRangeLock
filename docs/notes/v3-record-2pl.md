@@ -15,3 +15,7 @@ rrl_workload_runner --index v2 --cc record-2pl \
 ```
 
 YCSB-A 的高冲突结果可以直接观察 `aborted` 和 `lock_conflicts`。YCSB-E 范围读只锁已有记录，幻读语义由专门测试验证；大规模范围读的锁数量随扫描行数增长，这是 v5/v6 的对照基线。
+
+## 统计口径
+
+锁表是 no-wait 实现，冲突直接返回 `Abort`，因此 `aborted`/`lock_conflicts` 表示拒绝的事务，不等于真实阻塞时间。吞吐现在同时输出 committed/s 和 attempted/s；论文比较应使用 committed/s。

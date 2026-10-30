@@ -3,6 +3,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <netinet/tcp.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -10,6 +11,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <cstdlib>
 #include <thread>
 #include <vector>
 
@@ -19,6 +21,14 @@ namespace {
 constexpr std::size_t kScratchBytes = 1u << 20;
 constexpr std::uint8_t kPort = 1;
 
+int gid_index() {
+    const char* value = std::getenv("RRL_RDMA_GID_INDEX");
+    if (!value) return 0;
+    char* end = nullptr;
+    const long parsed = std::strtol(value, &end, 10);
+    return end && *end == '\0' && parsed >= 0 ? static_cast<int>(parsed) : 0;
+}
+
 struct WireInfo {
     std::uint32_t qpn{0};
     std::uint32_t psn{0};
@@ -27,6 +37,7 @@ struct WireInfo {
     std::uint64_t address{0};
     std::uint32_t rkey{0};
     std::uint64_t length{0};
+    std::uint64_t owner_token{0};
 };
 
 bool send_all(int fd, const void* data, std::size_t length) {
@@ -65,6 +76,17 @@ int make_listen_socket(std::uint16_t port) {
     return fd;
 }
 
+void enable_keepalive(int fd) {
+    int one = 1;
+    ::setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
+    int idle = 5;
+    int interval = 2;
+    int count = 3;
+    ::setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+    ::setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
+    ::setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count));
+}
+
 int make_client_socket(const std::string& host, std::uint16_t port) {
     const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
@@ -77,6 +99,7 @@ int make_client_socket(const std::string& host, std::uint16_t port) {
     if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
         ::close(fd); return -1;
     }
+    enable_keepalive(fd);
     return fd;
 }
 
@@ -96,6 +119,8 @@ struct RdmaConnection::Impl {
     std::vector<std::uint8_t> scratch;
     int socket_fd{-1};
     std::uint32_t psn{0};
+    std::uint64_t peer_owner_token{0};
+    bool failed{false};
 
     ~Impl() {
         if (qp) ibv_destroy_qp(qp);
@@ -115,7 +140,17 @@ bool create_resources(RdmaConnection::Impl* impl, void* region, std::size_t regi
     int count = 0;
     ibv_device** devices = ibv_get_device_list(&count);
     if (!devices || count == 0) return false;
-    impl->context = ibv_open_device(devices[0]);
+    const char* requested = std::getenv("RRL_RDMA_DEVICE");
+    for (int i = 0; i < count && !impl->context; ++i) {
+        if (requested && std::string(ibv_get_device_name(devices[i])) != requested) continue;
+        ibv_context* candidate = ibv_open_device(devices[i]);
+        if (!candidate) continue;
+        ibv_port_attr port{};
+        if (ibv_query_port(candidate, kPort, &port) == 0 && port.state == IBV_PORT_ACTIVE)
+            impl->context = candidate;
+        else
+            ibv_close_device(candidate);
+    }
     ibv_free_device_list(devices);
     if (!impl->context) return false;
     impl->pd = ibv_alloc_pd(impl->context);
@@ -155,7 +190,7 @@ bool query_local(RdmaConnection::Impl* impl, WireInfo& wire) {
     wire.psn = impl->psn;
     wire.lid = port.lid;
     ibv_gid gid{};
-    if (ibv_query_gid(impl->context, kPort, 0, &gid) != 0) return false;
+    if (ibv_query_gid(impl->context, kPort, gid_index(), &gid) != 0) return false;
     std::memcpy(wire.gid, gid.raw, sizeof(wire.gid));
     if (impl->region_mr) {
         wire.address = reinterpret_cast<std::uint64_t>(impl->region_mr->addr);
@@ -191,7 +226,7 @@ bool transition_ready(RdmaConnection::Impl* impl, const WireInfo& remote) {
     attr.ah_attr.port_num = kPort;
     std::memcpy(&attr.ah_attr.grh.dgid, remote.gid, sizeof(remote.gid));
     attr.ah_attr.grh.flow_label = 0;
-    attr.ah_attr.grh.sgid_index = 0;
+    attr.ah_attr.grh.sgid_index = gid_index();
     attr.ah_attr.grh.hop_limit = 1;
     attr.ah_attr.grh.traffic_class = 0;
     if (ibv_modify_qp(impl->qp, &attr,
@@ -219,8 +254,20 @@ bool post_and_poll(RdmaConnection::Impl* impl, ibv_send_wr& wr, ibv_sge& sge) {
     ibv_send_wr* bad = nullptr;
     if (ibv_post_send(impl->qp, &wr, &bad) != 0) return false;
     ibv_wc wc{};
-    while (ibv_poll_cq(impl->cq, 1, &wc) == 0) std::this_thread::yield();
-    return wc.status == IBV_WC_SUCCESS;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    for (;;) {
+        const int polled = ibv_poll_cq(impl->cq, 1, &wc);
+        if (polled < 0) { impl->failed = true; return false; }
+        if (polled > 0) {
+            if (wc.status != IBV_WC_SUCCESS) impl->failed = true;
+            return wc.status == IBV_WC_SUCCESS;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            impl->failed = true;
+            return false;
+        }
+        std::this_thread::yield();
+    }
 }
 
 }  // namespace
@@ -228,7 +275,8 @@ bool post_and_poll(RdmaConnection::Impl* impl, ibv_send_wr& wr, ibv_sge& sge) {
 RdmaConnection::RdmaConnection() : impl_(new Impl) {}
 RdmaConnection::~RdmaConnection() { delete impl_; }
 
-bool RdmaConnection::connect_client(const std::string& host, std::uint16_t tcp_port) {
+bool RdmaConnection::connect_client(const std::string& host, std::uint16_t tcp_port,
+                                    std::uint64_t owner_token) {
     if (!create_resources(impl_, nullptr, 0, true)) return false;
     int fd = -1;
     for (int attempt = 0; attempt < 100 && fd < 0; ++attempt) {
@@ -238,9 +286,12 @@ bool RdmaConnection::connect_client(const std::string& host, std::uint16_t tcp_p
     if (fd < 0) return false;
     impl_->socket_fd = fd;
     WireInfo local{};
-    if (!query_local(impl_, local) || !send_all(fd, &local, sizeof(local))) return false;
+    if (!query_local(impl_, local)) return false;
+    local.owner_token = owner_token;
+    if (!send_all(fd, &local, sizeof(local))) return false;
     WireInfo remote{};
     if (!recv_all(fd, &remote, sizeof(remote)) || !transition_ready(impl_, remote)) return false;
+    impl_->peer_owner_token = remote.owner_token;
     remote_memory_ = {remote.address, remote.rkey, remote.length};
     connected_ = true;
     return true;
@@ -254,6 +305,7 @@ bool RdmaConnection::accept_server(std::uint16_t tcp_port, void* region, std::si
     ::close(listen_fd);
     if (fd < 0) return false;
     impl_->socket_fd = fd;
+    enable_keepalive(fd);
     WireInfo remote{};
     if (!recv_all(fd, &remote, sizeof(remote))) return false;
     WireInfo local{};
@@ -262,14 +314,19 @@ bool RdmaConnection::accept_server(std::uint16_t tcp_port, void* region, std::si
     local.rkey = impl_->region_mr->rkey;
     local.length = region_length;
     if (!transition_ready(impl_, remote) || !send_all(fd, &local, sizeof(local))) return false;
+    impl_->peer_owner_token = remote.owner_token;
     remote_memory_ = {remote.address, remote.rkey, remote.length};
     connected_ = true;
     return true;
 }
 
+std::uint64_t RdmaConnection::peer_owner_token() const {
+    return impl_ ? impl_->peer_owner_token : 0;
+}
+
 bool RdmaConnection::read(std::uint64_t remote_address, std::uint32_t remote_rkey,
                           void* destination, std::size_t length) {
-    if (!connected_ || length > impl_->scratch.size()) return false;
+    if (!connected_ || impl_->failed || length > impl_->scratch.size()) return false;
     ibv_sge sge{};
     sge.addr = reinterpret_cast<std::uintptr_t>(impl_->scratch.data());
     sge.length = static_cast<std::uint32_t>(length);
@@ -285,7 +342,7 @@ bool RdmaConnection::read(std::uint64_t remote_address, std::uint32_t remote_rke
 
 bool RdmaConnection::write(std::uint64_t remote_address, std::uint32_t remote_rkey,
                            const void* source, std::size_t length) {
-    if (!connected_ || length > impl_->scratch.size()) return false;
+    if (!connected_ || impl_->failed || length > impl_->scratch.size()) return false;
     std::memcpy(impl_->scratch.data(), source, length);
     ibv_sge sge{};
     sge.addr = reinterpret_cast<std::uintptr_t>(impl_->scratch.data());
@@ -301,7 +358,7 @@ bool RdmaConnection::write(std::uint64_t remote_address, std::uint32_t remote_rk
 bool RdmaConnection::compare_swap(std::uint64_t remote_address, std::uint32_t remote_rkey,
                                   std::uint64_t compare, std::uint64_t swap,
                                   std::uint64_t& previous) {
-    if (!connected_) return false;
+    if (!connected_ || impl_->failed) return false;
     std::uint64_t result = 0;
     ibv_sge sge{};
     sge.addr = reinterpret_cast<std::uintptr_t>(&result);

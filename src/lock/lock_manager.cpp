@@ -33,11 +33,12 @@ RC LockManager::lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& range,
     return RCOK;
 }
 
-RC LockManager::unlock(txnid_t txn_id, const KeyRangeEnt& range) {
+RC LockManager::unlock(txnid_t txn_id, const KeyRangeEnt& range, LockKind kind) {
     std::lock_guard<std::mutex> guard(mutex_);
     const auto old_size = locks_.size();
     locks_.erase(std::remove_if(locks_.begin(), locks_.end(), [&](const RangeLock& held) {
-        return held.txn_id == txn_id && held.range.StartKey == range.StartKey &&
+        return held.txn_id == txn_id && held.kind == kind &&
+               held.range.StartKey == range.StartKey &&
                held.range.EndKey == range.EndKey && held.range.has_start == range.has_start &&
                held.range.has_end == range.has_end && held.range.start_bound == range.start_bound &&
                held.range.end_bound == range.end_bound;
@@ -100,10 +101,10 @@ std::vector<txnid_t> KeyXidCache::addWriteXidWithMutex(
 }
 
 RC KeyXidCache::removeReadXidWithMutex(idx_key_t start, idx_key_t end, txnid_t txn, std::int32_t isolation) {
-    (void)isolation; return manager_.unlock(txn, deneva_range(start, end));
+    (void)isolation; return manager_.unlock(txn, deneva_range(start, end), LockKind::Predicate);
 }
 RC KeyXidCache::removeWriteXidWithMutex(idx_key_t start, idx_key_t end, txnid_t txn, std::int32_t isolation) {
-    (void)isolation; return manager_.unlock(txn, deneva_range(start, end));
+    (void)isolation; return manager_.unlock(txn, deneva_range(start, end), LockKind::Predicate);
 }
 std::vector<txnid_t> KeyXidCache::getReadXid(idx_key_t start, idx_key_t end, bool is_delete) const {
     (void)is_delete; return manager_.conflicting_txns({0, LockMode::S, LockKind::Predicate, deneva_range(start, end)});

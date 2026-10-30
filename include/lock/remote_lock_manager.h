@@ -76,6 +76,7 @@ private:
     RdmaConnection& current_connection() const;
     std::uint64_t current_owner_token() const;
     std::uint64_t current_namespace_token() const;
+    bool owns_owner_token(std::uint64_t owner) const;
     static RangeLock decode(const RemoteLockSlot& slot);
     static void encode(RemoteLockSlot& slot, std::uint64_t owner,
                        txnid_t txn_id, LockMode mode, LockKind kind,
@@ -89,6 +90,7 @@ private:
     std::uint64_t shards_address_{0};
     std::uint32_t shards_rkey_{0};
     std::uint64_t bucket_width_{64};
+    std::uint64_t namespace_token_{0};
 };
 
 }  // namespace rrl

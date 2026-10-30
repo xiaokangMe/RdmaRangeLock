@@ -37,7 +37,6 @@ RemoteLockManager::~RemoteLockManager() = default;
 struct RemoteLockManager::ConnectionSlot {
     std::unique_ptr<RdmaConnection> connection;
     std::uint64_t owner_token{0};
-    std::uint64_t namespace_token{0};
 };
 
 bool RemoteLockManager::connect(const std::string& host, std::uint16_t port) {
@@ -47,12 +46,12 @@ bool RemoteLockManager::connect(const std::string& host, std::uint16_t port) {
         const auto parsed = std::strtoull(env, &end, 10);
         if (end && *end == '\0' && parsed != 0) bucket_width_ = parsed;
     }
+    namespace_token_ = make_token(this, connection_count_) & 0x0000ffffffffffffULL;
+    if (namespace_token_ == 0) namespace_token_ = 1;
     connections_.reserve(connection_count_);
     for (std::size_t i = 0; i < connection_count_; ++i) {
         auto slot = std::make_unique<ConnectionSlot>();
         slot->owner_token = make_token(this, i);
-        slot->namespace_token = make_token(this, i + connection_count_) & 0x0000ffffffffffffULL;
-        if (slot->namespace_token == 0) slot->namespace_token = i + 1;
         slot->connection = std::make_unique<RdmaConnection>();
         if (!slot->connection->connect_client(host, port, slot->owner_token)) {
             connections_.clear();
@@ -113,7 +112,13 @@ std::uint64_t RemoteLockManager::current_owner_token() const {
 }
 
 std::uint64_t RemoteLockManager::current_namespace_token() const {
-    return current_slot().namespace_token;
+    return namespace_token_;
+}
+
+bool RemoteLockManager::owns_owner_token(std::uint64_t owner) const {
+    for (const auto& slot : connections_)
+        if (slot && slot->owner_token == owner) return true;
+    return false;
 }
 
 std::vector<std::size_t> RemoteLockManager::shard_ids(const KeyRangeEnt& range) const {
@@ -259,7 +264,7 @@ RC RemoteLockManager::lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& ran
         bool found = false;
         for (std::size_t i = 0; i < table.size(); ++i) {
             const RangeLock held = decode(table[i]);
-            if (table[i].owner != owner || table[i].txn_id != id ||
+            if (!owns_owner_token(table[i].owner) || table[i].txn_id != id ||
                 held.kind != kind || !same_range(held.range, range)) continue;
             table[i].mode = static_cast<std::uint8_t>(lock_mode_join(held.mode, mode));
             const auto address = shard_base(ids[n]) + offsetof(RemoteLockShard, slots) +
@@ -292,7 +297,6 @@ RC RemoteLockManager::unlock(txnid_t txn_id, const KeyRangeEnt& range, LockKind 
     std::vector<std::size_t> acquired;
     if (!enter_shards(ids, acquired)) return Abort;
     auto& connection = current_connection();
-    const auto owner = current_owner_token();
     const txnid_t id = wire_txn(txn_id);
     bool removed = false;
     for (std::size_t shard : ids) {
@@ -301,7 +305,7 @@ RC RemoteLockManager::unlock(txnid_t txn_id, const KeyRangeEnt& range, LockKind 
         std::size_t i = 0;
         while (i < table.size()) {
             const RangeLock held = decode(table[i]);
-            if (table[i].owner != owner || table[i].txn_id != id ||
+            if (!owns_owner_token(table[i].owner) || table[i].txn_id != id ||
                 held.kind != kind || !same_range(held.range, range)) { ++i; continue; }
             removed = true;
             const std::size_t last = table.size() - 1;
@@ -328,14 +332,13 @@ RC RemoteLockManager::unlock_all(txnid_t txn_id) {
     std::vector<std::size_t> acquired;
     if (!enter_shards(ids, acquired)) return Abort;
     auto& connection = current_connection();
-    const auto owner = current_owner_token();
     const txnid_t id = wire_txn(txn_id);
     for (std::size_t shard : ids) {
         std::vector<RemoteLockSlot> table;
         if (!load_slots(shard, table)) { leave_shards(acquired); return ERROR; }
         std::size_t i = 0;
         while (i < table.size()) {
-            if (table[i].owner != owner || table[i].txn_id != id) { ++i; continue; }
+            if (!owns_owner_token(table[i].owner) || table[i].txn_id != id) { ++i; continue; }
             const std::size_t last = table.size() - 1;
             if (i != last) {
                 table[i] = table[last];
@@ -365,7 +368,7 @@ std::size_t RemoteLockManager::get_lock_count(txnid_t txn_id) const {
         std::vector<RemoteLockSlot> table;
         if (!load_slots(shard, table)) { leave_shards(acquired); return 0; }
         for (const auto& slot : table) {
-            if (txn_id != 0 && (slot.owner != current_owner_token() || slot.txn_id != id)) continue;
+            if (txn_id != 0 && (!owns_owner_token(slot.owner) || slot.txn_id != id)) continue;
             const RangeLock lock = decode(slot);
             if (std::find_if(unique.begin(), unique.end(), [&](const RangeLock& other) {
                     return same_lock(lock, other);

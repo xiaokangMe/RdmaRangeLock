@@ -55,7 +55,7 @@ struct RunStats {
 RunStats run_workload(BTreeIndex&, const WorkloadTrace&, size_t threads = 1);
 RunStats run_record_2pl(BTreeIndex&, LockManager&, const WorkloadTrace&, size_t threads = 1);
 RunStats run_gap_lock(BTreeIndex&, LockManager&, const WorkloadTrace&, size_t threads = 1);
-RunStats run_next_key_lock(BTreeIndex&, LockManager&, const WorkloadTrace&, size_t threads = 1);
-RunStats run_hierarchical_lock(BTreeIndex&, LockManager&, const WorkloadTrace&, size_t threads = 1);
+RunStats run_next_key_lock(BTreeIndex&, IRangeLockManager&, const WorkloadTrace&, size_t threads = 1);
+RunStats run_hierarchical_lock(BTreeIndex&, IRangeLockManager&, const WorkloadTrace&, size_t threads = 1);
 
 }  // namespace rrl

@@ -12,16 +12,27 @@ namespace rrl {
 
 // Lightweight, no-wait range lock table. It follows deneva's KeyXidCache
 // vocabulary but stores typed intervals instead of sentinel-only endpoints.
-class LockManager {
+class IRangeLockManager {
+public:
+    virtual ~IRangeLockManager() = default;
+    virtual RC lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& range,
+                    LockKind kind = LockKind::Predicate,
+                    std::vector<txnid_t>* conflicts = nullptr) = 0;
+    virtual RC unlock(txnid_t txn_id, const KeyRangeEnt& range) = 0;
+    virtual RC unlock_all(txnid_t txn_id) = 0;
+    virtual std::size_t get_lock_count(txnid_t txn_id = 0) const = 0;
+};
+
+class LockManager : public IRangeLockManager {
 public:
     RC lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& range,
             LockKind kind = LockKind::Predicate,
-            std::vector<txnid_t>* conflicts = nullptr);
+            std::vector<txnid_t>* conflicts = nullptr) override;
 
-    RC unlock(txnid_t txn_id, const KeyRangeEnt& range);
-    RC unlock_all(txnid_t txn_id);
+    RC unlock(txnid_t txn_id, const KeyRangeEnt& range) override;
+    RC unlock_all(txnid_t txn_id) override;
 
-    std::size_t get_lock_count(txnid_t txn_id = 0) const;
+    std::size_t get_lock_count(txnid_t txn_id = 0) const override;
     bool detect_conflict(const RangeLock& request) const;
     std::vector<txnid_t> conflicting_txns(const RangeLock& request) const;
     std::vector<RangeLock> snapshot() const;

@@ -1,0 +1,15 @@
+{
+  "transport": "rdma-rc",
+  "lock_server_port": 19890,
+  "index": "v2",
+  "cc": "rdma-hierarchical",
+  "workload": "ycsb-e",
+  "keys": 10000,
+  "transactions": 5000,
+  "operations": 10,
+  "range": 32,
+  "bucket": 64,
+  "threads": 4,
+  "zipf": 0.99,
+  "seed": 7
+}

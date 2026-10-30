@@ -96,3 +96,17 @@ RdmaRangeLock/
 ---
 
 代码层面的硬约束见 [CONSTRAINTS.md](CONSTRAINTS.md)；违反其中任何一条，对应提交直接回退。
+
+## 六、RDMA 阶段状态
+
+RDMA 基线已经接入：`.66` 的 `mlx5_0` RoCE 端口通过 RC QP 提供远程注册锁表。`RemoteLockManager` 与本地锁管理器共享 `IRangeLockManager` 接口，因此 v5/v6 事务协议可以直接切换到远程锁表。
+
+```bash
+build-rdma/rrl_rdma_lock_server 19890
+build-rdma/rrl_workload_runner --index v2 --cc rdma-next-key \
+  --rdma-host 127.0.0.1 --rdma-port 19890 --workload ycsb-e
+build-rdma/rrl_workload_runner --index v2 --cc rdma-hierarchical \
+  --rdma-host 127.0.0.1 --rdma-port 19890 --bucket 64 --workload ycsb-e
+```
+
+当前 RDMA 锁表使用全局 CAS gate 作为正确性基线；下一步是按 bucket 分片 gate、增加租约恢复，并在跨主机 RoCE 地址上重复实验。

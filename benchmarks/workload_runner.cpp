@@ -1,4 +1,5 @@
 #include "txn/workload.h"
+#include "lock/remote_lock_manager.h"
 #include <iostream>
 #include <string>
 
@@ -8,6 +9,8 @@ int main(int argc, char** argv) {
     WorkloadConfig config;
     std::string index_name = "v2";
     std::string cc = "none";
+    std::string rdma_host = "127.0.0.1";
+    std::uint16_t rdma_port = 19876;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string option = argv[i];
         const std::string value = argv[i + 1];
@@ -19,6 +22,8 @@ int main(int argc, char** argv) {
         else if (option == "--ops") config.operations_per_transaction = std::stoull(value);
         else if (option == "--range") config.range_length = std::stoull(value);
         else if (option == "--bucket") config.hierarchy_bucket_width = std::stoull(value);
+        else if (option == "--rdma-host") rdma_host = value;
+        else if (option == "--rdma-port") rdma_port = static_cast<std::uint16_t>(std::stoull(value));
         else if (option == "--threads") config.threads = std::stoull(value);
         else if (option == "--seed") config.seed = std::stoull(value);
         else if (option == "--zipf") config.zipf_theta = std::stod(value);
@@ -45,6 +50,14 @@ int main(int argc, char** argv) {
         LockManager locks; stats = run_next_key_lock(*index, locks, trace, config.threads);
     } else if (cc == "hierarchical") {
         LockManager locks; stats = run_hierarchical_lock(*index, locks, trace, config.threads);
+    } else if (cc == "rdma-next-key" || cc == "rdma-hierarchical") {
+        RemoteLockManager locks;
+        if (!locks.connect(rdma_host, rdma_port)) {
+            std::cerr << "failed to connect RDMA lock server at " << rdma_host << ":" << rdma_port << "\n";
+            return 2;
+        }
+        if (cc == "rdma-next-key") stats = run_next_key_lock(*index, locks, trace, config.threads);
+        else stats = run_hierarchical_lock(*index, locks, trace, config.threads);
     } else {
         stats = run_workload(*index, trace, config.threads);
     }

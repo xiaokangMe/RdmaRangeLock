@@ -56,3 +56,7 @@ v3 → v5 → v4 → v6。
 ## v6 当前实现
 
 `run_hierarchical_lock()` 使用逻辑根节点和可配置 key bucket 表示多粒度锁。范围读采用 Root IS + bucket S，写操作采用 Root IX + bucket X；`--bucket` 控制桶宽。`test/v6_hierarchical_lock_test.cpp` 验证意向锁兼容、同桶冲突和模式升级。
+
+## RDMA 接入
+
+`RemoteLockManager` 实现同一 `IRangeLockManager` 接口，远程锁表放在 `RemoteLockRegion` 注册内存中。`rrl_rdma_lock_server` 提供 RC QP 服务，`rrl_workload_runner --cc rdma-next-key` 和 `--cc rdma-hierarchical` 分别接入 v5/v6。当前版本使用一个 RDMA CAS gate 串行化槽表扫描与更新，作为正确性基线；后续再按 bucket 分片优化。

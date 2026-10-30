@@ -192,7 +192,7 @@ KeyRangeEnt right_closed(idx_key_t left, idx_key_t right) {
 
 }  // namespace
 
-RunStats run_next_key_lock(BTreeIndex& index, LockManager& locks,
+RunStats run_next_key_lock(BTreeIndex& index, IRangeLockManager& locks,
                            const WorkloadTrace& trace, size_t threads) {
     if (!threads) threads = 1;
     std::vector<uint64_t> seed;
@@ -276,7 +276,7 @@ RunStats run_next_key_lock(BTreeIndex& index, LockManager& locks,
     return finish_protocol(a, begin);
 }
 
-RunStats run_hierarchical_lock(BTreeIndex& index, LockManager& locks,
+RunStats run_hierarchical_lock(BTreeIndex& index, IRangeLockManager& locks,
                                const WorkloadTrace& trace, size_t threads) {
     if (!threads) threads = 1;
     std::vector<uint64_t> seed;

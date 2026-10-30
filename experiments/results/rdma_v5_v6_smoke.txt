@@ -1,0 +1,2 @@
+workload=ycsb-e,index=v2,cc=rdma-next-key,threads=4,transactions=200,committed=200,aborted=0,operations=800,reads=0,updates=0,inserts=44,range_reads=756,rows_found=12089,rows_scanned=24178,lock_acquires=12889,lock_conflicts=0,throughput_txn_s=435.821,checksum=0
+workload=ycsb-e,index=v2,cc=rdma-hierarchical,threads=4,transactions=200,committed=200,aborted=0,operations=800,reads=0,updates=0,inserts=44,range_reads=756,rows_found=12089,rows_scanned=12089,lock_acquires=1694,lock_conflicts=0,throughput_txn_s=2559.87,checksum=0

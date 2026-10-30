@@ -1,0 +1,14 @@
+{
+  "version": "v4",
+  "index": "btree_latch_coupling",
+  "cc": "gap-lock",
+  "record_lock": true,
+  "gap_lock": true,
+  "range_semantics": "explicit_open_closed",
+  "key_count": 10000,
+  "transaction_count": 5000,
+  "operations_per_transaction": 10,
+  "range_length": 20,
+  "threads": 4,
+  "seed": 7
+}

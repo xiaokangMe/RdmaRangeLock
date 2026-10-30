@@ -1,0 +1,5 @@
+#include "index/btree.h"
+#include "lock/lock_manager.h"
+#include <iostream>
+using namespace rrl;
+int main(){BTreeLatch tree;tree.init(8);uint64_t a=10,b=20,c=30,d=15;tree.insert(10,&a);tree.insert(20,&b);tree.insert(30,&c);LockManager locks;if(locks.lock(1,LockMode::S,KeyRangeEnt::open(10,30),LockKind::Gap)!=RCOK)return 1;if(locks.lock(1,LockMode::S,KeyRangeEnt::point(10),LockKind::Gap)!=RCOK)return 1;if(locks.lock(1,LockMode::S,KeyRangeEnt::point(30),LockKind::Gap)!=RCOK)return 1;if(locks.lock(2,LockMode::X,KeyRangeEnt::point(15),LockKind::Gap)!=Abort)return 1;if(locks.lock(2,LockMode::X,KeyRangeEnt::point(15),LockKind::Record)!=Abort)return 1;locks.unlock_all(1);if(locks.lock(2,LockMode::X,KeyRangeEnt::point(15),LockKind::Gap)!=RCOK)return 1;tree.insert(15,&d);locks.unlock_all(2);if(tree.scan_range(KeyRangeEnt::closed(10,30)).size()!=4)return 1;std::cout<<"v4 gap lock phantom prevention: OK\n";}

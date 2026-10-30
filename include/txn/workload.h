@@ -16,4 +16,5 @@ class WorkloadTrace { public: static WorkloadTrace generate(const WorkloadConfig
 struct RunStats { uint64_t transactions{0},committed{0},aborted{0},operations{0},reads{0},updates{0},inserts{0},deletes{0},range_reads{0},rows_found{0},rows_scanned{0},lock_acquires{0},lock_conflicts{0},checksum{0},elapsed_ns{0}; double throughput()const; };
 RunStats run_workload(BTreeIndex&,const WorkloadTrace&,size_t threads=1);
 RunStats run_record_2pl(BTreeIndex&,LockManager&,const WorkloadTrace&,size_t threads=1);
+RunStats run_gap_lock(BTreeIndex&,LockManager&,const WorkloadTrace&,size_t threads=1);
 }

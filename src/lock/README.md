@@ -41,3 +41,6 @@ v3 → v5 → v4 → v6。
 - strict 2PL 的释放时机：只能在 commit/abort 后统一释放。
 - 锁表的互斥保护与死锁检测彼此独立。
 - v6 的加锁顺序必须自顶向下；读取子树应使用祖先 IS 加目标节点 S，修改子树应使用祖先 IX 加目标节点 X。
+## v3 当前实现
+
+un_record_2pl() 位于 src/txn/workload.cpp，锁对象和冲突判定仍由 LockManager 统一提供。该版本只传入 KeyRangeEnt::point(key) 与 LockKind::Record，因此没有 gap/predicate 保护；写集合延迟到提交阶段应用，严格释放发生在 commit/abort 之后。

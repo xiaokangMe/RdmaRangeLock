@@ -17,5 +17,64 @@ WorkloadKind WorkloadTrace::parse_kind(const std::string& in){std::string v;for(
 const char* WorkloadTrace::name(WorkloadKind k){switch(k){case WorkloadKind::YcsbA:return "ycsb-a";case WorkloadKind::YcsbB:return "ycsb-b";case WorkloadKind::YcsbE:return "ycsb-e";case WorkloadKind::TpccPayment:return "tpcc-payment";case WorkloadKind::TpccNewOrder:return "tpcc-new-order";}return "unknown";}
 WorkloadTrace WorkloadTrace::generate(const WorkloadConfig& c){WorkloadTrace t;t.config_=c;std::mt19937_64 g(c.seed);Zipf z(c.key_count,c.zipf_theta);t.transactions_.reserve(c.transaction_count);for(size_t i=0;i<c.transaction_count;i++){TransactionTrace x;x.txn_id=i+1;if(c.kind==WorkloadKind::TpccPayment)payment(x,c,i,t.max_key_);else if(c.kind==WorkloadKind::TpccNewOrder)new_order(x,c,g,i,t.max_key_);else ycsb(x,c,g,z,i,t.max_key_);t.transactions_.push_back(std::move(x));}return t;}
 double RunStats::throughput()const{return elapsed_ns?double(transactions)*1e9/double(elapsed_ns):0;}
-RunStats run_workload(BTreeIndex& index,const WorkloadTrace& trace,size_t threads){if(!threads)threads=1;size_t seed_n=std::max(trace.config().key_count,trace.max_key()+1);std::vector<uint64_t> seed(seed_n);for(size_t k=0;k<trace.config().key_count;k++){seed[k]=k;index.insert(k,&seed[k]);}for(const auto& txn:trace.transactions())for(const auto& op:txn.operations)if(op.kind!=OperationKind::Insert&&op.kind!=OperationKind::Delete){seed[op.key]=op.key;void* existing=nullptr;if(!index.lookup(op.key,existing))index.insert(op.key,&seed[op.key]);}struct A{std::atomic<uint64_t> t{0},o{0},r{0},u{0},i{0},d{0},q{0},f{0},s{0},c{0};}a;auto begin=std::chrono::steady_clock::now();size_t wn=std::min(threads,std::max<size_t>(1,trace.transactions().size()));std::vector<std::thread> ws;for(size_t w=0;w<wn;w++)ws.emplace_back([&,w]{for(size_t j=w;j<trace.transactions().size();j+=wn){for(const Operation& op:trace.transactions()[j].operations){++a.o;switch(op.kind){case OperationKind::Read:{++a.r;void* p=nullptr;if(index.lookup(op.key,p)){++a.f;a.c.fetch_add(op.key^*static_cast<uint64_t*>(p));}break;}case OperationKind::Update:++a.u;index.insert(op.key,const_cast<uint64_t*>(&op.value));break;case OperationKind::Insert:++a.i;index.insert(op.key,const_cast<uint64_t*>(&op.value));break;case OperationKind::Delete:++a.d;index.erase(op.key);break;case OperationKind::RangeRead:{++a.q;auto out=index.scan_range(KeyRangeEnt::half_open(op.key,op.end_key));a.s+=out.size();a.f+=out.size();for(auto& v:out)a.c.fetch_add(v.key^*static_cast<uint64_t*>(v.value));break;}}}++a.t;}});for(auto& w:ws)w.join();auto elapsed=std::chrono::steady_clock::now()-begin;RunStats r;r.transactions=a.t;r.operations=a.o;r.reads=a.r;r.updates=a.u;r.inserts=a.i;r.deletes=a.d;r.range_reads=a.q;r.rows_found=a.f;r.rows_scanned=a.s;r.checksum=a.c;r.elapsed_ns=std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();return r;}
+RunStats run_workload(BTreeIndex& index,const WorkloadTrace& trace,size_t threads){if(!threads)threads=1;size_t seed_n=std::max(trace.config().key_count,trace.max_key()+1);std::vector<uint64_t> seed(seed_n);for(size_t k=0;k<trace.config().key_count;k++){seed[k]=k;index.insert(k,&seed[k]);}for(const auto& txn:trace.transactions())for(const auto& op:txn.operations)if(op.kind!=OperationKind::Insert&&op.kind!=OperationKind::Delete){seed[op.key]=op.key;void* existing=nullptr;if(!index.lookup(op.key,existing))index.insert(op.key,&seed[op.key]);}struct A{std::atomic<uint64_t> t{0},o{0},r{0},u{0},i{0},d{0},q{0},f{0},s{0},c{0};}a;auto begin=std::chrono::steady_clock::now();size_t wn=std::min(threads,std::max<size_t>(1,trace.transactions().size()));std::vector<std::thread> ws;for(size_t w=0;w<wn;w++)ws.emplace_back([&,w]{for(size_t j=w;j<trace.transactions().size();j+=wn){for(const Operation& op:trace.transactions()[j].operations){++a.o;switch(op.kind){case OperationKind::Read:{++a.r;void* p=nullptr;if(index.lookup(op.key,p)){++a.f;a.c.fetch_add(op.key^*static_cast<uint64_t*>(p));}break;}case OperationKind::Update:++a.u;index.insert(op.key,const_cast<uint64_t*>(&op.value));break;case OperationKind::Insert:++a.i;index.insert(op.key,const_cast<uint64_t*>(&op.value));break;case OperationKind::Delete:++a.d;index.erase(op.key);break;case OperationKind::RangeRead:{++a.q;auto out=index.scan_range(KeyRangeEnt::half_open(op.key,op.end_key));a.s+=out.size();a.f+=out.size();for(auto& v:out)a.c.fetch_add(v.key^*static_cast<uint64_t*>(v.value));break;}}}++a.t;}});for(auto& w:ws)w.join();auto elapsed=std::chrono::steady_clock::now()-begin;RunStats r;r.transactions=a.t;r.committed=a.t;r.operations=a.o;r.reads=a.r;r.updates=a.u;r.inserts=a.i;r.deletes=a.d;r.range_reads=a.q;r.rows_found=a.f;r.rows_scanned=a.s;r.checksum=a.c;r.elapsed_ns=std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();return r;}
 }
+namespace rrl {
+RunStats run_record_2pl(BTreeIndex& index, LockManager& locks, const WorkloadTrace& trace, size_t threads) {
+    if (!threads) threads = 1;
+    const size_t seed_n = std::max(trace.config().key_count, trace.max_key() + 1);
+    std::vector<uint64_t> seed(seed_n);
+    for (size_t k = 0; k < trace.config().key_count; ++k) { seed[k] = k; index.insert(k, &seed[k]); }
+    for (const auto& txn : trace.transactions()) for (const auto& op : txn.operations)
+        if (op.kind != OperationKind::Insert && op.kind != OperationKind::Delete) {
+            seed[op.key] = op.key; void* existing = nullptr;
+            if (!index.lookup(op.key, existing)) index.insert(op.key, &seed[op.key]);
+        }
+    struct A { std::atomic<uint64_t> tx{0}, committed{0}, aborted{0}, ops{0}, reads{0}, updates{0}, inserts{0}, deletes{0}, ranges{0}, found{0}, scanned{0}, acquires{0}, conflicts{0}, checksum{0}; } a;
+    const auto begin = std::chrono::steady_clock::now();
+    const size_t worker_count = std::min(threads, std::max<size_t>(1, trace.transactions().size()));
+    std::vector<std::thread> workers;
+    for (size_t worker = 0; worker < worker_count; ++worker) workers.emplace_back([&, worker] {
+        for (size_t i = worker; i < trace.transactions().size(); i += worker_count) {
+            const auto& txn = trace.transactions()[i]; bool ok = true; std::vector<const Operation*> writes;
+            for (const Operation& op : txn.operations) {
+                ++a.ops;
+                if (op.kind == OperationKind::RangeRead) {
+                    ++a.ranges; const auto rows = index.scan_range(KeyRangeEnt::half_open(op.key, op.end_key));
+                    a.scanned += rows.size(); a.found += rows.size();
+                    for (const auto& row : rows) {
+                        ++a.acquires;
+                        if (locks.lock(txn.txn_id, LockMode::S, KeyRangeEnt::point(row.key), LockKind::Record) != RCOK) { ++a.conflicts; ok = false; break; }
+                        a.checksum += row.key ^ *static_cast<uint64_t*>(row.value);
+                    }
+                } else {
+                    const LockMode mode = (op.kind == OperationKind::Read) ? LockMode::S : LockMode::X;
+                    ++a.acquires;
+                    if (locks.lock(txn.txn_id, mode, KeyRangeEnt::point(op.key), LockKind::Record) != RCOK) { ++a.conflicts; ok = false; break; }
+                    if (op.kind == OperationKind::Read) {
+                        ++a.reads; void* value = nullptr;
+                        if (index.lookup(op.key, value)) { ++a.found; a.checksum += op.key ^ *static_cast<uint64_t*>(value); }
+                    } else if (op.kind == OperationKind::Update) { ++a.updates; writes.push_back(&op); }
+                    else if (op.kind == OperationKind::Insert) { ++a.inserts; writes.push_back(&op); }
+                    else if (op.kind == OperationKind::Delete) { ++a.deletes; writes.push_back(&op); }
+                }
+                if (!ok) break;
+            }
+            if (ok) {
+                for (const Operation* op : writes) {
+                    if (op->kind == OperationKind::Delete) index.erase(op->key);
+                    else index.insert(op->key, const_cast<uint64_t*>(&op->value));
+                }
+                ++a.committed;
+            } else ++a.aborted;
+            if (locks.get_lock_count(txn.txn_id) > 0) locks.unlock_all(txn.txn_id);
+            ++a.tx;
+        }
+    });
+    for (auto& worker : workers) worker.join();
+    const auto elapsed = std::chrono::steady_clock::now() - begin;
+    RunStats result; result.transactions=a.tx; result.committed=a.committed; result.aborted=a.aborted; result.operations=a.ops;
+    result.reads=a.reads; result.updates=a.updates; result.inserts=a.inserts; result.deletes=a.deletes; result.range_reads=a.ranges;
+    result.rows_found=a.found; result.rows_scanned=a.scanned; result.lock_acquires=a.acquires; result.lock_conflicts=a.conflicts; result.checksum=a.checksum;
+    result.elapsed_ns=std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count(); return result;
+}}

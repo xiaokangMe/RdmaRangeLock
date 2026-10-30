@@ -1,0 +1,12 @@
+{
+  "version": "v3",
+  "index": "btree_latch_coupling",
+  "cc": "record-level-strict-2pl",
+  "lock_kind": "Record",
+  "key_count": 10000,
+  "transaction_count": 5000,
+  "operations_per_transaction": 10,
+  "threads": 4,
+  "range_reads": "enumerate-existing-records-only",
+  "seed": 7
+}

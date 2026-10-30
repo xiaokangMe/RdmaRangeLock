@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdlib>
 
 namespace rrl {
 namespace {
@@ -11,6 +12,11 @@ bool same_range(const KeyRangeEnt& lhs, const KeyRangeEnt& rhs) {
     return lhs.StartKey == rhs.StartKey && lhs.EndKey == rhs.EndKey &&
            lhs.has_start == rhs.has_start && lhs.has_end == rhs.has_end &&
            lhs.start_bound == rhs.start_bound && lhs.end_bound == rhs.end_bound;
+}
+
+bool same_lock(const RangeLock& lhs, const RangeLock& rhs) {
+    return lhs.txn_id == rhs.txn_id && lhs.kind == rhs.kind &&
+           same_range(lhs.range, rhs.range);
 }
 
 std::uint64_t make_owner_token(const void* address) {
@@ -28,40 +34,96 @@ bool RemoteLockManager::connect(const std::string& host, std::uint16_t port) {
     namespace_token_ = (now ^ reinterpret_cast<std::uintptr_t>(this)) & 0x0000ffffffffffffULL;
     if (namespace_token_ == 0) namespace_token_ = 1;
     owner_token_ = make_owner_token(this);
+    if (const char* env = std::getenv("RRL_RDMA_BUCKET_WIDTH")) {
+        char* end = nullptr;
+        const auto parsed = std::strtoull(env, &end, 10);
+        if (end && *end == '\0' && parsed != 0) bucket_width_ = parsed;
+    }
     if (!connection_.connect_client(host, port, owner_token_)) return false;
     const auto& remote = connection_.remote_memory();
     if (remote.length < sizeof(RemoteLockRegion)) return false;
-    gate_address_ = remote.address + offsetof(RemoteLockRegion, gate);
-    active_slots_address_ = remote.address + offsetof(RemoteLockRegion, active_slots);
-    slots_address_ = remote.address + offsetof(RemoteLockRegion, slots);
-    gate_rkey_ = slots_rkey_ = remote.rkey;
+    shards_address_ = remote.address + offsetof(RemoteLockRegion, shards);
+    shards_rkey_ = remote.rkey;
     return true;
 }
 
-bool RemoteLockManager::enter_gate() const {
-    std::uint64_t previous = 0;
-    return connection_.compare_swap(gate_address_, gate_rkey_, 0, owner_token_, previous) &&
-           previous == 0;
+void RemoteLockManager::set_bucket_width(std::uint64_t width) {
+    if (width != 0) bucket_width_ = width;
 }
 
-void RemoteLockManager::leave_gate() const {
-    std::uint64_t expected = owner_token_;
-    (void)connection_.compare_swap(gate_address_, gate_rkey_, owner_token_, 0, expected);
+std::vector<std::size_t> RemoteLockManager::shard_ids(const KeyRangeEnt& range) const {
+    std::vector<std::size_t> ids;
+    if (!range.has_start || !range.has_end) {
+        ids.resize(kRemoteLockShards);
+        for (std::size_t i = 0; i < ids.size(); ++i) ids[i] = i;
+        return ids;
+    }
+    const std::uint64_t first = range.StartKey / bucket_width_;
+    std::uint64_t last = range.EndKey / bucket_width_;
+    // An open endpoint exactly on a bucket boundary does not touch that bucket.
+    if (range.end_bound == Bound::Open && range.EndKey != 0 &&
+        range.EndKey % bucket_width_ == 0) {
+        --last;
+    }
+    if (last < first || last - first + 1 >= kRemoteLockShards) {
+        ids.resize(kRemoteLockShards);
+        for (std::size_t i = 0; i < ids.size(); ++i) ids[i] = i;
+        return ids;
+    }
+    for (std::uint64_t bucket = first;; ++bucket) {
+        const std::size_t shard = static_cast<std::size_t>(bucket % kRemoteLockShards);
+        if (std::find(ids.begin(), ids.end(), shard) == ids.end()) ids.push_back(shard);
+        if (bucket == last) break;
+    }
+    std::sort(ids.begin(), ids.end());
+    return ids;
 }
 
-bool RemoteLockManager::load_slots(std::vector<RemoteLockSlot>& slots) const {
+std::uint64_t RemoteLockManager::shard_base(std::size_t shard) const {
+    return shards_address_ + shard * sizeof(RemoteLockShard);
+}
+
+bool RemoteLockManager::enter_shards(const std::vector<std::size_t>& ids,
+                                     std::vector<std::size_t>& acquired) const {
+    acquired.clear();
+    for (std::size_t shard : ids) {
+        std::uint64_t previous = 0;
+        const auto gate = shard_base(shard) + offsetof(RemoteLockShard, gate);
+        if (!connection_.compare_swap(gate, shards_rkey_, 0, owner_token_, previous) || previous != 0) {
+            leave_shards(acquired);
+            return false;
+        }
+        acquired.push_back(shard);
+    }
+    return true;
+}
+
+void RemoteLockManager::leave_shards(const std::vector<std::size_t>& acquired) const {
+    for (auto it = acquired.rbegin(); it != acquired.rend(); ++it) {
+        std::uint64_t expected = owner_token_;
+        const auto gate = shard_base(*it) + offsetof(RemoteLockShard, gate);
+        (void)connection_.compare_swap(gate, shards_rkey_, owner_token_, 0, expected);
+    }
+}
+
+bool RemoteLockManager::load_slots(std::size_t shard,
+                                   std::vector<RemoteLockSlot>& slots) const {
+    const auto base = shard_base(shard);
     std::uint64_t count = 0;
-    if (!connection_.read(active_slots_address_, slots_rkey_, &count, sizeof(count)) ||
-        count > kRemoteLockSlots) return false;
+    if (!connection_.read(base + offsetof(RemoteLockShard, active_slots), shards_rkey_,
+                          &count, sizeof(count)) || count > kRemoteLockSlotsPerShard)
+        return false;
     slots.resize(static_cast<std::size_t>(count));
     if (slots.empty()) return true;
-    return connection_.read(slots_address_, slots_rkey_, slots.data(),
-                            sizeof(RemoteLockSlot) * slots.size());
+    return connection_.read(base + offsetof(RemoteLockShard, slots), shards_rkey_,
+                            slots.data(), sizeof(RemoteLockSlot) * slots.size());
 }
 
-bool RemoteLockManager::store_active_slots(std::uint64_t count) const {
-    return count <= kRemoteLockSlots &&
-           connection_.write(active_slots_address_, slots_rkey_, &count, sizeof(count));
+bool RemoteLockManager::store_active_slots(std::size_t shard, std::uint64_t count) const {
+    if (count > kRemoteLockSlotsPerShard) return false;
+    const auto base = shard_base(shard);
+    return connection_.write(base + offsetof(RemoteLockShard, active_slots), shards_rkey_,
+                             &count, sizeof(count));
 }
 
 RangeLock RemoteLockManager::decode(const RemoteLockSlot& slot) {
@@ -101,111 +163,147 @@ RC RemoteLockManager::lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& ran
     std::lock_guard<std::mutex> guard(io_mutex_);
     if (!connected() || range.empty() || !range.valid()) return ERROR;
     if (conflicts) conflicts->clear();
-    if (!enter_gate()) return Abort;
-    std::vector<RemoteLockSlot> slots;
-    if (!load_slots(slots)) { leave_gate(); return ERROR; }
+    const auto ids = shard_ids(range);
+    std::vector<std::size_t> acquired;
+    if (!enter_shards(ids, acquired)) return Abort;
+    std::vector<std::vector<RemoteLockSlot>> tables(ids.size());
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        if (!load_slots(ids[i], tables[i])) { leave_shards(acquired); return ERROR; }
+    }
 
     const txnid_t id = wire_txn(txn_id);
     RangeLock request{id, mode, kind, range};
     bool conflict = false;
-    for (const RemoteLockSlot& slot : slots) {
-        const RangeLock held = decode(slot);
-        if (!request.conflicts(held)) continue;
-        conflict = true;
-        if (conflicts && std::find(conflicts->begin(), conflicts->end(), held.txn_id) == conflicts->end())
-            conflicts->push_back(held.txn_id);
-    }
-    if (conflict) { leave_gate(); return Abort; }
-
-    for (std::size_t i = 0; i < slots.size(); ++i) {
-        if (slots[i].owner != owner_token_ || slots[i].txn_id != id) continue;
-        const RangeLock held = decode(slots[i]);
-        if (held.kind == kind && same_range(held.range, range)) {
-            slots[i].mode = static_cast<std::uint8_t>(lock_mode_join(held.mode, mode));
-            const bool ok = connection_.write(slots_address_ + i * sizeof(RemoteLockSlot), slots_rkey_,
-                                              &slots[i], sizeof(RemoteLockSlot));
-            leave_gate();
-            return ok ? RCOK : ERROR;
+    for (const auto& table : tables) {
+        for (const auto& slot : table) {
+            const RangeLock held = decode(slot);
+            if (!request.conflicts(held)) continue;
+            conflict = true;
+            if (conflicts && std::find(conflicts->begin(), conflicts->end(), held.txn_id) == conflicts->end())
+                conflicts->push_back(held.txn_id);
         }
     }
-    if (slots.size() == kRemoteLockSlots) { leave_gate(); return Abort; }
-    const std::size_t index = slots.size();
-    RemoteLockSlot slot{};
-    encode(slot, owner_token_, id, mode, kind, range);
-    if (!connection_.write(slots_address_ + index * sizeof(RemoteLockSlot), slots_rkey_,
-                           &slot, sizeof(slot)) || !store_active_slots(index + 1)) {
-        leave_gate();
-        return ERROR;
+    if (conflict) { leave_shards(acquired); return Abort; }
+
+    for (std::size_t n = 0; n < ids.size(); ++n) {
+        auto& table = tables[n];
+        bool found = false;
+        for (std::size_t i = 0; i < table.size(); ++i) {
+            const RangeLock held = decode(table[i]);
+            if (table[i].owner != owner_token_ || table[i].txn_id != id ||
+                held.kind != kind || !same_range(held.range, range)) continue;
+            table[i].mode = static_cast<std::uint8_t>(lock_mode_join(held.mode, mode));
+            const auto address = shard_base(ids[n]) + offsetof(RemoteLockShard, slots) +
+                                 i * sizeof(RemoteLockSlot);
+            if (!connection_.write(address, shards_rkey_, &table[i], sizeof(RemoteLockSlot))) {
+                leave_shards(acquired); return ERROR;
+            }
+            found = true;
+            break;
+        }
+        if (found) continue;
+        if (table.size() == kRemoteLockSlotsPerShard) { leave_shards(acquired); return Abort; }
+        RemoteLockSlot slot{};
+        encode(slot, owner_token_, id, mode, kind, range);
+        const auto address = shard_base(ids[n]) + offsetof(RemoteLockShard, slots) +
+                             table.size() * sizeof(RemoteLockSlot);
+        if (!connection_.write(address, shards_rkey_, &slot, sizeof(slot)) ||
+            !store_active_slots(ids[n], table.size() + 1)) {
+            leave_shards(acquired); return ERROR;
+        }
+        table.push_back(slot);
     }
-    leave_gate();
+    leave_shards(acquired);
     return RCOK;
 }
 
 RC RemoteLockManager::unlock(txnid_t txn_id, const KeyRangeEnt& range, LockKind kind) {
     std::lock_guard<std::mutex> guard(io_mutex_);
-    if (!connected() || !enter_gate()) return Abort;
-    std::vector<RemoteLockSlot> slots;
-    if (!load_slots(slots)) { leave_gate(); return ERROR; }
+    if (!connected()) return Abort;
+    const auto ids = shard_ids(range);
+    std::vector<std::size_t> acquired;
+    if (!enter_shards(ids, acquired)) return Abort;
     const txnid_t id = wire_txn(txn_id);
     bool removed = false;
-    std::size_t i = 0;
-    while (i < slots.size()) {
-        const RangeLock held = decode(slots[i]);
-        if (slots[i].owner != owner_token_ || slots[i].txn_id != id ||
-            held.kind != kind || !same_range(held.range, range)) {
-            ++i;
-            continue;
+    for (std::size_t shard : ids) {
+        std::vector<RemoteLockSlot> table;
+        if (!load_slots(shard, table)) { leave_shards(acquired); return ERROR; }
+        std::size_t i = 0;
+        while (i < table.size()) {
+            const RangeLock held = decode(table[i]);
+            if (table[i].owner != owner_token_ || table[i].txn_id != id ||
+                held.kind != kind || !same_range(held.range, range)) { ++i; continue; }
+            removed = true;
+            const std::size_t last = table.size() - 1;
+            if (i != last) {
+                table[i] = table[last];
+                const auto address = shard_base(shard) + offsetof(RemoteLockShard, slots) +
+                                     i * sizeof(RemoteLockSlot);
+                if (!connection_.write(address, shards_rkey_, &table[i], sizeof(RemoteLockSlot))) {
+                    leave_shards(acquired); return ERROR;
+                }
+            }
+            table.pop_back();
         }
-        removed = true;
-        const std::size_t last = slots.size() - 1;
-        if (i != last) {
-            slots[i] = slots[last];
-            if (!connection_.write(slots_address_ + i * sizeof(RemoteLockSlot), slots_rkey_,
-                                   &slots[i], sizeof(RemoteLockSlot))) { leave_gate(); return ERROR; }
-        }
-        slots.pop_back();
+        if (!store_active_slots(shard, table.size())) { leave_shards(acquired); return ERROR; }
     }
-    if (!store_active_slots(slots.size())) { leave_gate(); return ERROR; }
-    leave_gate();
+    leave_shards(acquired);
     return removed ? RCOK : Abort;
 }
 
 RC RemoteLockManager::unlock_all(txnid_t txn_id) {
     std::lock_guard<std::mutex> guard(io_mutex_);
-    if (!connected() || !enter_gate()) return Abort;
-    std::vector<RemoteLockSlot> slots;
-    if (!load_slots(slots)) { leave_gate(); return ERROR; }
+    if (!connected()) return Abort;
+    std::vector<std::size_t> ids(kRemoteLockShards);
+    for (std::size_t i = 0; i < ids.size(); ++i) ids[i] = i;
+    std::vector<std::size_t> acquired;
+    if (!enter_shards(ids, acquired)) return Abort;
     const txnid_t id = wire_txn(txn_id);
-    std::size_t i = 0;
-    while (i < slots.size()) {
-        if (slots[i].owner != owner_token_ || slots[i].txn_id != id) {
-            ++i;
-            continue;
+    for (std::size_t shard : ids) {
+        std::vector<RemoteLockSlot> table;
+        if (!load_slots(shard, table)) { leave_shards(acquired); return ERROR; }
+        std::size_t i = 0;
+        while (i < table.size()) {
+            if (table[i].owner != owner_token_ || table[i].txn_id != id) { ++i; continue; }
+            const std::size_t last = table.size() - 1;
+            if (i != last) {
+                table[i] = table[last];
+                const auto address = shard_base(shard) + offsetof(RemoteLockShard, slots) +
+                                     i * sizeof(RemoteLockSlot);
+                if (!connection_.write(address, shards_rkey_, &table[i], sizeof(RemoteLockSlot))) {
+                    leave_shards(acquired); return ERROR;
+                }
+            }
+            table.pop_back();
         }
-        const std::size_t last = slots.size() - 1;
-        if (i != last) {
-            slots[i] = slots[last];
-            if (!connection_.write(slots_address_ + i * sizeof(RemoteLockSlot), slots_rkey_,
-                                   &slots[i], sizeof(RemoteLockSlot))) { leave_gate(); return ERROR; }
-        }
-        slots.pop_back();
+        if (!store_active_slots(shard, table.size())) { leave_shards(acquired); return ERROR; }
     }
-    if (!store_active_slots(slots.size())) { leave_gate(); return ERROR; }
-    leave_gate();
+    leave_shards(acquired);
     return RCOK;
 }
 
 std::size_t RemoteLockManager::get_lock_count(txnid_t txn_id) const {
     std::lock_guard<std::mutex> guard(io_mutex_);
-    if (!connected() || !enter_gate()) return 0;
-    std::vector<RemoteLockSlot> slots;
-    if (!load_slots(slots)) { leave_gate(); return 0; }
+    if (!connected()) return 0;
+    std::vector<std::size_t> ids(kRemoteLockShards);
+    for (std::size_t i = 0; i < ids.size(); ++i) ids[i] = i;
+    std::vector<std::size_t> acquired;
+    if (!enter_shards(ids, acquired)) return 0;
     const txnid_t id = txn_id == 0 ? 0 : wire_txn(txn_id);
-    std::size_t count = 0;
-    for (const auto& slot : slots)
-        if (txn_id == 0 || (slot.owner == owner_token_ && slot.txn_id == id)) ++count;
-    leave_gate();
-    return count;
+    std::vector<RangeLock> unique;
+    for (std::size_t shard : ids) {
+        std::vector<RemoteLockSlot> table;
+        if (!load_slots(shard, table)) { leave_shards(acquired); return 0; }
+        for (const auto& slot : table) {
+            if (txn_id != 0 && (slot.owner != owner_token_ || slot.txn_id != id)) continue;
+            const RangeLock lock = decode(slot);
+            if (std::find_if(unique.begin(), unique.end(), [&](const RangeLock& other) {
+                    return same_lock(lock, other);
+                }) == unique.end()) unique.push_back(lock);
+        }
+    }
+    leave_shards(acquired);
+    return unique.size();
 }
 
 }  // namespace rrl

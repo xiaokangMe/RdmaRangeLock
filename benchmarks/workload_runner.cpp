@@ -60,6 +60,7 @@ int main(int argc, char** argv) {
             std::cerr << "failed to connect RDMA lock server at " << rdma_host << ":" << rdma_port << "\n";
             return 2;
         }
+        locks.set_bucket_width(config.hierarchy_bucket_width);
         if (cc == "rdma-next-key") stats = run_next_key_lock(*index, locks, trace, config.threads);
         else stats = run_hierarchical_lock(*index, locks, trace, config.threads);
     } else {

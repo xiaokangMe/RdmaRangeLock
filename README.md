@@ -109,4 +109,4 @@ build-rdma/rrl_workload_runner --index v2 --cc rdma-hierarchical \
   --rdma-host 127.0.0.1 --rdma-port 19890 --bucket 64 --workload ycsb-e
 ```
 
-当前 RDMA 锁表使用全局 CAS gate 作为正确性基线，单个 `RemoteLockManager` 是单 QP 串行模型；下一步是按 bucket 分片 gate、增加 per-thread QP/连接池，并在跨主机 RoCE 地址上重复实验。RDMA smoke 脚本会自动配置 `build-rdma`、启动服务端并生成规范 CSV。
+当前 RDMA 锁表已经按逻辑 bucket 使用 16 个分片 CAS gate；跨 bucket 区间按 shard ID 升序获取 gate，并在每个涉及 shard 保存副本，单个 `RemoteLockManager` 仍是单 QP 串行模型。下一步是增加 per-thread QP/连接池，并在跨主机 RoCE 地址上重复实验。RDMA smoke 脚本会自动配置 `build-rdma`、启动服务端并生成规范 CSV。

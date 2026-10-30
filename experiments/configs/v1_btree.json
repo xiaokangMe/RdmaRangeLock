@@ -1,0 +1,9 @@
+{
+  "version": "v1",
+  "index": "btree_single",
+  "order": 128,
+  "key_type": "uint64",
+  "duplicate_keys": "replace_value",
+  "workload": "shared_trace",
+  "range_semantics": "explicit_open_closed"
+}

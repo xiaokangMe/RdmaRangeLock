@@ -110,4 +110,4 @@ build-rdma/rrl_workload_runner --index v2 --cc rdma-hierarchical \
   --rdma-host 127.0.0.1 --rdma-port 19890 --bucket 64 --workload ycsb-e
 ```
 
-当前 RDMA 锁表已经按逻辑 bucket 使用 16 个分片 CAS gate；跨 bucket 区间按 shard ID 升序获取 gate，并在每个涉及 shard 保存副本。工作负载 runner 会按线程数建立 per-thread QP/连接池，每个连接使用独立 owner token；跨主机 RoCE 和完整性能实验仍待执行。RDMA smoke 脚本会自动配置 `build-rdma`、启动服务端并生成规范 CSV。
+当前 RDMA 锁表已经按逻辑 bucket 使用 16 个分片 CAS gate；跨 bucket 区间按 shard ID 升序获取 gate，并在每个涉及 shard 保存副本。工作负载 runner 会按线程数建立 per-thread QP/连接池，每个连接使用独立 owner token。`.66` 与 `.67` 已使用 RoCE IPv4 GID index 3 完成跨主机 v5/v6、8 QP 和 crash cleanup 验证；正式性能实验仍待执行。RDMA smoke 脚本会自动配置 `build-rdma`、启动服务端并生成规范 CSV。详见 `docs/notes/rdma-cross-host-2026-10-30.md`。

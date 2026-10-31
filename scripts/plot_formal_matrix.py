@@ -15,10 +15,16 @@ import os
 import statistics as stats
 from collections import defaultdict
 
-import matplotlib
+try:
+    import matplotlib
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+except ImportError:
+    raise SystemExit(
+        "缺少 matplotlib，无法绘图。\n"
+        "安装：python3 -m pip install -r scripts/requirements.txt"
+    )
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

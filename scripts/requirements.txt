@@ -1,0 +1,3 @@
+# 绘图依赖（scripts/plot_formal_matrix.py）
+# 已在 Python 3.10 + matplotlib 3.10.9 上验证
+matplotlib>=3.5

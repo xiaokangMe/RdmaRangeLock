@@ -141,7 +141,7 @@
 - 现象：需要 matplotlib + numpy。`.66` 上原本没有，本轮通过 `pip3 install --user` 现场安装；
   仓库里没有 `requirements.txt` 或任何依赖声明。
 - 影响：违反 CONSTRAINTS 第六条"构建必须能从干净 clone 一次成功"。
-- 建议方向：加 `scripts/requirements.txt`，或在脚本开头做 import 检查并给出安装提示。
+- 状态：**已修**。新增 `scripts/requirements.txt`（`matplotlib>=3.5`）；脚本顶部对 import 做保护，缺依赖时打印安装命令并以退出码 1 结束。
 
 ### C-10 `.gitignore` 未覆盖 `build-*`
 

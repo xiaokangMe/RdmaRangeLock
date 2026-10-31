@@ -24,3 +24,19 @@
 ## 限制与下一步
 
 当前实现是远程锁表基线：每个 shard 维护 `active_slots`，加锁只读取有效前缀；分片 gate、256 槽容量和 per-thread QP/连接池已完成，减少了不相交 bucket 之间的 gate 冲突并允许不同 worker 使用独立 RC QP。下一步是跨主机 GID/RoCE 正式矩阵、更细的故障恢复指标和正式性能实验。
+
+
+## 本地回环建链验证
+
+`run_rdma_smoke.sh` 现在先执行一次 `rrl_rdma_lock_client` 的完整 RC-QP 建链/锁操作，再运行 v5/v6 workload；服务端启动失败会立即报告。默认使用 `127.0.0.1` 和 GID 0，也可指定 RoCE IPv4 GID：
+
+```bash
+RRL_RDMA_GID_INDEX=0 RRL_RDMA_LOOPBACK_HOST=127.0.0.1 \
+scripts/run_rdma_smoke.sh 19999
+
+# 使用本机 RoCE IPv4 GID 3
+RRL_RDMA_GID_INDEX=3 RRL_RDMA_LOOPBACK_HOST=10.0.0.3 \
+scripts/run_rdma_smoke.sh 20000
+```
+
+两种配置均已在 `.66` 完成建链和 v5/v6 smoke；输出 CSV 已同步包含 `lock_capacity_aborts` 与 `lock_gate_aborts`。

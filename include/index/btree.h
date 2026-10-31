@@ -97,6 +97,7 @@ public:
 private:
     using Page = BTreePage;
     std::unique_ptr<Page> make_page(bool leaf) const;
+    bool update_existing(idx_key_t key, void* value);
     std::unique_ptr<Page> insert_recursive(Page& page, idx_key_t key, void* value, idx_key_t& separator);
     void split_leaf(Page& page, std::unique_ptr<Page>& right, idx_key_t& separator);
     void split_internal(Page& page, std::unique_ptr<Page>& right, idx_key_t& separator);

@@ -90,10 +90,33 @@ std::unique_ptr<BTreeLatch::Page> BTreeLatch::insert_recursive(
     return right;
 }
 
-RC BTreeLatch::insert(idx_key_t key, void* value) {
-    std::lock_guard<std::mutex> writer(writer_guard_);
-    if (order_ == 0) return ERROR;
+bool BTreeLatch::update_existing(idx_key_t key, void* value) {
+    std::shared_lock<std::shared_mutex> root_lock(root_guard_);
+    if (root_ == nullptr) return false;
+    Page* page = root_.get();
+    std::shared_lock<std::shared_mutex> page_lock(page->latch);
+    while (!page->is_leaf) {
+        const auto pos = std::upper_bound(page->keys.begin(), page->keys.end(), key);
+        Page* child = page->children[static_cast<std::size_t>(pos - page->keys.begin())].get();
+        std::shared_lock<std::shared_mutex> child_lock(child->latch);
+        page_lock.unlock();
+        page = child;
+        page_lock = std::move(child_lock);
+    }
+    page_lock.unlock();
+    std::unique_lock<std::shared_mutex> leaf_lock(page->latch);
+    const auto pos = std::lower_bound(page->keys.begin(), page->keys.end(), key);
+    if (pos == page->keys.end() || *pos != key) return false;
+    page->values[static_cast<std::size_t>(pos - page->keys.begin())] = value;
+    return true;
+}
 
+RC BTreeLatch::insert(idx_key_t key, void* value) {
+    if (order_ == 0) return ERROR;
+    // Updates are the common path in the workload. They only need the leaf
+    // latch, so they must not wait behind the tree-wide writer mutex.
+    if (update_existing(key, value)) return RCOK;
+    std::lock_guard<std::mutex> writer(writer_guard_);
     bool root_full = false;
     {
         std::shared_lock<std::shared_mutex> probe(root_guard_);

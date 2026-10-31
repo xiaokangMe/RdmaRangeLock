@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 #include "common/range.h"
@@ -66,6 +67,11 @@ public:
 private:
     struct ConnectionSlot;
     std::vector<std::size_t> shard_ids(const KeyRangeEnt& range) const;
+    std::vector<std::size_t> shard_ids(const KeyRangeEnt& range,
+                                       LockKind kind, LockMode mode) const;
+    void remember_shards(txnid_t txn_id, const std::vector<std::size_t>& ids) const;
+    std::vector<std::size_t> shards_for_txn(txnid_t txn_id) const;
+    void forget_shard(txnid_t txn_id, std::size_t shard) const;
     bool enter_shards(const std::vector<std::size_t>& ids,
                       std::vector<std::size_t>& acquired) const;
     void leave_shards(const std::vector<std::size_t>& acquired) const;
@@ -91,6 +97,8 @@ private:
     std::uint32_t shards_rkey_{0};
     std::uint64_t bucket_width_{64};
     std::uint64_t namespace_token_{0};
+    mutable std::mutex txn_shards_mutex_;
+    mutable std::unordered_map<txnid_t, std::vector<std::size_t>> txn_shards_;
 };
 
 }  // namespace rrl

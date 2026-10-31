@@ -94,7 +94,10 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 LOG_DIR="${RRL_LOG_DIR:-$ROOT/experiments/logs/formal-${MODE}-${STAMP}}"
 mkdir -p "$RESULT_DIR" "$LOG_DIR"
 RESULT_FILE="$RESULT_DIR/formal-${MODE}-${STAMP}.csv"
-RUNNER_HEADER="workload,index,cc,threads,transactions,committed,aborted,operations,reads,updates,inserts,deletes,range_reads,rows_found,rows_scanned,rows_rechecked,lock_acquires,lock_conflicts,throughput_committed_txn_s,throughput_attempt_txn_s,checksum"
+FAILED_FILE="$LOG_DIR/failed-cases.txt"
+: > "$FAILED_FILE"
+FAILED_CASES=()
+RUNNER_HEADER="workload,index,cc,threads,transactions,committed,aborted,operations,reads,updates,inserts,deletes,range_reads,rows_found,rows_scanned,rows_rechecked,lock_acquires,lock_conflicts,lock_capacity_aborts,lock_gate_aborts,throughput_committed_txn_s,throughput_attempt_txn_s,checksum"
 printf 'transport,server_host,client_host,run,seed,range,bucket,zipf,%s\n' "$RUNNER_HEADER" > "$RESULT_FILE"
 
 SERVER_PID=""
@@ -185,7 +188,11 @@ for workload in "${WORKLOADS[@]}"; do
             for bucket in "${buckets[@]}"; do
                 for threads in "${THREADS[@]}"; do
                     for ((run_id = 1; run_id <= RUNS; ++run_id)); do
-                        run_case "$workload" "$cc" "$threads" "$run_id" "$range_length" "$bucket"
+                        case_id="${workload}-${cc}-t${threads}-r${run_id}-g${range_length}-b${bucket}"
+                        if ! run_case "$workload" "$cc" "$threads" "$run_id" "$range_length" "$bucket"; then
+                            FAILED_CASES+=("$case_id")
+                            printf '%s\n' "$case_id" >> "$FAILED_FILE"
+                        fi
                     done
                 done
             done
@@ -194,3 +201,7 @@ for workload in "${WORKLOADS[@]}"; do
 done
 
 echo "matrix complete: $RESULT_FILE"
+if ((${#FAILED_CASES[@]})); then
+    echo "matrix completed with ${#FAILED_CASES[@]} failed case(s); see $FAILED_FILE" >&2
+    exit 1
+fi

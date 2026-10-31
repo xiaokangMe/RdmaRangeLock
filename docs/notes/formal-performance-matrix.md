@@ -34,7 +34,7 @@ v1 单线程树和 v2 latch coupling 的结构基线由已有测试和 `scripts/
 | 层级锁 bucket | 16, 64, 256 |
 | 单 case 超时 | 900 秒 |
 
-默认规模为 720 个本地 case 和 432 个跨主机 RDMA case。正式运行前建议先用环境变量缩小矩阵做一轮连通性检查。
+默认规模为 504 个本地 case 和 432 个跨主机 RDMA case。正式运行前建议先用环境变量缩小矩阵做一轮连通性检查。
 
 ## 运行位置和拓扑
 
@@ -108,13 +108,13 @@ scripts/run_formal_matrix.sh --mode cross-host
 transport,server_host,client_host,run,seed,range,bucket,zipf
 ```
 
-runner 字段包括 committed/aborted、attempted/committed throughput、lock conflicts、rows rechecked 等。结果目录已被 `.gitignore` 忽略，正式实验结果应另行归档并保留脚本版本、commit、机器信息和完整命令行。
+runner 字段包括 committed/aborted、attempted/committed throughput、lock conflicts、lock_capacity_aborts、lock_gate_aborts、rows rechecked 等。单点失败会写入 `failed-cases.txt` 后继续调度，脚本在矩阵结束时以非零状态汇总失败。结果目录已被 `.gitignore` 忽略，正式实验结果应另行归档并保留脚本版本、commit、机器信息和完整命令行。
 
 ## 统计和公平性约定
 
 - 每个 case 都从新进程和新 trace 开始；RDMA 连接建立和索引预填充不计入 runner 的事务 elapsed time。
 - 以 `throughput_committed_txn_s` 作为成功事务吞吐，同时报告 `throughput_attempt_txn_s`、committed、aborted 和 lock conflicts。
-- 当前锁协议是 no-wait；`Abort` 表示冲突或容量失败，不能直接解释成阻塞时间。
+- 当前锁协议是 no-wait；`AbortConflict`、`AbortCapacity`、`AbortGate` 分别统计冲突、远程槽位不足和 gate 抢占失败，不能把它们解释成阻塞时间。
 - 本地与跨主机结果分开比较。跨主机模式还应记录 GID、网卡、链路状态、CPU 型号和 kernel/verbs 版本。
 - 正式报告至少保留 3 次重复的中位数和离散度；对吞吐、abort ratio、lock acquire cost、rows rechecked 和 range length 分别作图。
 - 结果出现异常时先查看对应 case 的 stderr 日志，再复现单 case；不要用 sleep 或重试掩盖连接、锁顺序或数据一致性错误。
@@ -126,3 +126,7 @@ runner 字段包括 committed/aborted、attempted/committed throughput、lock co
 3. `hierarchical` 的 bucket=16/64/256 扫描和冲突变化。
 4. YCSB-E 与 TPCC New-Order 的范围/热点差异。
 5. 多线程扩展曲线和 no-wait abort ratio，单独标注 RDMA 单机与跨主机结果。
+
+## 配置文件复现
+
+`rrl_workload_runner` 支持 `--config experiments/configs/v5_next_key.json`，配置文件中的 workload、index、cc、规模、线程、范围、bucket、Zipf 和 seed 会先加载，再由命令行参数覆盖。这样配置文件与矩阵脚本使用同一套 runner 解析路径。

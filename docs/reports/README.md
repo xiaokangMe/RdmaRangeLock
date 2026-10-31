@@ -46,5 +46,4 @@ scripts/build_formal_report.py
 ## 覆盖范围
 
 本报告只覆盖 `--mode local` 的 756 个 case。跨主机 RDMA 的 432 个 case 尚未执行：
-远程锁表每分片仅 64 槽，单事务持锁数超过该上限即返回 `Abort`，中止率反映容量而非冲突，
-详见 `docs/notes/formal-matrix-code-issues-2026-10-31.md` 的 C-4。
+远程锁表现为每分片 256 槽，并将容量不足单独记为 `lock_capacity_aborts`；跨主机矩阵仍需重新运行，不能沿用旧报告中受 64 槽上限污染的结论。详见 `docs/notes/formal-matrix-code-issues-2026-10-31.md` 的 C-4。

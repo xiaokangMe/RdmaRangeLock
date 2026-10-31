@@ -239,7 +239,7 @@ RC RemoteLockManager::lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& ran
     if (conflicts) conflicts->clear();
     const auto ids = shard_ids(range);
     std::vector<std::size_t> acquired;
-    if (!enter_shards(ids, acquired)) return Abort;
+    if (!enter_shards(ids, acquired)) return AbortGate;
     auto& connection = current_connection();
     const auto owner = current_owner_token();
     std::vector<std::vector<RemoteLockSlot>> tables(ids.size());
@@ -258,7 +258,25 @@ RC RemoteLockManager::lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& ran
                 conflicts->push_back(held.txn_id);
         }
     }
-    if (conflict) { leave_shards(acquired); return Abort; }
+    if (conflict) { leave_shards(acquired); return AbortConflict; }
+    // Check every target shard before publishing any copy. Without this
+    // preflight, a later full shard could leave earlier shard copies behind
+    // after returning AbortCapacity.
+    for (const auto& table : tables) {
+        bool found = false;
+        for (const auto& slot : table) {
+            const RangeLock held = decode(slot);
+            if (owns_owner_token(slot.owner) && slot.txn_id == id &&
+                held.kind == kind && same_range(held.range, range)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found && table.size() >= kRemoteLockSlotsPerShard) {
+            leave_shards(acquired);
+            return AbortCapacity;
+        }
+    }
     for (std::size_t n = 0; n < ids.size(); ++n) {
         auto& table = tables[n];
         bool found = false;
@@ -276,7 +294,7 @@ RC RemoteLockManager::lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& ran
             break;
         }
         if (found) continue;
-        if (table.size() == kRemoteLockSlotsPerShard) { leave_shards(acquired); return Abort; }
+        if (table.size() >= kRemoteLockSlotsPerShard) { leave_shards(acquired); return AbortCapacity; }
         RemoteLockSlot slot{};
         encode(slot, owner, id, mode, kind, range);
         const auto address = shard_base(ids[n]) + offsetof(RemoteLockShard, slots) +

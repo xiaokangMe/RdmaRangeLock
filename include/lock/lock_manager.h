@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -10,8 +11,10 @@
 
 namespace rrl {
 
-// Lightweight, no-wait range lock table. It follows deneva's KeyXidCache
-// vocabulary but stores typed intervals instead of sentinel-only endpoints.
+// Lightweight, no-wait range lock table. Locks are copied into every logical
+// key shard touched by an interval, so disjoint intervals do not serialize on
+// one process-wide mutex. Shard copies are an index detail; public counts and
+// snapshots deduplicate them.
 class IRangeLockManager {
 public:
     virtual ~IRangeLockManager() = default;
@@ -19,10 +22,12 @@ public:
                     LockKind kind = LockKind::Predicate,
                     std::vector<txnid_t>* conflicts = nullptr) = 0;
     virtual RC unlock(txnid_t txn_id, const KeyRangeEnt& range,
-                        LockKind kind = LockKind::Predicate) = 0;
+                      LockKind kind = LockKind::Predicate) = 0;
     virtual RC unlock_all(txnid_t txn_id) = 0;
     virtual std::size_t get_lock_count(txnid_t txn_id = 0) const = 0;
 };
+
+constexpr std::size_t kLocalLockShards = 16;
 
 class LockManager : public IRangeLockManager {
 public:
@@ -38,10 +43,21 @@ public:
     bool detect_conflict(const RangeLock& request) const;
     std::vector<txnid_t> conflicting_txns(const RangeLock& request) const;
     std::vector<RangeLock> snapshot() const;
+    void set_bucket_width(std::uint64_t width);
 
 private:
-    mutable std::mutex mutex_;
-    std::vector<RangeLock> locks_;
+    struct Shard {
+        mutable std::mutex mutex;
+        std::vector<RangeLock> locks;
+    };
+
+    std::vector<std::size_t> shard_ids(const KeyRangeEnt& range) const;
+    std::vector<std::size_t> shard_ids(const KeyRangeEnt& range,
+                                        LockKind kind, LockMode mode) const;
+    static bool same_range(const KeyRangeEnt& lhs, const KeyRangeEnt& rhs);
+    static bool same_lock(const RangeLock& lhs, const RangeLock& rhs);
+    std::array<Shard, kLocalLockShards> shards_;
+    std::uint64_t bucket_width_{64};
 };
 
 // Compatibility facade for deneva code that uses KeyXidCache's method names.

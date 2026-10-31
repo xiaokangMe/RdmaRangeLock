@@ -152,10 +152,13 @@ run_case() {
         fi
     fi
     line="$(printf '%s\n' "$output" | tail -n 1)"
-    if [[ "$line" != workload,* ]]; then
-        echo "invalid CSV output for $case_id: $line" >&2
-        return 1
-    fi
+    case "$line" in
+        ycsb-* | tpcc-*) ;;
+        *)
+            echo "invalid CSV output for $case_id: $line" >&2
+            return 1
+            ;;
+    esac
     printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
         "$TRANSPORT" "$RDMA_HOST" "$CLIENT_LABEL" "$run_id" "$seed" \
         "$range_length" "$bucket" "$ZIPF" "$line" >> "$RESULT_FILE"

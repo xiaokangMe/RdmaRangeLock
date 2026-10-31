@@ -1,0 +1,22 @@
+{
+  "name": "formal-local-v2-range-lock-matrix",
+  "code_commit": "c97fb45",
+  "runner": "scripts/run_formal_matrix.sh --mode local",
+  "index": "v2",
+  "workloads": ["ycsb-a", "ycsb-e", "tpcc-payment", "tpcc-new-order"],
+  "local_ccs": ["none", "record-2pl", "gap-lock", "next-key", "hierarchical"],
+  "keys": 10000,
+  "transactions": 5000,
+  "operations": 10,
+  "ycsb_e_range_lengths": [8, 32, 128],
+  "threads": [1, 2, 4, 8, 16, 32],
+  "runs": 3,
+  "seeds": [8, 9, 10],
+  "hierarchy_buckets": [16, 64, 256],
+  "zipf": 0.99,
+  "tpcc_items": 5,
+  "timeout_seconds": 900,
+  "expected_cases": 756,
+  "result_pattern": "experiments/results/formal-local-<timestamp>.csv",
+  "log_pattern": "experiments/logs/formal-local-<timestamp>/"
+}

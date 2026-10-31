@@ -34,7 +34,7 @@ v1 单线程树和 v2 latch coupling 的结构基线由已有测试和 `scripts/
 | 层级锁 bucket | 16, 64, 256 |
 | 单 case 超时 | 900 秒 |
 
-默认规模为 504 个本地 case 和 432 个跨主机 RDMA case。正式运行前建议先用环境变量缩小矩阵做一轮连通性检查。
+默认规模为 756 个本地 case 和 432 个跨主机 RDMA case。正式运行前建议先用环境变量缩小矩阵做一轮连通性检查。矩阵维度和新代码基线记录在 `experiments/configs/formal_local_v2_matrix.json`；当前脚本仍通过 `RRL_*` 环境变量接收这些维度，正式运行时必须保留该配置文件、完整命令行和生成数据的 commit hash。
 
 ## 运行位置和拓扑
 

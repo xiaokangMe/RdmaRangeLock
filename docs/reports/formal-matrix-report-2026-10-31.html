@@ -71,7 +71,7 @@ footer { margin-top: 56px; padding-top: 18px; border-top: 1px solid var(--line);
   <div class="sub">
     本地矩阵 · commit <code>b808549</code> · 2026-10-31 02:48–05:33 ·
     控制端 <code>.66</code>（Xeon Gold 5218 ×2, 64 线程, 125 GB）·
-    数据源 <code>experiments/results/formal-local-20261031-024829.csv</code>
+    数据源 <code>experiments/results/formal-local-20261031-024829.csv</code><br>sha256 <code>f203c79e5d4a813c…</code> · 108,446 字节 · 756 个 case
   </div>
 </header>
 
@@ -113,7 +113,10 @@ footer { margin-top: 56px; padding-top: 18px; border-top: 1px solid var(--line);
 </ul>
 
 <footer>
-  数据：756 个 case，三次重复取中位数。跨主机 RDMA 半张矩阵因锁表容量上限（问题 F）尚未执行，本报告只覆盖本地通路。
+  数据：756 个 case，三次重复取中位数。跨主机 RDMA 半张矩阵因锁表容量上限（问题 F）尚未执行，本报告只覆盖本地通路。<br>
+  原始数据不入库（<code>.gitignore</code> 忽略 <code>experiments/results/*.csv</code>），归档信息见
+  <code>docs/reports/README.md</code>。重新生成：<code>scripts/build_formal_report.py</code><br>
+  sha256 <code>f203c79e5d4a813cfbb324ef6ad03c755694b0e86f4c01005559fb60ca34a003</code>
 </footer>
 </main>
 </body>

@@ -9,6 +9,30 @@
 
 namespace rrl {
 
+// Phase tag attached to a work request so a timeout can be attributed to the
+// step that issued it.
+enum class RdmaOpTag : std::uint8_t {
+    None = 0,
+    Gate = 1,
+    LoadCounts = 2,
+    LoadSlots = 3,
+    StoreSlot = 4,
+    ReleaseGate = 5,
+};
+
+// Everything needed to explain a single failed work request.
+struct RdmaFailureInfo {
+    std::uint32_t opcode{0};
+    std::uint32_t status{0};
+    std::uint32_t wr_index{0};
+    std::uint32_t length{0};
+    std::uint64_t remote_address{0};
+    std::uint64_t elapsed_us{0};
+    std::uint64_t qp_num{0};
+    std::uint8_t tag{0};
+    std::uint8_t reserved[7]{};
+};
+
 struct RdmaRemoteMemory {
     std::uint64_t address{0};
     std::uint32_t rkey{0};
@@ -61,8 +85,14 @@ public:
     bool compare_swap_batch(const std::vector<RdmaCompareSwapRequest>& requests);
     bool wait_for_disconnect();
     std::uint64_t timeout_count() const;
+    std::uint64_t timeout_count(RdmaOpTag tag) const;
     std::uint64_t completion_error_count() const;
     std::uint64_t operation_count() const;
+    // Tagging is per connection and therefore per owning thread; it lets the
+    // manager record which protocol step issued the request that stalled.
+    void set_operation_tag(RdmaOpTag tag);
+    const RdmaFailureInfo& last_failure() const;
+    std::uint64_t failure_count() const;
     const RdmaRemoteMemory& remote_memory() const { return remote_memory_; }
     bool connected() const { return connected_; }
     std::uint64_t peer_owner_token() const;

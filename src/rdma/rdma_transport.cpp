@@ -12,6 +12,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <mutex>
 #include <cstdlib>
 #include <thread>
 #include <vector>
@@ -124,7 +125,16 @@ struct RdmaConnection::Impl {
     std::atomic<std::uint64_t> rdma_timeouts{0};
     std::atomic<std::uint64_t> completion_errors{0};
     std::atomic<std::uint64_t> operations{0};
+    std::atomic<std::uint64_t> failures{0};
+    std::atomic<std::uint64_t> timeouts_by_tag[8];
+    std::uint8_t op_tag{0};
+    RdmaFailureInfo last_failure{};
+    mutable std::mutex failure_mutex;
     bool failed{false};
+
+    Impl() {
+        for (auto& counter : timeouts_by_tag) counter.store(0, std::memory_order_relaxed);
+    }
 
     ~Impl() {
         if (qp) ibv_destroy_qp(qp);
@@ -165,7 +175,7 @@ bool create_resources(RdmaConnection::Impl* impl, void* region, std::size_t regi
     init.send_cq = impl->cq;
     init.recv_cq = impl->cq;
     init.qp_type = IBV_QPT_RC;
-    init.cap.max_send_wr = 64;
+    init.cap.max_send_wr = 256;
     init.cap.max_recv_wr = 1;
     init.cap.max_send_sge = 1;
     init.cap.max_recv_sge = 1;
@@ -251,27 +261,67 @@ bool transition_ready(RdmaConnection::Impl* impl, const WireInfo& remote) {
                           IBV_QP_MAX_QP_RD_ATOMIC) == 0;
 }
 
+std::uint64_t wr_remote_address(const ibv_send_wr& wr) {
+    return wr.wr.rdma.remote_addr;
+}
+
+// Records everything needed to explain one failed request. The phase tag is set
+// by the caller (lock manager) before it issues a request, so a timeout can be
+// attributed to the gate, the table read, the slot write or the release.
+void record_failure(RdmaConnection::Impl* impl, std::uint32_t status, std::uint32_t opcode,
+                    std::uint64_t remote_address, std::uint32_t length, std::uint32_t wr_index,
+                    std::chrono::steady_clock::time_point started, bool timeout) {
+    if (timeout) impl->rdma_timeouts.fetch_add(1, std::memory_order_relaxed);
+    else impl->completion_errors.fetch_add(1, std::memory_order_relaxed);
+    const std::size_t tag = std::min<std::size_t>(impl->op_tag, 7);
+    if (timeout) impl->timeouts_by_tag[tag].fetch_add(1, std::memory_order_relaxed);
+    impl->failures.fetch_add(1, std::memory_order_relaxed);
+    RdmaFailureInfo info;
+    info.opcode = opcode;
+    info.status = status;
+    info.wr_index = wr_index;
+    info.length = length;
+    info.remote_address = remote_address;
+    info.elapsed_us = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - started).count());
+    info.qp_num = impl->qp ? impl->qp->qp_num : 0;
+    info.tag = impl->op_tag;
+    std::lock_guard<std::mutex> guard(impl->failure_mutex);
+    impl->last_failure = info;
+}
+
 bool post_and_poll(RdmaConnection::Impl* impl, ibv_send_wr& wr, ibv_sge& sge) {
     wr.sg_list = &sge;
     wr.num_sge = 1;
     wr.send_flags = IBV_SEND_SIGNALED;
     ibv_send_wr* bad = nullptr;
-    if (ibv_post_send(impl->qp, &wr, &bad) != 0) return false;
+    const auto started = std::chrono::steady_clock::now();
+    if (ibv_post_send(impl->qp, &wr, &bad) != 0) {
+        record_failure(impl, 0xffffffffu, wr.opcode, wr_remote_address(wr), sge.length, 0, started, false);
+        impl->failed = true;
+        return false;
+    }
     impl->operations.fetch_add(1, std::memory_order_relaxed);
     ibv_wc wc{};
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    const auto deadline = started + std::chrono::seconds(1);
     for (;;) {
         const int polled = ibv_poll_cq(impl->cq, 1, &wc);
-        if (polled < 0) { impl->failed = true; return false; }
+        if (polled < 0) {
+            record_failure(impl, 0xfffffffeu, wr.opcode, wr_remote_address(wr), sge.length, 0, started, false);
+            impl->failed = true;
+            return false;
+        }
         if (polled > 0) {
             if (wc.status != IBV_WC_SUCCESS) {
-                impl->completion_errors.fetch_add(1, std::memory_order_relaxed);
+                record_failure(impl, static_cast<std::uint32_t>(wc.status), wr.opcode,
+                               wr_remote_address(wr), sge.length, 0, started, false);
                 impl->failed = true;
             }
             return wc.status == IBV_WC_SUCCESS;
         }
         if (std::chrono::steady_clock::now() >= deadline) {
-            impl->rdma_timeouts.fetch_add(1, std::memory_order_relaxed);
+            record_failure(impl, 0xfffffffdu, wr.opcode, wr_remote_address(wr), sge.length, 0, started, true);
             impl->failed = true;
             return false;
         }
@@ -279,11 +329,10 @@ bool post_and_poll(RdmaConnection::Impl* impl, ibv_send_wr& wr, ibv_sge& sge) {
     }
 }
 
-
 bool post_batch_and_poll(RdmaConnection::Impl* impl,
                          std::vector<ibv_send_wr>& wrs,
                          std::vector<ibv_sge>& sges) {
-    if (wrs.empty() || wrs.size() != sges.size() || wrs.size() > 64) return false;
+    if (wrs.empty() || wrs.size() != sges.size() || wrs.size() > 128) return false;
     for (std::size_t i = 0; i < wrs.size(); ++i) {
         wrs[i].sg_list = &sges[i];
         wrs[i].num_sge = 1;
@@ -293,30 +342,40 @@ bool post_batch_and_poll(RdmaConnection::Impl* impl,
         wrs[i].next = i + 1 == wrs.size() ? nullptr : &wrs[i + 1];
     }
     ibv_send_wr* bad = nullptr;
+    const auto started = std::chrono::steady_clock::now();
     if (ibv_post_send(impl->qp, &wrs.front(), &bad) != 0) {
         // A prefix may already be in flight without a signaled completion.
         // Never reuse its registered buffer on this QP after partial posting.
         std::size_t posted = 0;
         while (posted < wrs.size() && &wrs[posted] != bad) ++posted;
         impl->operations.fetch_add(posted, std::memory_order_relaxed);
+        record_failure(impl, 0xffffffffu, wrs.front().opcode, wr_remote_address(wrs.front()),
+                       sges.front().length, static_cast<std::uint32_t>(posted), started, false);
         impl->failed = true;
         return false;
     }
     impl->operations.fetch_add(wrs.size(), std::memory_order_relaxed);
     ibv_wc wc{};
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    const auto deadline = started + std::chrono::seconds(1);
     for (;;) {
         const int polled = ibv_poll_cq(impl->cq, 1, &wc);
-        if (polled < 0) { impl->failed = true; return false; }
+        if (polled < 0) {
+            record_failure(impl, 0xfffffffeu, wrs.front().opcode, wr_remote_address(wrs.front()),
+                           sges.front().length, 0, started, false);
+            impl->failed = true;
+            return false;
+        }
         if (polled > 0) {
             if (wc.status != IBV_WC_SUCCESS) {
-                impl->completion_errors.fetch_add(1, std::memory_order_relaxed);
+                record_failure(impl, static_cast<std::uint32_t>(wc.status), wrs.front().opcode,
+                               wr_remote_address(wrs.front()), sges.front().length, 0, started, false);
                 impl->failed = true;
             }
             return wc.status == IBV_WC_SUCCESS;
         }
         if (std::chrono::steady_clock::now() >= deadline) {
-            impl->rdma_timeouts.fetch_add(1, std::memory_order_relaxed);
+            record_failure(impl, 0xfffffffdu, wrs.front().opcode, wr_remote_address(wrs.front()),
+                           sges.front().length, 0, started, true);
             impl->failed = true;
             return false;
         }
@@ -390,6 +449,27 @@ std::uint64_t RdmaConnection::operation_count() const {
     return impl_ ? impl_->operations.load(std::memory_order_relaxed) : 0;
 }
 
+std::uint64_t RdmaConnection::timeout_count(RdmaOpTag tag) const {
+    if (!impl_) return 0;
+    const std::size_t index = std::min<std::size_t>(static_cast<std::size_t>(tag), 7);
+    return impl_->timeouts_by_tag[index].load(std::memory_order_relaxed);
+}
+
+void RdmaConnection::set_operation_tag(RdmaOpTag tag) {
+    if (impl_) impl_->op_tag = static_cast<std::uint8_t>(tag);
+}
+
+const RdmaFailureInfo& RdmaConnection::last_failure() const {
+    static const RdmaFailureInfo kNone{};
+    if (!impl_) return kNone;
+    std::lock_guard<std::mutex> guard(impl_->failure_mutex);
+    return impl_->last_failure;
+}
+
+std::uint64_t RdmaConnection::failure_count() const {
+    return impl_ ? impl_->failures.load(std::memory_order_relaxed) : 0;
+}
+
 
 
 
@@ -450,7 +530,7 @@ bool RdmaConnection::compare_swap(std::uint64_t remote_address, std::uint32_t re
 
 bool RdmaConnection::read_batch(const std::vector<RdmaReadRequest>& requests) {
     if (requests.empty()) return true;
-    if (!connected_ || impl_->failed || requests.size() > 64) return false;
+    if (!connected_ || impl_->failed || requests.size() > 128) return false;
     std::size_t total = 0;
     for (const auto& request : requests) {
         if (!request.destination || request.length == 0 ||
@@ -487,7 +567,7 @@ bool RdmaConnection::read_batch(const std::vector<RdmaReadRequest>& requests) {
 
 bool RdmaConnection::write_batch(const std::vector<RdmaWriteRequest>& requests) {
     if (requests.empty()) return true;
-    if (!connected_ || impl_->failed || requests.size() > 64) return false;
+    if (!connected_ || impl_->failed || requests.size() > 128) return false;
     std::size_t total = 0;
     for (const auto& request : requests) {
         if (!request.source || request.length == 0 ||
@@ -520,7 +600,7 @@ bool RdmaConnection::write_batch(const std::vector<RdmaWriteRequest>& requests) 
 
 bool RdmaConnection::compare_swap_batch(const std::vector<RdmaCompareSwapRequest>& requests) {
     if (requests.empty()) return true;
-    if (!connected_ || impl_->failed || requests.size() > 64) return false;
+    if (!connected_ || impl_->failed || requests.size() > 128) return false;
     const std::size_t bytes = requests.size() * sizeof(std::uint64_t);
     if (bytes > impl_->scratch.size()) return false;
     for (const auto& request : requests)

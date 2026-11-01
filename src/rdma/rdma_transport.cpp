@@ -123,6 +123,7 @@ struct RdmaConnection::Impl {
     std::uint64_t peer_owner_token{0};
     std::atomic<std::uint64_t> rdma_timeouts{0};
     std::atomic<std::uint64_t> completion_errors{0};
+    std::atomic<std::uint64_t> operations{0};
     bool failed{false};
 
     ~Impl() {
@@ -256,6 +257,7 @@ bool post_and_poll(RdmaConnection::Impl* impl, ibv_send_wr& wr, ibv_sge& sge) {
     wr.send_flags = IBV_SEND_SIGNALED;
     ibv_send_wr* bad = nullptr;
     if (ibv_post_send(impl->qp, &wr, &bad) != 0) return false;
+    impl->operations.fetch_add(1, std::memory_order_relaxed);
     ibv_wc wc{};
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
     for (;;) {
@@ -338,6 +340,11 @@ std::uint64_t RdmaConnection::timeout_count() const {
 std::uint64_t RdmaConnection::completion_error_count() const {
     return impl_ ? impl_->completion_errors.load(std::memory_order_relaxed) : 0;
 }
+
+std::uint64_t RdmaConnection::operation_count() const {
+    return impl_ ? impl_->operations.load(std::memory_order_relaxed) : 0;
+}
+
 
 
 

@@ -98,7 +98,7 @@ RESULT_FILE="$RESULT_DIR/formal-${MODE}-${STAMP}.csv"
 FAILED_FILE="$LOG_DIR/failed-cases.txt"
 : > "$FAILED_FILE"
 FAILED_CASES=()
-RUNNER_HEADER="workload,index,cc,threads,transactions,committed,aborted,operations,reads,updates,inserts,deletes,range_reads,rows_found,rows_scanned,rows_rechecked,lock_acquires,lock_conflicts,lock_capacity_aborts,lock_gate_aborts,elapsed_ns,rdma_timeouts,rdma_completion_errors,throughput_committed_txn_s,throughput_attempt_txn_s,checksum"
+RUNNER_HEADER="workload,index,cc,threads,transactions,committed,aborted,operations,reads,updates,inserts,deletes,range_reads,rows_found,rows_scanned,rows_rechecked,lock_acquires,lock_conflicts,lock_capacity_aborts,lock_gate_aborts,elapsed_ns,rdma_timeouts,rdma_completion_errors,rdma_operations,throughput_committed_txn_s,throughput_attempt_txn_s,checksum"
 printf 'transport,server_host,client_host,run,seed,range,bucket,zipf,%s\n' "$RUNNER_HEADER" > "$RESULT_FILE"
 
 SERVER_PID=""

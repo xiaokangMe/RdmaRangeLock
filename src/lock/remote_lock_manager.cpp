@@ -51,6 +51,7 @@ bool RemoteLockManager::connect(const std::string& host, std::uint16_t port) {
     {
         std::lock_guard<std::mutex> guard(txn_shards_mutex_);
         txn_shards_.clear();
+        txn_locks_.clear();
     }
     connections_.reserve(connection_count_);
     for (std::size_t i = 0; i < connection_count_; ++i) {
@@ -102,6 +103,13 @@ std::uint64_t RemoteLockManager::rdma_completion_errors() const {
     std::uint64_t total = 0;
     for (const auto& slot : connections_)
         if (slot && slot->connection) total += slot->connection->completion_error_count();
+    return total;
+}
+
+std::uint64_t RemoteLockManager::rdma_operations() const {
+    std::uint64_t total = 0;
+    for (const auto& slot : connections_)
+        if (slot && slot->connection) total += slot->connection->operation_count();
     return total;
 }
 
@@ -193,6 +201,51 @@ std::vector<std::size_t> RemoteLockManager::shards_for_txn(txnid_t txn_id) const
     std::vector<std::size_t> all(kRemoteLockShards);
     for (std::size_t i = 0; i < all.size(); ++i) all[i] = i;
     return all;
+}
+
+bool RemoteLockManager::cached_lock_satisfies(txnid_t txn_id, LockMode mode,
+                                               const KeyRangeEnt& range,
+                                               LockKind kind) const {
+    std::lock_guard<std::mutex> guard(txn_shards_mutex_);
+    const auto it = txn_locks_.find(txn_id);
+    if (it == txn_locks_.end()) return false;
+    for (const auto& held : it->second) {
+        if (held.kind == kind && same_range(held.range, range) &&
+            lock_mode_join(held.mode, mode) == held.mode) return true;
+    }
+    return false;
+}
+
+void RemoteLockManager::remember_lock(txnid_t txn_id, LockMode mode,
+                                       const KeyRangeEnt& range,
+                                       LockKind kind) const {
+    std::lock_guard<std::mutex> guard(txn_shards_mutex_);
+    auto& saved = txn_locks_[txn_id];
+    for (auto& held : saved) {
+        if (held.kind == kind && same_range(held.range, range)) {
+            held.mode = lock_mode_join(held.mode, mode);
+            return;
+        }
+    }
+    saved.push_back(CachedLock{mode, kind, range});
+}
+
+void RemoteLockManager::forget_lock(txnid_t txn_id, const KeyRangeEnt& range,
+                                    LockKind kind) const {
+    std::lock_guard<std::mutex> guard(txn_shards_mutex_);
+    const auto it = txn_locks_.find(txn_id);
+    if (it == txn_locks_.end()) return;
+    auto& saved = it->second;
+    saved.erase(std::remove_if(saved.begin(), saved.end(), [&](const CachedLock& held) {
+        return held.kind == kind && same_range(held.range, range);
+    }), saved.end());
+    if (saved.empty()) txn_locks_.erase(it);
+}
+
+std::size_t RemoteLockManager::cached_lock_count(txnid_t txn_id) const {
+    std::lock_guard<std::mutex> guard(txn_shards_mutex_);
+    const auto it = txn_locks_.find(txn_id);
+    return it == txn_locks_.end() ? 0 : it->second.size();
 }
 
 void RemoteLockManager::forget_shard(txnid_t txn_id, std::size_t shard) const {
@@ -297,6 +350,7 @@ RC RemoteLockManager::lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& ran
                            LockKind kind, std::vector<txnid_t>* conflicts) {
     if (!connected() || range.empty() || !range.valid()) return ERROR;
     if (conflicts) conflicts->clear();
+    if (cached_lock_satisfies(txn_id, mode, range, kind)) return RCOK;
     const auto ids = shard_ids(range, kind, mode);
     std::vector<std::unique_lock<std::mutex>> local_gates;
     local_gates.reserve(ids.size());
@@ -369,6 +423,7 @@ RC RemoteLockManager::lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& ran
         table.push_back(slot);
     }
     remember_shards(txn_id, ids);
+    remember_lock(txn_id, mode, range, kind);
     leave_shards(acquired);
     return RCOK;
 }
@@ -427,6 +482,7 @@ RC RemoteLockManager::unlock(txnid_t txn_id, const KeyRangeEnt& range, LockKind 
         }
         leave_shards(acquired);
     }
+    if (!release_failed && removed) forget_lock(txn_id, range, kind);
     return release_failed ? AbortGate : (removed ? RCOK : Abort);
 }
 
@@ -471,11 +527,19 @@ RC RemoteLockManager::unlock_all(txnid_t txn_id) {
         leave_shards(acquired);
         forget_shard(txn_id, shard);
     }
+    if (!release_failed) {
+        std::lock_guard<std::mutex> guard(txn_shards_mutex_);
+        txn_locks_.erase(txn_id);
+    }
     return release_failed ? AbortGate : RCOK;
 }
 
 std::size_t RemoteLockManager::get_lock_count(txnid_t txn_id) const {
     if (!connected()) return 0;
+    if (txn_id != 0) {
+        const auto cached = cached_lock_count(txn_id);
+        if (cached != 0) return cached;
+    }
     std::vector<std::size_t> ids;
     if (txn_id == 0) {
         ids.resize(kRemoteLockShards);

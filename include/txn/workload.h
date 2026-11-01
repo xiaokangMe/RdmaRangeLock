@@ -53,7 +53,7 @@ struct RunStats {
     uint64_t reads{0}, updates{0}, inserts{0}, deletes{0};
     uint64_t range_reads{0}, rows_found{0}, rows_scanned{0}, rows_rechecked{0};
     uint64_t lock_acquires{0}, lock_conflicts{0}, lock_capacity_aborts{0}, lock_gate_aborts{0};
-    uint64_t checksum{0}, elapsed_ns{0}, rdma_timeouts{0}, rdma_completion_errors{0};
+    uint64_t checksum{0}, elapsed_ns{0}, rdma_timeouts{0}, rdma_completion_errors{0}, rdma_operations{0};
     double throughput() const;
     double attempt_throughput() const;
 };

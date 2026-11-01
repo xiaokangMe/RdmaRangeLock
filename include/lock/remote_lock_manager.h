@@ -58,6 +58,7 @@ public:
     bool connected() const;
     std::uint64_t rdma_timeouts() const;
     std::uint64_t rdma_completion_errors() const;
+    std::uint64_t rdma_operations() const;
     RC lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& range,
             LockKind kind = LockKind::Predicate,
             std::vector<txnid_t>* conflicts = nullptr) override;
@@ -71,8 +72,19 @@ private:
     std::vector<std::size_t> shard_ids(const KeyRangeEnt& range) const;
     std::vector<std::size_t> shard_ids(const KeyRangeEnt& range,
                                        LockKind kind, LockMode mode) const;
+    struct CachedLock {
+        LockMode mode{LockMode::IS};
+        LockKind kind{LockKind::Predicate};
+        KeyRangeEnt range{};
+    };
     void remember_shards(txnid_t txn_id, const std::vector<std::size_t>& ids) const;
     std::vector<std::size_t> shards_for_txn(txnid_t txn_id) const;
+    bool cached_lock_satisfies(txnid_t txn_id, LockMode mode,
+                               const KeyRangeEnt& range, LockKind kind) const;
+    void remember_lock(txnid_t txn_id, LockMode mode,
+                       const KeyRangeEnt& range, LockKind kind) const;
+    void forget_lock(txnid_t txn_id, const KeyRangeEnt& range, LockKind kind) const;
+    std::size_t cached_lock_count(txnid_t txn_id) const;
     void forget_shard(txnid_t txn_id, std::size_t shard) const;
     bool enter_shards(const std::vector<std::size_t>& ids,
                       std::vector<std::size_t>& acquired) const;
@@ -105,6 +117,7 @@ private:
     mutable std::array<std::mutex, kRemoteLockShards> gate_mutexes_;
     mutable std::mutex txn_shards_mutex_;
     mutable std::unordered_map<txnid_t, std::vector<std::size_t>> txn_shards_;
+    mutable std::unordered_map<txnid_t, std::vector<CachedLock>> txn_locks_;
 };
 
 }  // namespace rrl

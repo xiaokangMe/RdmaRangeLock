@@ -40,3 +40,8 @@ scripts/run_rdma_smoke.sh 20000
 ```
 
 两种配置均已在 `.66` 完成建链和 v5/v6 smoke；输出 CSV 已同步包含 `lock_capacity_aborts` 与 `lock_gate_aborts`。
+
+
+## 事务内重复锁请求优化
+
+远程管理器在本地维护事务已成功取得的逻辑锁缓存。对同一事务、同一范围和同一锁类型，若已有模式已经覆盖新请求，则直接返回 `RCOK`；只有锁模式升级才重新执行远程 gate、槽表检查和发布。`get_lock_count(txn)` 在缓存可用时也直接返回逻辑锁数，减少事务结束路径的一次远程扫描。该缓存不改变公共 `IRangeLockManager` 接口，也不绕过模式升级的远程冲突检查。

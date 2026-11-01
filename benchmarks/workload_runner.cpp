@@ -139,18 +139,19 @@ int main(int argc, char** argv) {
         else stats = run_hierarchical_lock(*index, locks, trace, config.threads);
         stats.rdma_timeouts = locks.rdma_timeouts();
         stats.rdma_completion_errors = locks.rdma_completion_errors();
+        stats.rdma_operations = locks.rdma_operations();
     } else {
         stats = run_workload(*index, trace, config.threads);
     }
 
     if (csv) {
-        std::cout << "workload,index,cc,threads,transactions,committed,aborted,operations,reads,updates,inserts,deletes,range_reads,rows_found,rows_scanned,rows_rechecked,lock_acquires,lock_conflicts,lock_capacity_aborts,lock_gate_aborts,elapsed_ns,rdma_timeouts,rdma_completion_errors,throughput_committed_txn_s,throughput_attempt_txn_s,checksum\n";
+        std::cout << "workload,index,cc,threads,transactions,committed,aborted,operations,reads,updates,inserts,deletes,range_reads,rows_found,rows_scanned,rows_rechecked,lock_acquires,lock_conflicts,lock_capacity_aborts,lock_gate_aborts,elapsed_ns,rdma_timeouts,rdma_completion_errors,rdma_operations,throughput_committed_txn_s,throughput_attempt_txn_s,checksum\n";
         std::cout << WorkloadTrace::name(config.kind) << ',' << index_name << ',' << cc << ',' << config.threads << ','
                   << stats.transactions << ',' << stats.committed << ',' << stats.aborted << ',' << stats.operations << ','
                   << stats.reads << ',' << stats.updates << ',' << stats.inserts << ',' << stats.deletes << ','
                   << stats.range_reads << ',' << stats.rows_found << ',' << stats.rows_scanned << ',' << stats.rows_rechecked << ','
                   << stats.lock_acquires << ',' << stats.lock_conflicts << ',' << stats.lock_capacity_aborts << ',' << stats.lock_gate_aborts << ',' << stats.elapsed_ns << ','
-                  << stats.rdma_timeouts << ',' << stats.rdma_completion_errors << ',' << stats.throughput() << ',' << stats.attempt_throughput() << ',' << stats.checksum << '\n';
+                  << stats.rdma_timeouts << ',' << stats.rdma_completion_errors << ',' << stats.rdma_operations << ',' << stats.throughput() << ',' << stats.attempt_throughput() << ',' << stats.checksum << '\n';
     } else {
         std::cout << "workload=" << WorkloadTrace::name(config.kind)
                   << ",index=" << index_name << ",cc=" << cc
@@ -173,6 +174,7 @@ int main(int argc, char** argv) {
                   << ",elapsed_ns=" << stats.elapsed_ns
                   << ",rdma_timeouts=" << stats.rdma_timeouts
                   << ",rdma_completion_errors=" << stats.rdma_completion_errors
+                  << ",rdma_operations=" << stats.rdma_operations
                   << ",throughput_committed_txn_s=" << stats.throughput()
                   << ",throughput_attempt_txn_s=" << stats.attempt_throughput()
                   << ",checksum=" << stats.checksum << "\n";

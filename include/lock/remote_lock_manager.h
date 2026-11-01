@@ -126,14 +126,15 @@ private:
     std::uint64_t bucket_width_{64};
     std::uint64_t namespace_token_{0};
     std::size_t gate_retries_{64};
-    bool local_gate_enabled_{false};
+    bool local_gate_enabled_{true};
     mutable std::atomic<std::uint64_t> gate_attempts_{0};
     mutable std::atomic<std::uint64_t> gate_retry_count_{0};
     mutable std::atomic<std::uint64_t> gate_abort_count_{0};
     mutable std::atomic<std::uint64_t> batch_count_{0};
-    // Optional local gate serialisation. The remote CAS gate is already the
-    // correctness boundary; this only reduces failed acquisitions, so it is off
-    // by default and kept switchable for A/B measurement.
+    // Local gate serialisation. The remote CAS gate is already the correctness
+    // boundary, so this is purely a performance knob: waiting on an in-process
+    // mutex is far cheaper than losing a CAS round trip and retrying. It is on
+    // by default and can be disabled with RRL_LOCAL_GATE=0 for A/B runs.
     mutable std::array<std::mutex, kRemoteLockShards> gate_mutexes_;
     mutable std::array<TxnCacheShard, kRemoteTxnCacheShards> txn_cache_;
 };

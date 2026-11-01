@@ -10,8 +10,21 @@
 
 using namespace rrl;
 
-
 namespace {
+
+// Bucket width policy for v6. Measured on the local matrix (see
+// docs/notes/v6-bucket-width-2026-11-01.md): range scans want a wide bucket so
+// one lock covers many rows, point-write workloads want a narrow bucket so
+// unrelated keys do not share a lock. The middle value stays the default for
+// TPC-C, which mixes both shapes.
+std::size_t auto_bucket_width(WorkloadKind kind) {
+    switch (kind) {
+        case WorkloadKind::YcsbA:
+        case WorkloadKind::YcsbB: return 16;
+        case WorkloadKind::YcsbE: return 256;
+        default: return 64;
+    }
+}
 
 std::string config_value(const std::string& text, const std::string& key) {
     const std::regex pattern("\\\"" + key + "\\\"\\s*:\\s*(?:\\\"([^\\\"]*)\\\"|([-+0-9.eE]+))");
@@ -76,6 +89,7 @@ int main(int argc, char** argv) {
     std::string rdma_host = "127.0.0.1";
     std::uint16_t rdma_port = 19876;
     bool csv = false;
+    bool bucket_auto = false;
     std::string config_path;
     for (int i = 1; i + 1 < argc; i += 2)
         if (std::string(argv[i]) == "--config") config_path = argv[i + 1];
@@ -94,7 +108,10 @@ int main(int argc, char** argv) {
         else if (option == "--txns") config.transaction_count = std::stoull(value);
         else if (option == "--ops") config.operations_per_transaction = std::stoull(value);
         else if (option == "--range") config.range_length = std::stoull(value);
-        else if (option == "--bucket") config.hierarchy_bucket_width = std::stoull(value);
+        else if (option == "--bucket") {
+            if (value == "auto") bucket_auto = true;
+            else { config.hierarchy_bucket_width = std::stoull(value); bucket_auto = false; }
+        }
         else if (option == "--rdma-host") rdma_host = value;
         else if (option == "--rdma-port") rdma_port = static_cast<std::uint16_t>(std::stoull(value));
         else if (option == "--threads") config.threads = std::stoull(value);
@@ -105,6 +122,7 @@ int main(int argc, char** argv) {
         else if (option == "--format" && value == "csv") csv = true;
     }
 
+    if (bucket_auto) config.hierarchy_bucket_width = auto_bucket_width(config.kind);
     const auto trace = WorkloadTrace::generate(config);
     BTreeSingle v1;
     BTreeLatch v2;
@@ -153,7 +171,8 @@ int main(int argc, char** argv) {
     if (csv) {
         std::cout << "workload,index,cc,threads,transactions,committed,aborted,operations,reads,updates,inserts,deletes,range_reads,rows_found,rows_scanned,rows_rechecked,lock_acquires,lock_conflicts,lock_capacity_aborts,lock_gate_aborts,elapsed_ns,rdma_timeouts,rdma_completion_errors,rdma_operations,throughput_committed_txn_s,throughput_attempt_txn_s,checksum,"
                   << "rdma_gate_attempts,rdma_gate_retries,rdma_gate_aborts,rdma_batches,"
-                  << "rdma_failure_op,rdma_failure_shard,rdma_failure_wr,rdma_failure_us,rdma_failure_qp\n";
+                  << "rdma_failure_op,rdma_failure_shard,rdma_failure_wr,rdma_failure_us,rdma_failure_qp,"
+                  << "hierarchy_bucket_width\n";
         std::cout << WorkloadTrace::name(config.kind) << ',' << index_name << ',' << cc << ',' << config.threads << ','
                   << stats.transactions << ',' << stats.committed << ',' << stats.aborted << ',' << stats.operations << ','
                   << stats.reads << ',' << stats.updates << ',' << stats.inserts << ',' << stats.deletes << ','
@@ -161,7 +180,8 @@ int main(int argc, char** argv) {
                   << stats.lock_acquires << ',' << stats.lock_conflicts << ',' << stats.lock_capacity_aborts << ',' << stats.lock_gate_aborts << ',' << stats.elapsed_ns << ','
                   << stats.rdma_timeouts << ',' << stats.rdma_completion_errors << ',' << stats.rdma_operations << ',' << stats.throughput() << ',' << stats.attempt_throughput() << ',' << stats.checksum << ','
                   << rdma_diag.gate_attempts << ',' << rdma_diag.gate_retries << ',' << rdma_diag.gate_aborts << ',' << rdma_diag.batches << ','
-                  << rdma_failure.opcode << ',' << rdma_failure_shard << ',' << rdma_failure.wr_index << ',' << rdma_failure.elapsed_us << ',' << rdma_failure.qp_num << '\n';
+                  << rdma_failure.opcode << ',' << rdma_failure_shard << ',' << rdma_failure.wr_index << ',' << rdma_failure.elapsed_us << ',' << rdma_failure.qp_num << ','
+                  << config.hierarchy_bucket_width << '\n';
     } else {
         std::cout << "workload=" << WorkloadTrace::name(config.kind)
                   << ",index=" << index_name << ",cc=" << cc
@@ -196,7 +216,8 @@ int main(int argc, char** argv) {
                   << ",rdma_failure_shard=" << rdma_failure_shard
                   << ",rdma_failure_wr=" << rdma_failure.wr_index
                   << ",rdma_failure_us=" << rdma_failure.elapsed_us
-                  << ",rdma_failure_qp=" << rdma_failure.qp_num << "\n";
+                  << ",rdma_failure_qp=" << rdma_failure.qp_num
+                  << ",hierarchy_bucket_width=" << config.hierarchy_bucket_width << "\n";
     }
     return 0;
 }

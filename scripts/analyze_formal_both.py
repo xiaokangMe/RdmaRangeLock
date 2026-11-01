@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Summarise the local + cross-host formal matrices of the 2026-11-01 run."""
 
-import csv
 import glob
 import os
 import csv_schema

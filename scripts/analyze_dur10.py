@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Compare the 10-second-window formal matrices against the previous 5000-txn run."""
 
-import csv
 import glob
 import os
 import csv_schema

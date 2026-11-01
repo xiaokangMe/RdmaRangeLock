@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Plots for the local + cross-host formal matrices of the 2026-11-01 run."""
 
-import csv
 import glob
 import os
 import statistics as st
+import sys
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import csv_schema
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESULTS = os.path.join(ROOT, "experiments", "results")
@@ -23,8 +26,10 @@ COLOR = {"none": "#7f7f7f", "record-2pl": "#1f77b4", "gap-lock": "#ff7f0e",
 
 def latest(pattern):
     files = sorted(glob.glob(os.path.join(RESULTS, pattern)))
+    if not files:
+        raise SystemExit("no result file matching %s" % pattern)
     with open(files[-1], newline="") as handle:
-        return list(csv.DictReader(handle))
+        return csv_schema.load_rows(handle)
 
 
 def med(rows, field):

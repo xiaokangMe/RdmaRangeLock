@@ -9,7 +9,6 @@ Usage:
 """
 
 import argparse
-import csv
 import glob
 import os
 import csv_schema

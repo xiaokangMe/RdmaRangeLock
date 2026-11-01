@@ -2,7 +2,6 @@
 """Self-contained HTML report for the 10-second-window formal matrices."""
 
 import base64
-import csv
 import glob
 import hashlib
 import io

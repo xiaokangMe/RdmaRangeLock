@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Figures for the 10-second-window formal matrices (2026-11-01 rerun)."""
 
-import csv
 import glob
 import os
 import csv_schema

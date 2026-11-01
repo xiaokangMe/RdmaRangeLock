@@ -2,7 +2,6 @@
 """Build a self-contained HTML report for the 2026-11-01 local + cross-host matrices."""
 
 import base64
-import csv
 import glob
 import hashlib
 import io

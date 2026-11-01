@@ -2,14 +2,16 @@
 """Build a self-contained HTML report from the formal matrix CSV + figures."""
 
 import base64
-import csv
 import glob
 import hashlib
 import io
 import os
-import csv_schema
 import statistics as stats
+import sys
 from collections import defaultdict
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import csv_schema
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIG_DIR = os.path.join(ROOT, "figures", "formal")
@@ -37,7 +39,8 @@ WL_LABEL = {
     "tpcc-new-order": "TPC-C new-order",
 }
 
-rows = list(csv.DictReader(open(CSV_PATH, newline="")))
+with open(CSV_PATH, newline="") as _handle:
+    rows = csv_schema.load_rows(_handle)
 table = defaultdict(list)
 for r in rows:
     table[(r["workload"], r["cc"], int(r["bucket"]), int(r["range"]), int(r["threads"]))].append(r)

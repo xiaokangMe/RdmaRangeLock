@@ -9,12 +9,14 @@ Usage:
 """
 
 import argparse
-import csv
 import glob
 import os
-import csv_schema
 import statistics as stats
+import sys
 from collections import defaultdict
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import csv_schema
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESULTS = os.path.join(ROOT, "experiments", "results")
@@ -25,7 +27,7 @@ def load(pattern):
     rows = []
     for path in sorted(glob.glob(os.path.join(RESULTS, pattern))):
         with open(path, newline="") as handle:
-            rows.extend(csv.DictReader(handle))
+            rows.extend(csv_schema.load_rows(handle))
     return rows
 
 

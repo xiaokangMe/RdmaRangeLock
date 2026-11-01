@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -97,20 +98,28 @@ public:
 private:
     using Page = BTreePage;
     std::unique_ptr<Page> make_page(bool leaf) const;
-    bool update_existing(idx_key_t key, void* value);
+    RC insert_descent(idx_key_t key, void* value);
+    RC insert_pessimistic(idx_key_t key, void* value);
+    RC insert_forcing_root_split(idx_key_t key, void* value);
     std::unique_ptr<Page> insert_recursive(Page& page, idx_key_t key, void* value, idx_key_t& separator);
     void split_leaf(Page& page, std::unique_ptr<Page>& right, idx_key_t& separator);
     void split_internal(Page& page, std::unique_ptr<Page>& right, idx_key_t& separator);
     static bool range_ended(const KeyRangeEnt& range, idx_key_t key);
     static idx_key_t first_key(const Page& page);
-    bool validate_page(const Page* page, const Page* expected_parent, idx_key_t* min_key,
-                       idx_key_t* max_key, std::size_t* leaf_count) const;
+    static std::size_t page_slot(const Page& parent, const Page* child);
+    bool validate_page(const Page* page, const Page* expected_parent, std::size_t depth,
+                       idx_key_t* min_key, idx_key_t* max_key, std::size_t* leaf_count,
+                       std::size_t* leaf_depth) const;
 
     std::size_t order_{0};
-    std::size_t size_{0};
+    // Writers increment under different leaf latches, so the count must be
+    // atomic; readers only need a relaxed load.
+    std::atomic<std::size_t> size_{0};
     std::unique_ptr<Page> root_;
+    // Guards the root pointer only. Structural writes latch pages, and the
+    // exclusive mode is used just for root creation, root split and root
+    // collapse. There is no tree-wide writer mutex any more.
     mutable std::shared_mutex root_guard_;
-    mutable std::mutex writer_guard_;
 };
 
 }  // namespace rrl

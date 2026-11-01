@@ -60,8 +60,14 @@ RunStats run_workload(BTreeIndex& index,const WorkloadTrace& trace,size_t thread
     size_t wn=std::min(threads,std::max<size_t>(1,trace.transactions().size()));
     std::vector<std::thread> ws;
     for(size_t w=0;w<wn;w++) ws.emplace_back([&,w]{
-        for(size_t j=w;j<trace.transactions().size();j+=wn){
-            for(const Operation& op:trace.transactions()[j].operations){
+        const size_t total_txns = trace.transactions().size();
+        const bool timed = trace.config().duration_seconds != 0;
+        const auto deadline = timed ? std::chrono::steady_clock::now() + std::chrono::seconds(trace.config().duration_seconds)
+                                    : std::chrono::steady_clock::time_point::max();
+        for(size_t j=w,rounds=0;;j+=wn,++rounds){
+            if(timed){ if((rounds%64)==0 && std::chrono::steady_clock::now()>=deadline) break; }
+            else if(j>=total_txns) break;
+            for(const Operation& op:trace.transactions()[j%total_txns].operations){
                 ++a.o;
                 switch(op.kind){
                 case OperationKind::Read:{++a.r;void* p=nullptr;if(index.lookup(op.key,p)){++a.f;a.c.fetch_add(op.key^*static_cast<uint64_t*>(p));}break;}
@@ -85,10 +91,20 @@ RunStats run_record_2pl(BTreeIndex& index, LockManager& locks, const WorkloadTra
     struct A { std::atomic<uint64_t> tx{0}, committed{0}, aborted{0}, ops{0}, reads{0}, updates{0}, inserts{0}, deletes{0}, ranges{0}, found{0}, scanned{0}, acquires{0}, conflicts{0}, capacity{0}, gate{0}, checksum{0}; } a;
     const auto begin = std::chrono::steady_clock::now();
     const size_t worker_count = std::min(threads, std::max<size_t>(1, trace.transactions().size()));
+    const size_t total_txns = trace.transactions().size();
+    const bool timed = trace.config().duration_seconds != 0;
+    const auto deadline = timed ? std::chrono::steady_clock::now() +
+        std::chrono::seconds(trace.config().duration_seconds)
+        : std::chrono::steady_clock::time_point::max();
     std::vector<std::thread> workers;
     for (size_t worker = 0; worker < worker_count; ++worker) workers.emplace_back([&, worker] {
-        for (size_t i = worker; i < trace.transactions().size(); i += worker_count) {
-            const auto& txn = trace.transactions()[i]; bool ok = true; std::vector<const Operation*> writes;
+        for (size_t i = worker, rounds = 0;; i += worker_count, ++rounds) {
+            // Timed runs cycle through the trace; count-based runs stop at the end.
+            if (timed) { if ((rounds % 64) == 0 && std::chrono::steady_clock::now() >= deadline) break; }
+            else if (i >= total_txns) break;
+            const auto& txn = trace.transactions()[i % total_txns]; bool ok = true; std::vector<const Operation*> writes;
+            const txnid_t tid = txn.txn_id +
+                static_cast<txnid_t>(i / total_txns) * static_cast<txnid_t>(total_txns);
             for (const Operation& op : txn.operations) {
                 ++a.ops;
                 if (op.kind == OperationKind::RangeRead) {
@@ -96,13 +112,13 @@ RunStats run_record_2pl(BTreeIndex& index, LockManager& locks, const WorkloadTra
                     a.scanned += rows.size(); a.found += rows.size();
                     for (const auto& row : rows) {
                         ++a.acquires;
-                        if (!record_lock_result(a, locks.lock(txn.txn_id, LockMode::S, KeyRangeEnt::point(row.key), LockKind::Record))) { ok = false; break; }
+                        if (!record_lock_result(a, locks.lock(tid, LockMode::S, KeyRangeEnt::point(row.key), LockKind::Record))) { ok = false; break; }
                         a.checksum += row.key ^ *static_cast<uint64_t*>(row.value);
                     }
                 } else {
                     const LockMode mode = (op.kind == OperationKind::Read) ? LockMode::S : LockMode::X;
                     ++a.acquires;
-                    if (!record_lock_result(a, locks.lock(txn.txn_id, mode, KeyRangeEnt::point(op.key), LockKind::Record))) { ok = false; break; }
+                    if (!record_lock_result(a, locks.lock(tid, mode, KeyRangeEnt::point(op.key), LockKind::Record))) { ok = false; break; }
                     if (op.kind == OperationKind::Read) {
                         ++a.reads; void* value = nullptr;
                         if (index.lookup(op.key, value)) { ++a.found; a.checksum += op.key ^ *static_cast<uint64_t*>(value); }
@@ -119,7 +135,7 @@ RunStats run_record_2pl(BTreeIndex& index, LockManager& locks, const WorkloadTra
                 }
                 ++a.committed;
             } else ++a.aborted;
-            if (locks.get_lock_count(txn.txn_id) > 0) locks.unlock_all(txn.txn_id);
+            if (locks.get_lock_count(tid) > 0) locks.unlock_all(tid);
             ++a.tx;
         }
     });
@@ -138,6 +154,11 @@ RunStats run_gap_lock(BTreeIndex& index, LockManager& locks, const WorkloadTrace
     struct A { std::atomic<uint64_t> tx{0}, committed{0}, aborted{0}, ops{0}, reads{0}, updates{0}, inserts{0}, deletes{0}, ranges{0}, found{0}, scanned{0}, acquires{0}, conflicts{0}, capacity{0}, gate{0}, checksum{0}; } a;
     const auto begin = std::chrono::steady_clock::now();
     const size_t worker_count = std::min(threads, std::max<size_t>(1, trace.transactions().size()));
+    const size_t total_txns = trace.transactions().size();
+    const bool timed = trace.config().duration_seconds != 0;
+    const auto deadline = timed ? std::chrono::steady_clock::now() +
+        std::chrono::seconds(trace.config().duration_seconds)
+        : std::chrono::steady_clock::time_point::max();
     std::vector<std::thread> workers;
     for (size_t worker = 0; worker < worker_count; ++worker) workers.emplace_back([&, worker] {
         auto acquire = [&](txnid_t txn, LockMode mode, const KeyRangeEnt& range, LockKind kind) {
@@ -145,28 +166,33 @@ RunStats run_gap_lock(BTreeIndex& index, LockManager& locks, const WorkloadTrace
             if (!record_lock_result(a, locks.lock(txn, mode, range, kind))) return false;
             return true;
         };
-        for (size_t i = worker; i < trace.transactions().size(); i += worker_count) {
-            const auto& txn = trace.transactions()[i]; bool ok = true; std::vector<const Operation*> writes;
+        for (size_t i = worker, rounds = 0;; i += worker_count, ++rounds) {
+            // Timed runs cycle through the trace; count-based runs stop at the end.
+            if (timed) { if ((rounds % 64) == 0 && std::chrono::steady_clock::now() >= deadline) break; }
+            else if (i >= total_txns) break;
+            const auto& txn = trace.transactions()[i % total_txns]; bool ok = true; std::vector<const Operation*> writes;
+            const txnid_t tid = txn.txn_id +
+                static_cast<txnid_t>(i / total_txns) * static_cast<txnid_t>(total_txns);
             for (const Operation& op : txn.operations) {
                 ++a.ops;
                 if (op.kind == OperationKind::RangeRead) {
                     ++a.ranges;
                     const auto rows = index.scan_range(KeyRangeEnt::half_open(op.key, op.end_key));
                     a.scanned += rows.size(); a.found += rows.size();
-                    if (!acquire(txn.txn_id, LockMode::S, KeyRangeEnt::open(op.key, op.end_key), LockKind::Gap) ||
-                        !acquire(txn.txn_id, LockMode::S, KeyRangeEnt::point(op.key), LockKind::Gap) ||
-                        !acquire(txn.txn_id, LockMode::S, KeyRangeEnt::point(op.end_key), LockKind::Gap)) { ok = false; break; }
+                    if (!acquire(tid, LockMode::S, KeyRangeEnt::open(op.key, op.end_key), LockKind::Gap) ||
+                        !acquire(tid, LockMode::S, KeyRangeEnt::point(op.key), LockKind::Gap) ||
+                        !acquire(tid, LockMode::S, KeyRangeEnt::point(op.end_key), LockKind::Gap)) { ok = false; break; }
                     for (const auto& row : rows) {
-                        if (!acquire(txn.txn_id, LockMode::S, KeyRangeEnt::point(row.key), LockKind::Record)) { ok = false; break; }
+                        if (!acquire(tid, LockMode::S, KeyRangeEnt::point(row.key), LockKind::Record)) { ok = false; break; }
                         a.checksum += row.key ^ *static_cast<uint64_t*>(row.value);
                     }
                 } else if (op.kind == OperationKind::Read) {
-                    if (!acquire(txn.txn_id, LockMode::S, KeyRangeEnt::point(op.key), LockKind::Record)) { ok = false; break; }
+                    if (!acquire(tid, LockMode::S, KeyRangeEnt::point(op.key), LockKind::Record)) { ok = false; break; }
                     ++a.reads; void* value = nullptr;
                     if (index.lookup(op.key, value)) { ++a.found; a.checksum += op.key ^ *static_cast<uint64_t*>(value); }
                 } else {
                     const LockKind kind = op.kind == OperationKind::Insert ? LockKind::Gap : LockKind::Record;
-                    if (!acquire(txn.txn_id, LockMode::X, KeyRangeEnt::point(op.key), kind)) { ok = false; break; }
+                    if (!acquire(tid, LockMode::X, KeyRangeEnt::point(op.key), kind)) { ok = false; break; }
                     if (op.kind == OperationKind::Update) { ++a.updates; writes.push_back(&op); }
                     else if (op.kind == OperationKind::Insert) { ++a.inserts; writes.push_back(&op); }
                     else if (op.kind == OperationKind::Delete) { ++a.deletes; writes.push_back(&op); }
@@ -174,7 +200,7 @@ RunStats run_gap_lock(BTreeIndex& index, LockManager& locks, const WorkloadTrace
             }
             if (ok) { for (const Operation* op : writes) { if (op->kind == OperationKind::Delete) index.erase(op->key); else index.insert(op->key, const_cast<uint64_t*>(&op->value)); } ++a.committed; }
             else ++a.aborted;
-            if (locks.get_lock_count(txn.txn_id) > 0) locks.unlock_all(txn.txn_id);
+            if (locks.get_lock_count(tid) > 0) locks.unlock_all(tid);
             ++a.tx;
         }
     });
@@ -226,6 +252,11 @@ RunStats run_next_key_lock(BTreeIndex& index, IRangeLockManager& locks,
     ProtocolAcc a;
     const auto begin = std::chrono::steady_clock::now();
     const size_t worker_count = std::min(threads, std::max<size_t>(1, trace.transactions().size()));
+    const size_t total_txns = trace.transactions().size();
+    const bool timed = trace.config().duration_seconds != 0;
+    const auto deadline = timed ? std::chrono::steady_clock::now() +
+        std::chrono::seconds(trace.config().duration_seconds)
+        : std::chrono::steady_clock::time_point::max();
     std::vector<std::thread> workers;
     for (size_t worker = 0; worker < worker_count; ++worker) {
         workers.emplace_back([&, worker] {
@@ -234,8 +265,13 @@ RunStats run_next_key_lock(BTreeIndex& index, IRangeLockManager& locks,
                 if (!record_lock_result(a, locks.lock(txn, mode, range, LockKind::NextKey))) return false;
                 return true;
             };
-            for (size_t i = worker; i < trace.transactions().size(); i += worker_count) {
-                const auto& txn = trace.transactions()[i];
+            for (size_t i = worker, rounds = 0;; i += worker_count, ++rounds) {
+                // Timed runs cycle through the trace; count-based runs stop at the end.
+                if (timed) { if ((rounds % 64) == 0 && std::chrono::steady_clock::now() >= deadline) break; }
+                else if (i >= total_txns) break;
+                const auto& txn = trace.transactions()[i % total_txns];
+                const txnid_t tid = txn.txn_id +
+                    static_cast<txnid_t>(i / total_txns) * static_cast<txnid_t>(total_txns);
                 bool ok = true;
                 std::vector<const Operation*> writes;
                 for (const Operation& op : txn.operations) {
@@ -247,7 +283,7 @@ RunStats run_next_key_lock(BTreeIndex& index, IRangeLockManager& locks,
                         idx_key_t previous = op.key;
                         // The lower-bound point covers an empty leading gap;
                         // the following (prev,curr] intervals retain next-key semantics.
-                        if (!acquire(txn.txn_id, LockMode::S, KeyRangeEnt::point(op.key))) {
+                        if (!acquire(tid, LockMode::S, KeyRangeEnt::point(op.key))) {
                             ok = false;
                         }
                         for (const auto& row : rows) {
@@ -255,7 +291,7 @@ RunStats run_next_key_lock(BTreeIndex& index, IRangeLockManager& locks,
                             const KeyRangeEnt interval = row.key == previous
                                 ? KeyRangeEnt::point(row.key)
                                 : right_closed(previous, row.key);
-                            if (!acquire(txn.txn_id, LockMode::S, interval)) { ok = false; break; }
+                            if (!acquire(tid, LockMode::S, interval)) { ok = false; break; }
                             previous = row.key;
                             a.checksum += row.key ^ *static_cast<uint64_t*>(row.value);
                         }
@@ -265,7 +301,7 @@ RunStats run_next_key_lock(BTreeIndex& index, IRangeLockManager& locks,
                             const KeyRangeEnt tail = (previous == op.end_key)
                                 ? KeyRangeEnt::point(previous)
                                 : right_closed(previous, op.end_key);
-                            if (!acquire(txn.txn_id, LockMode::S, tail)) ok = false;
+                            if (!acquire(tid, LockMode::S, tail)) ok = false;
                             if (ok) {
                                 // Recheck after installing locks so a writer
                                 // that committed in the scan-to-lock window
@@ -278,12 +314,12 @@ RunStats run_next_key_lock(BTreeIndex& index, IRangeLockManager& locks,
                             }
                         }
                     } else if (op.kind == OperationKind::Read) {
-                        if (!acquire(txn.txn_id, LockMode::S, KeyRangeEnt::point(op.key))) { ok = false; break; }
+                        if (!acquire(tid, LockMode::S, KeyRangeEnt::point(op.key))) { ok = false; break; }
                         ++a.reads;
                         void* value = nullptr;
                         if (index.lookup(op.key, value)) { ++a.found; a.checksum += op.key ^ *static_cast<uint64_t*>(value); }
                     } else {
-                        if (!acquire(txn.txn_id, LockMode::X, KeyRangeEnt::point(op.key))) { ok = false; break; }
+                        if (!acquire(tid, LockMode::X, KeyRangeEnt::point(op.key))) { ok = false; break; }
                         if (op.kind == OperationKind::Update) { ++a.updates; writes.push_back(&op); }
                         else if (op.kind == OperationKind::Insert) { ++a.inserts; writes.push_back(&op); }
                         else if (op.kind == OperationKind::Delete) { ++a.deletes; writes.push_back(&op); }
@@ -297,7 +333,7 @@ RunStats run_next_key_lock(BTreeIndex& index, IRangeLockManager& locks,
                     }
                     ++a.committed;
                 } else ++a.aborted;
-                locks.unlock_all(txn.txn_id);
+                locks.unlock_all(tid);
                 ++a.tx;
             }
         });
@@ -315,6 +351,11 @@ RunStats run_hierarchical_lock(BTreeIndex& index, IRangeLockManager& locks,
     const auto begin = std::chrono::steady_clock::now();
     const size_t width = std::max<size_t>(1, trace.config().hierarchy_bucket_width);
     const size_t worker_count = std::min(threads, std::max<size_t>(1, trace.transactions().size()));
+    const size_t total_txns = trace.transactions().size();
+    const bool timed = trace.config().duration_seconds != 0;
+    const auto deadline = timed ? std::chrono::steady_clock::now() +
+        std::chrono::seconds(trace.config().duration_seconds)
+        : std::chrono::steady_clock::time_point::max();
     std::vector<std::thread> workers;
     for (size_t worker = 0; worker < worker_count; ++worker) {
         workers.emplace_back([&, worker] {
@@ -329,20 +370,25 @@ RunStats run_hierarchical_lock(BTreeIndex& index, IRangeLockManager& locks,
                 if (!record_lock_result(a, locks.lock(txn, mode, range, kind))) return false;
                 return true;
             };
-            for (size_t i = worker; i < trace.transactions().size(); i += worker_count) {
-                const auto& txn = trace.transactions()[i];
+            for (size_t i = worker, rounds = 0;; i += worker_count, ++rounds) {
+                // Timed runs cycle through the trace; count-based runs stop at the end.
+                if (timed) { if ((rounds % 64) == 0 && std::chrono::steady_clock::now() >= deadline) break; }
+                else if (i >= total_txns) break;
+                const auto& txn = trace.transactions()[i % total_txns];
+                const txnid_t tid = txn.txn_id +
+                    static_cast<txnid_t>(i / total_txns) * static_cast<txnid_t>(total_txns);
                 bool ok = true;
                 std::vector<const Operation*> writes;
                 for (const Operation& op : txn.operations) {
                     ++a.ops;
                     if (op.kind == OperationKind::RangeRead) {
                         ++a.ranges;
-                        if (!acquire(txn.txn_id, LockMode::IS, KeyRangeEnt::unbounded(), LockKind::Node)) { ok = false; break; }
+                        if (!acquire(tid, LockMode::IS, KeyRangeEnt::unbounded(), LockKind::Node)) { ok = false; break; }
                         const idx_key_t last = op.end_key > op.key ? op.end_key - 1 : op.key;
                         idx_key_t first_bucket = (op.key / width) * width;
                         const idx_key_t last_bucket = (last / width) * width;
                         for (idx_key_t base = first_bucket;;) {
-                            if (!acquire(txn.txn_id, LockMode::S, bucket(base), LockKind::Node)) { ok = false; break; }
+                            if (!acquire(tid, LockMode::S, bucket(base), LockKind::Node)) { ok = false; break; }
                             if (base == last_bucket || base > std::numeric_limits<idx_key_t>::max() - width) break;
                             base += width;
                         }
@@ -354,8 +400,8 @@ RunStats run_hierarchical_lock(BTreeIndex& index, IRangeLockManager& locks,
                         const bool read = op.kind == OperationKind::Read;
                         const LockMode root_mode = read ? LockMode::IS : LockMode::IX;
                         const LockMode bucket_mode = read ? LockMode::S : LockMode::X;
-                        if (!acquire(txn.txn_id, root_mode, KeyRangeEnt::unbounded(), LockKind::Node) ||
-                            !acquire(txn.txn_id, bucket_mode, bucket(op.key), LockKind::Node)) { ok = false; break; }
+                        if (!acquire(tid, root_mode, KeyRangeEnt::unbounded(), LockKind::Node) ||
+                            !acquire(tid, bucket_mode, bucket(op.key), LockKind::Node)) { ok = false; break; }
                         if (read) {
                             ++a.reads; void* value = nullptr;
                             if (index.lookup(op.key, value)) { ++a.found; a.checksum += op.key ^ *static_cast<uint64_t*>(value); }
@@ -372,7 +418,7 @@ RunStats run_hierarchical_lock(BTreeIndex& index, IRangeLockManager& locks,
                     }
                     ++a.committed;
                 } else ++a.aborted;
-                locks.unlock_all(txn.txn_id);
+                locks.unlock_all(tid);
                 ++a.tx;
             }
         });

@@ -21,6 +21,10 @@ struct WorkloadConfig {
     size_t operations_per_transaction{10};
     size_t range_length{10};
     size_t threads{1};
+    // When non-zero the run_* drivers keep executing transactions until the
+    // wall-clock deadline instead of exhausting the generated trace, so the
+    // measurement window is a duration rather than a transaction count.
+    size_t duration_seconds{0};
     size_t hierarchy_bucket_width{64};
     size_t tpcc_items_per_order{5};
     double zipf_theta{0.99};

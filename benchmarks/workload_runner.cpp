@@ -56,6 +56,7 @@ bool load_config(const std::string& path, WorkloadConfig& config,
     assign_u64({"operations_per_transaction", "operations"}, config.operations_per_transaction);
     assign_u64({"range_length", "range"}, config.range_length);
     assign_u64({"threads"}, config.threads);
+    assign_u64({"duration", "duration_seconds"}, config.duration_seconds);
     assign_u64({"hierarchy_bucket_width", "bucket"}, config.hierarchy_bucket_width);
     assign_u64({"tpcc_items_per_order", "items"}, config.tpcc_items_per_order);
     assign_u64({"seed"}, config.seed);
@@ -97,6 +98,7 @@ int main(int argc, char** argv) {
         else if (option == "--rdma-host") rdma_host = value;
         else if (option == "--rdma-port") rdma_port = static_cast<std::uint16_t>(std::stoull(value));
         else if (option == "--threads") config.threads = std::stoull(value);
+        else if (option == "--duration") config.duration_seconds = std::stoull(value);
         else if (option == "--seed") config.seed = std::stoull(value);
         else if (option == "--zipf") config.zipf_theta = std::stod(value);
         else if (option == "--items") config.tpcc_items_per_order = std::stoull(value);

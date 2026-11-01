@@ -14,6 +14,7 @@ PORT="${RRL_RDMA_PORT:-19930}"
 GID_INDEX="${RRL_RDMA_GID_INDEX:-3}"
 KEYS="${RRL_KEYS:-10000}"
 TRANSACTIONS="${RRL_TRANSACTIONS:-5000}"
+DURATION="${RRL_DURATION:-0}"
 OPERATIONS="${RRL_OPERATIONS:-10}"
 ZIPF="${RRL_ZIPF:-0.99}"
 TPCC_ITEMS="${RRL_TPCC_ITEMS:-5}"
@@ -131,7 +132,7 @@ run_case() {
     local args=(--index v2 --cc "$cc" --workload "$workload" --keys "$KEYS"
                 --txns "$TRANSACTIONS" --ops "$OPERATIONS" --range "$range_length"
                 --threads "$threads" --seed "$seed" --zipf "$ZIPF"
-                --items "$TPCC_ITEMS" --format csv)
+                --items "$TPCC_ITEMS" --duration "$DURATION" --format csv)
     local output line quoted command
     if [[ "$bucket" != "0" ]]; then args+=(--bucket "$bucket"); fi
     if [[ "$cc" == rdma-* ]]; then

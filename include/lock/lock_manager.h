@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 #include "common/range.h"
@@ -54,10 +55,16 @@ private:
     std::vector<std::size_t> shard_ids(const KeyRangeEnt& range) const;
     std::vector<std::size_t> shard_ids(const KeyRangeEnt& range,
                                         LockKind kind, LockMode mode) const;
+    void remember_shards(txnid_t txn_id, const std::vector<std::size_t>& ids) const;
+    std::vector<std::size_t> tracked_shards(txnid_t txn_id) const;
+    void forget_shard(txnid_t txn_id, std::size_t shard) const;
+    void forget_txn(txnid_t txn_id) const;
     static bool same_range(const KeyRangeEnt& lhs, const KeyRangeEnt& rhs);
     static bool same_lock(const RangeLock& lhs, const RangeLock& rhs);
     std::array<Shard, kLocalLockShards> shards_;
     std::uint64_t bucket_width_{64};
+    mutable std::mutex txn_shards_mutex_;
+    mutable std::unordered_map<txnid_t, std::vector<std::size_t>> txn_shards_;
 };
 
 // Compatibility facade for deneva code that uses KeyXidCache's method names.

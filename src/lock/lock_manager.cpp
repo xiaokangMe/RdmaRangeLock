@@ -39,6 +39,35 @@ std::vector<std::size_t> LockManager::shard_ids(const KeyRangeEnt& range,
     return shard_ids(range);
 }
 
+void LockManager::remember_shards(txnid_t txn_id,
+                                   const std::vector<std::size_t>& ids) const {
+    std::lock_guard<std::mutex> guard(txn_shards_mutex_);
+    auto& saved = txn_shards_[txn_id];
+    for (const std::size_t shard : ids)
+        if (std::find(saved.begin(), saved.end(), shard) == saved.end()) saved.push_back(shard);
+    std::sort(saved.begin(), saved.end());
+}
+
+std::vector<std::size_t> LockManager::tracked_shards(txnid_t txn_id) const {
+    std::lock_guard<std::mutex> guard(txn_shards_mutex_);
+    const auto it = txn_shards_.find(txn_id);
+    return it == txn_shards_.end() ? std::vector<std::size_t>{} : it->second;
+}
+
+void LockManager::forget_shard(txnid_t txn_id, std::size_t shard) const {
+    std::lock_guard<std::mutex> guard(txn_shards_mutex_);
+    const auto it = txn_shards_.find(txn_id);
+    if (it == txn_shards_.end()) return;
+    auto& saved = it->second;
+    saved.erase(std::remove(saved.begin(), saved.end(), shard), saved.end());
+    if (saved.empty()) txn_shards_.erase(it);
+}
+
+void LockManager::forget_txn(txnid_t txn_id) const {
+    std::lock_guard<std::mutex> guard(txn_shards_mutex_);
+    txn_shards_.erase(txn_id);
+}
+
 std::vector<std::size_t> LockManager::shard_ids(const KeyRangeEnt& range) const {
     if (!range.has_start || !range.has_end) return all_shards();
     const std::uint64_t first = range.StartKey / bucket_width_;
@@ -87,43 +116,50 @@ RC LockManager::lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& range,
         if (it != table.end()) it->mode = lock_mode_join(it->mode, mode);
         else table.push_back(request);
     }
+    remember_shards(txn_id, ids);
     return RCOK;
 }
 
 RC LockManager::unlock(txnid_t txn_id, const KeyRangeEnt& range, LockKind kind) {
-    const auto ids = (kind == LockKind::Node && range.is_unbounded())
-        ? std::vector<std::size_t>{0} : shard_ids(range);
-    std::vector<std::unique_lock<std::mutex>> guards;
-    guards.reserve(ids.size());
-    for (const auto id : ids) guards.emplace_back(shards_[id].mutex);
+    auto ids = tracked_shards(txn_id);
+    if (ids.empty()) ids = shard_ids(range);
     bool removed = false;
     for (const auto id : ids) {
-        auto& table = shards_[id].locks;
-        const auto before = table.size();
-        table.erase(std::remove_if(table.begin(), table.end(), [&](const RangeLock& held) {
-            return held.txn_id == txn_id && held.kind == kind && same_range(held.range, range);
-        }), table.end());
-        removed = removed || table.size() != before;
+        bool shard_empty_for_txn = true;
+        {
+            std::lock_guard<std::mutex> guard(shards_[id].mutex);
+            auto& table = shards_[id].locks;
+            const auto before = table.size();
+            table.erase(std::remove_if(table.begin(), table.end(), [&](const RangeLock& held) {
+                return held.txn_id == txn_id && held.kind == kind && same_range(held.range, range);
+            }), table.end());
+            removed = removed || table.size() != before;
+            shard_empty_for_txn = std::none_of(table.begin(), table.end(), [&](const RangeLock& held) {
+                return held.txn_id == txn_id;
+            });
+        }
+        if (shard_empty_for_txn) forget_shard(txn_id, id);
     }
     return removed ? RCOK : Abort;
 }
 
 RC LockManager::unlock_all(txnid_t txn_id) {
-    const auto ids = all_shards();
-    std::vector<std::unique_lock<std::mutex>> guards;
-    guards.reserve(ids.size());
-    for (const auto id : ids) guards.emplace_back(shards_[id].mutex);
+    auto ids = tracked_shards(txn_id);
+    if (ids.empty()) ids = all_shards();
     for (const auto id : ids) {
+        std::lock_guard<std::mutex> guard(shards_[id].mutex);
         auto& table = shards_[id].locks;
         table.erase(std::remove_if(table.begin(), table.end(), [&](const RangeLock& held) {
             return held.txn_id == txn_id;
         }), table.end());
     }
+    forget_txn(txn_id);
     return RCOK;
 }
 
 std::size_t LockManager::get_lock_count(txnid_t txn_id) const {
-    const auto ids = all_shards();
+    auto ids = txn_id == 0 ? all_shards() : tracked_shards(txn_id);
+    if (ids.empty()) ids = all_shards();
     std::vector<std::unique_lock<std::mutex>> guards;
     guards.reserve(ids.size());
     for (const auto id : ids) guards.emplace_back(shards_[id].mutex);

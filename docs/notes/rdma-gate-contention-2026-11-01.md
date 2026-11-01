@@ -213,3 +213,24 @@ lock_gate_aborts, throughput_committed_txn_s, throughput_attempt_txn_s, checksum
 4. 连接建立时清空事务到分片的追踪表；成功加锁后记录实际分片，成功释放后逐片删除记录。
 
 本轮按要求只完成静态修改和审阅，尚未运行构建、CTest 或 RDMA 负载，因此修复后的行为和统计结果仍待验证。原文第二至四节的数据继续作为 bbd1c69 的历史证据，不能当作修复后数据。
+
+
+## 九、后续验证与补充修复（当前代码）
+
+在修复分片解锁和根意向锁映射后，本机回环验证又发现了一个独立的多 QP 传输问题：客户端只保存了第一个连接的远程 `rkey`，却把它用于所有连接。t1 只有一个 QP 时正常；t≥2 时，其他 QP 收到 `IBV_WC_REM_ACCESS_ERR`，随后该 QP 被标记失败，于是表现为每个线程只有首个事务成功。
+
+当前修复包括：
+
+- `RemoteLockManager` 的读、写和 compare-and-swap 使用当前连接对应的远程 `rkey`；
+- 同一进程内按分片增加本地 gate 互斥，避免多个 QP 在同一远程 gate 上产生无效竞争；
+- `rdma_transport` 记录 `rdma_timeouts` 和完成错误数，runner 输出 `elapsed_ns`、`rdma_timeouts`、`rdma_completion_errors`；
+- next-key 与 hierarchical 统一按 `AbortConflict`、`AbortCapacity`、`AbortGate` 分类统计。
+
+验证基线：提交 `0201a6d` 之后的当前工作树，构建目录 `build-gate-fix`，CTest **9/9** 通过。本机回环使用 GID index 3、400 事务：
+
+| 协议 | threads | committed | aborted | gate | RDMA timeout | completion error |
+|---|---:|---:|---:|---:|---:|---:|
+| rdma-next-key | 1/2/4/8/16/32 | 400（各档） | 0 | 0 | 0 | 0 |
+| rdma-hierarchical | 32，range=128，bucket=64 | 229 | 171 | 0 | 0 | 0 |
+
+下一次跨主机矩阵必须以这套代码重新构建后进行；旧矩阵中的 67.2% 中止率只能作为历史问题证据，不能作为修复后性能数据。

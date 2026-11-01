@@ -35,6 +35,8 @@ public:
                       std::uint64_t compare, std::uint64_t swap,
                       std::uint64_t& previous);
     bool wait_for_disconnect();
+    std::uint64_t timeout_count() const;
+    std::uint64_t completion_error_count() const;
     const RdmaRemoteMemory& remote_memory() const { return remote_memory_; }
     bool connected() const { return connected_; }
     std::uint64_t peer_owner_token() const;

@@ -94,8 +94,7 @@ state             = 4: ACTIVE
 
 ## 建议
 
-1. **先加可观测性**：runner 输出 `elapsed_ns` 与 `rdma_timeouts` 计数器
-   （`post_and_poll` 命中 deadline 时自增）。现在这个事件完全静默，只能靠 elapsed 反推。
+1. **先加可观测性**：runner 输出 `elapsed_ns`、`rdma_timeouts` 与 `rdma_completion_errors`；其中超时在 `post_and_poll` 命中 deadline 时自增，完成错误单独记录。现在这两类事件可以直接和吞吐关联。
 2. **把测量窗口拉长到卡顿量级的 10 倍以上**：单 case 事务数从 5000 提到 50,000~100,000，
    或改成固定时长（如 10 秒）计时。这样一次 1 秒卡顿最多影响 10%，数据既真实又稳定，
    一次都不用删。

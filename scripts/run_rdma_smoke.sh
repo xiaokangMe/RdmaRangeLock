@@ -20,7 +20,7 @@ env RRL_RDMA_GID_INDEX="$GID_INDEX" "$ROOT/build-rdma/rrl_rdma_lock_client" "$LO
 sleep 0.2
 RESULTS="$ROOT/experiments/results"
 mkdir -p "$RESULTS"
-HEADER="workload,index,cc,threads,transactions,committed,aborted,operations,reads,updates,inserts,deletes,range_reads,rows_found,rows_scanned,rows_rechecked,lock_acquires,lock_conflicts,lock_capacity_aborts,lock_gate_aborts,throughput_committed_txn_s,throughput_attempt_txn_s,checksum"
+HEADER="workload,index,cc,threads,transactions,committed,aborted,operations,reads,updates,inserts,deletes,range_reads,rows_found,rows_scanned,rows_rechecked,lock_acquires,lock_conflicts,lock_capacity_aborts,lock_gate_aborts,elapsed_ns,rdma_timeouts,rdma_completion_errors,throughput_committed_txn_s,throughput_attempt_txn_s,checksum"
 printf '%s\n' "$HEADER" > "$RESULTS/rdma_v5_v6_smoke.csv"
 env RRL_RDMA_GID_INDEX="$GID_INDEX" "$ROOT/build-rdma/rrl_workload_runner" --index v2 --cc rdma-next-key --rdma-host "$LOOPBACK_HOST" --rdma-port "$PORT" --workload ycsb-e --keys 1000 --txns 200 --ops 4 --range 16 --threads 4 --zipf 0.99 --format csv | tail -n 1 >> "$RESULTS/rdma_v5_v6_smoke.csv"
 env RRL_RDMA_GID_INDEX="$GID_INDEX" "$ROOT/build-rdma/rrl_workload_runner" --index v2 --cc rdma-hierarchical --rdma-host "$LOOPBACK_HOST" --rdma-port "$PORT" --workload ycsb-e --keys 1000 --txns 200 --ops 4 --range 16 --bucket 64 --threads 4 --zipf 0.99 --format csv | tail -n 1 >> "$RESULTS/rdma_v5_v6_smoke.csv"

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -120,6 +121,8 @@ struct RdmaConnection::Impl {
     int socket_fd{-1};
     std::uint32_t psn{0};
     std::uint64_t peer_owner_token{0};
+    std::atomic<std::uint64_t> rdma_timeouts{0};
+    std::atomic<std::uint64_t> completion_errors{0};
     bool failed{false};
 
     ~Impl() {
@@ -259,10 +262,14 @@ bool post_and_poll(RdmaConnection::Impl* impl, ibv_send_wr& wr, ibv_sge& sge) {
         const int polled = ibv_poll_cq(impl->cq, 1, &wc);
         if (polled < 0) { impl->failed = true; return false; }
         if (polled > 0) {
-            if (wc.status != IBV_WC_SUCCESS) impl->failed = true;
+            if (wc.status != IBV_WC_SUCCESS) {
+                impl->completion_errors.fetch_add(1, std::memory_order_relaxed);
+                impl->failed = true;
+            }
             return wc.status == IBV_WC_SUCCESS;
         }
         if (std::chrono::steady_clock::now() >= deadline) {
+            impl->rdma_timeouts.fetch_add(1, std::memory_order_relaxed);
             impl->failed = true;
             return false;
         }
@@ -323,6 +330,16 @@ bool RdmaConnection::accept_server(std::uint16_t tcp_port, void* region, std::si
 std::uint64_t RdmaConnection::peer_owner_token() const {
     return impl_ ? impl_->peer_owner_token : 0;
 }
+
+std::uint64_t RdmaConnection::timeout_count() const {
+    return impl_ ? impl_->rdma_timeouts.load(std::memory_order_relaxed) : 0;
+}
+
+std::uint64_t RdmaConnection::completion_error_count() const {
+    return impl_ ? impl_->completion_errors.load(std::memory_order_relaxed) : 0;
+}
+
+
 
 bool RdmaConnection::read(std::uint64_t remote_address, std::uint32_t remote_rkey,
                           void* destination, std::size_t length) {

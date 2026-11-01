@@ -56,6 +56,8 @@ public:
     void set_bucket_width(std::uint64_t width);
     void set_connection_count(std::size_t count);
     bool connected() const;
+    std::uint64_t rdma_timeouts() const;
+    std::uint64_t rdma_completion_errors() const;
     RC lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& range,
             LockKind kind = LockKind::Predicate,
             std::vector<txnid_t>* conflicts = nullptr) override;
@@ -78,6 +80,7 @@ private:
     bool load_slots(std::size_t shard, std::vector<RemoteLockSlot>& slots) const;
     bool store_active_slots(std::size_t shard, std::uint64_t count) const;
     std::uint64_t shard_base(std::size_t shard) const;
+    std::uint32_t current_shards_rkey() const;
     ConnectionSlot& current_slot() const;
     RdmaConnection& current_connection() const;
     std::uint64_t current_owner_token() const;
@@ -94,9 +97,12 @@ private:
     mutable std::atomic<std::size_t> next_connection_{0};
     std::uint64_t connection_generation_{0};
     std::uint64_t shards_address_{0};
-    std::uint32_t shards_rkey_{0};
     std::uint64_t bucket_width_{64};
     std::uint64_t namespace_token_{0};
+    // Serialize same-manager access to each remote gate. Without this local
+    // coordination, one worker can fail to release a busy shard while another
+    // worker is publishing a lock through a different QP.
+    mutable std::array<std::mutex, kRemoteLockShards> gate_mutexes_;
     mutable std::mutex txn_shards_mutex_;
     mutable std::unordered_map<txnid_t, std::vector<std::size_t>> txn_shards_;
 };

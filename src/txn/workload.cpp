@@ -231,9 +231,7 @@ RunStats run_next_key_lock(BTreeIndex& index, IRangeLockManager& locks,
         workers.emplace_back([&, worker] {
             auto acquire = [&](txnid_t txn, LockMode mode, const KeyRangeEnt& range) {
                 ++a.acquires;
-                if (locks.lock(txn, mode, range, LockKind::NextKey) != RCOK) {
-                    ++a.conflicts; return false;
-                }
+                if (!record_lock_result(a, locks.lock(txn, mode, range, LockKind::NextKey))) return false;
                 return true;
             };
             for (size_t i = worker; i < trace.transactions().size(); i += worker_count) {

@@ -141,8 +141,8 @@ FIGURES = [
     ("fig09_cross_throughput.png", "图 3　跨主机：committed 平、attempted 涨",
      "左图提交吞吐在所有线程数下几乎水平；右图尝试吞吐随线程数上涨约 10 倍。"
      "两者之间的缺口就是被丢弃的工作。hierarchical b64 在 t16 的 313 txn/s 已查明是"
-     "一次 1 秒 RDMA 超时把 elapsed 拉长（5000 事务 / 1.001s），不是性能劣化——"
-     "全矩阵 8.3% 的 case 有同样指纹，与线程数和协议无关。"),
+     "一次 1 秒 RDMA 超时把 elapsed 拉长（5000 事务 / 1.001s），不是性能劣化；"
+     "36/432 次运行有同样指纹，散布在所有线程数与两个协议上。"),
     ("fig10_cross_abort_composition.png", "图 4　跨主机中止构成",
      "左：rdma-next-key 的中止 100% 记为 conflicts，capacity 为 0。右：两个协议的中止率都严格落在 "
      "1 − 1/threads 上——每个线程只有第一个事务能提交，与 workload、range、zipf 全部无关。"),
@@ -264,7 +264,7 @@ footer {{ margin-top:56px; padding-top:18px; border-top:1px solid var(--line);
 <ul>
   <li><b>可用的</b>：t=1 的单客户端基线、锁数量对比、容量结论、幻读路径已生效这一事实。</li>
   <li><b>不可用的</b>：跨主机 t&gt;1 的任何吞吐数字、本地多线程的横向排序（都被全局解锁锁主导）。</li>
-  <li><b>已查明</b>：hierarchical b64 在 t16 的 313 txn/s 是 1 秒 RDMA 超时，全矩阵 8.3% 的 case 命中同一指纹，跨主机吞吐需先剔除这些行。</li>
+  <li><b>已查明</b>：hierarchical b64 在 t16 的 313 txn/s 是 1 秒 RDMA 超时。36/432 次运行命中（16/144 个配置，其中 9 个三次全中）——这些行<b>不能剔除</b>，剔掉等于系统性删掉最慢的那批配置；正确做法是把单 case 事务数提高一个量级，让 1 秒卡顿最多影响 10%。</li>
 </ul>
 
 <h2><span class=n>02</span>图表</h2>

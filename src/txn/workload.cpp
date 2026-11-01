@@ -102,15 +102,17 @@ RunStats run_record_2pl(BTreeIndex& index, LockManager& locks, const WorkloadTra
             // Timed runs cycle through the trace; count-based runs stop at the end.
             if (timed) { if ((rounds % 64) == 0 && std::chrono::steady_clock::now() >= deadline) break; }
             else if (i >= total_txns) break;
-            const auto& txn = trace.transactions()[i % total_txns]; bool ok = true; std::vector<const Operation*> writes;
+            const auto& txn = trace.transactions()[i % total_txns]; bool ok = true; bool stop_after_txn = false; std::vector<const Operation*> writes;
             const txnid_t tid = txn.txn_id +
                 static_cast<txnid_t>(i / total_txns) * static_cast<txnid_t>(total_txns);
             for (const Operation& op : txn.operations) {
+                if (timed && std::chrono::steady_clock::now() >= deadline) { stop_after_txn = true; ok = false; break; }
                 ++a.ops;
                 if (op.kind == OperationKind::RangeRead) {
                     ++a.ranges; const auto rows = index.scan_range(KeyRangeEnt::half_open(op.key, op.end_key));
                     a.scanned += rows.size(); a.found += rows.size();
                     for (const auto& row : rows) {
+                        if (timed && std::chrono::steady_clock::now() >= deadline) { stop_after_txn = true; ok = false; break; }
                         ++a.acquires;
                         if (!record_lock_result(a, locks.lock(tid, LockMode::S, KeyRangeEnt::point(row.key), LockKind::Record))) { ok = false; break; }
                         a.checksum += row.key ^ *static_cast<uint64_t*>(row.value);
@@ -137,6 +139,7 @@ RunStats run_record_2pl(BTreeIndex& index, LockManager& locks, const WorkloadTra
             } else ++a.aborted;
             if (locks.get_lock_count(tid) > 0) locks.unlock_all(tid);
             ++a.tx;
+            if (stop_after_txn) break;
         }
     });
     for (auto& worker : workers) worker.join();
@@ -170,10 +173,11 @@ RunStats run_gap_lock(BTreeIndex& index, LockManager& locks, const WorkloadTrace
             // Timed runs cycle through the trace; count-based runs stop at the end.
             if (timed) { if ((rounds % 64) == 0 && std::chrono::steady_clock::now() >= deadline) break; }
             else if (i >= total_txns) break;
-            const auto& txn = trace.transactions()[i % total_txns]; bool ok = true; std::vector<const Operation*> writes;
+            const auto& txn = trace.transactions()[i % total_txns]; bool ok = true; bool stop_after_txn = false; std::vector<const Operation*> writes;
             const txnid_t tid = txn.txn_id +
                 static_cast<txnid_t>(i / total_txns) * static_cast<txnid_t>(total_txns);
             for (const Operation& op : txn.operations) {
+                if (timed && std::chrono::steady_clock::now() >= deadline) { stop_after_txn = true; ok = false; break; }
                 ++a.ops;
                 if (op.kind == OperationKind::RangeRead) {
                     ++a.ranges;
@@ -183,6 +187,7 @@ RunStats run_gap_lock(BTreeIndex& index, LockManager& locks, const WorkloadTrace
                         !acquire(tid, LockMode::S, KeyRangeEnt::point(op.key), LockKind::Gap) ||
                         !acquire(tid, LockMode::S, KeyRangeEnt::point(op.end_key), LockKind::Gap)) { ok = false; break; }
                     for (const auto& row : rows) {
+                        if (timed && std::chrono::steady_clock::now() >= deadline) { stop_after_txn = true; ok = false; break; }
                         if (!acquire(tid, LockMode::S, KeyRangeEnt::point(row.key), LockKind::Record)) { ok = false; break; }
                         a.checksum += row.key ^ *static_cast<uint64_t*>(row.value);
                     }
@@ -202,6 +207,7 @@ RunStats run_gap_lock(BTreeIndex& index, LockManager& locks, const WorkloadTrace
             else ++a.aborted;
             if (locks.get_lock_count(tid) > 0) locks.unlock_all(tid);
             ++a.tx;
+            if (stop_after_txn) break;
         }
     });
     for (auto& worker : workers) worker.join();
@@ -273,8 +279,10 @@ RunStats run_next_key_lock(BTreeIndex& index, IRangeLockManager& locks,
                 const txnid_t tid = txn.txn_id +
                     static_cast<txnid_t>(i / total_txns) * static_cast<txnid_t>(total_txns);
                 bool ok = true;
+                bool stop_after_txn = false;
                 std::vector<const Operation*> writes;
                 for (const Operation& op : txn.operations) {
+                    if (timed && std::chrono::steady_clock::now() >= deadline) { stop_after_txn = true; ok = false; break; }
                     ++a.ops;
                     if (op.kind == OperationKind::RangeRead) {
                         ++a.ranges;
@@ -287,6 +295,7 @@ RunStats run_next_key_lock(BTreeIndex& index, IRangeLockManager& locks,
                             ok = false;
                         }
                         for (const auto& row : rows) {
+                            if (timed && std::chrono::steady_clock::now() >= deadline) { stop_after_txn = true; ok = false; break; }
                             if (!ok) break;
                             const KeyRangeEnt interval = row.key == previous
                                 ? KeyRangeEnt::point(row.key)
@@ -335,6 +344,7 @@ RunStats run_next_key_lock(BTreeIndex& index, IRangeLockManager& locks,
                 } else ++a.aborted;
                 locks.unlock_all(tid);
                 ++a.tx;
+                if (stop_after_txn) break;
             }
         });
     }
@@ -378,8 +388,10 @@ RunStats run_hierarchical_lock(BTreeIndex& index, IRangeLockManager& locks,
                 const txnid_t tid = txn.txn_id +
                     static_cast<txnid_t>(i / total_txns) * static_cast<txnid_t>(total_txns);
                 bool ok = true;
+                bool stop_after_txn = false;
                 std::vector<const Operation*> writes;
                 for (const Operation& op : txn.operations) {
+                    if (timed && std::chrono::steady_clock::now() >= deadline) { stop_after_txn = true; ok = false; break; }
                     ++a.ops;
                     if (op.kind == OperationKind::RangeRead) {
                         ++a.ranges;
@@ -395,7 +407,10 @@ RunStats run_hierarchical_lock(BTreeIndex& index, IRangeLockManager& locks,
                         if (!ok) break;
                         const auto rows = index.scan_range(KeyRangeEnt::half_open(op.key, op.end_key));
                         a.scanned += rows.size(); a.found += rows.size();
-                        for (const auto& row : rows) a.checksum += row.key ^ *static_cast<uint64_t*>(row.value);
+                        for (const auto& row : rows) {
+                            if (timed && std::chrono::steady_clock::now() >= deadline) { stop_after_txn = true; ok = false; break; }
+                            a.checksum += row.key ^ *static_cast<uint64_t*>(row.value);
+                        }
                     } else {
                         const bool read = op.kind == OperationKind::Read;
                         const LockMode root_mode = read ? LockMode::IS : LockMode::IX;
@@ -420,6 +435,7 @@ RunStats run_hierarchical_lock(BTreeIndex& index, IRangeLockManager& locks,
                 } else ++a.aborted;
                 locks.unlock_all(tid);
                 ++a.tx;
+                if (stop_after_txn) break;
             }
         });
     }

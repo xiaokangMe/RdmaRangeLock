@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -49,7 +50,11 @@ public:
 private:
     struct Shard {
         mutable std::mutex mutex;
-        std::vector<RangeLock> locks;
+        // Exact point locks are indexed by key so record/point requests do
+        // not scan unrelated locks. Non-point intervals retain a compact
+        // vector because overlap checks still need their interval semantics.
+        std::map<idx_key_t, std::vector<RangeLock>> point_locks;
+        std::vector<RangeLock> range_locks;
     };
 
     std::vector<std::size_t> shard_ids(const KeyRangeEnt& range) const;

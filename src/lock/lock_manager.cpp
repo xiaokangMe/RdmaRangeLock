@@ -87,6 +87,15 @@ std::vector<std::size_t> LockManager::shard_ids(const KeyRangeEnt& range) const 
     return ids;
 }
 
+namespace {
+
+bool is_point_range(const KeyRangeEnt& range) {
+    return range.has_start && range.has_end && range.StartKey == range.EndKey &&
+           range.start_bound == Bound::Closed && range.end_bound == Bound::Closed;
+}
+
+}  // namespace
+
 RC LockManager::lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& range,
                      LockKind kind, std::vector<txnid_t>* conflicts) {
     if (range.empty() || !range.valid()) return ERROR;
@@ -98,23 +107,47 @@ RC LockManager::lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& range,
 
     RangeLock request{txn_id, mode, kind, range};
     std::vector<txnid_t> found;
+    auto inspect = [&](const RangeLock& held) {
+        if (!request.conflicts(held)) return;
+        if (std::find(found.begin(), found.end(), held.txn_id) == found.end())
+            found.push_back(held.txn_id);
+    };
     for (const auto id : ids) {
-        for (const RangeLock& held : shards_[id].locks) {
-            if (!request.conflicts(held)) continue;
-            if (std::find(found.begin(), found.end(), held.txn_id) == found.end())
-                found.push_back(held.txn_id);
+        const auto& shard = shards_[id];
+        if (is_point_range(range)) {
+            const auto it = shard.point_locks.find(range.StartKey);
+            if (it != shard.point_locks.end())
+                for (const auto& held : it->second) inspect(held);
+        } else {
+            auto it = range.has_start ? shard.point_locks.lower_bound(range.StartKey)
+                                      : shard.point_locks.begin();
+            for (; it != shard.point_locks.end(); ++it) {
+                if (range.has_end && it->first > range.EndKey) break;
+                for (const auto& held : it->second) inspect(held);
+            }
         }
+        for (const auto& held : shard.range_locks) inspect(held);
     }
     if (conflicts) *conflicts = found;
     if (!found.empty()) return AbortConflict;
 
     for (const auto id : ids) {
-        auto& table = shards_[id].locks;
-        auto it = std::find_if(table.begin(), table.end(), [&](const RangeLock& held) {
-            return held.txn_id == txn_id && held.kind == kind && same_range(held.range, range);
-        });
-        if (it != table.end()) it->mode = lock_mode_join(it->mode, mode);
-        else table.push_back(request);
+        auto& shard = shards_[id];
+        if (is_point_range(range)) {
+            auto& table = shard.point_locks[range.StartKey];
+            auto it = std::find_if(table.begin(), table.end(), [&](const RangeLock& held) {
+                return held.txn_id == txn_id && held.kind == kind && same_range(held.range, range);
+            });
+            if (it != table.end()) it->mode = lock_mode_join(it->mode, mode);
+            else table.push_back(request);
+        } else {
+            auto& table = shard.range_locks;
+            auto it = std::find_if(table.begin(), table.end(), [&](const RangeLock& held) {
+                return held.txn_id == txn_id && held.kind == kind && same_range(held.range, range);
+            });
+            if (it != table.end()) it->mode = lock_mode_join(it->mode, mode);
+            else table.push_back(request);
+        }
     }
     remember_shards(txn_id, ids);
     return RCOK;
@@ -128,15 +161,30 @@ RC LockManager::unlock(txnid_t txn_id, const KeyRangeEnt& range, LockKind kind) 
         bool shard_empty_for_txn = true;
         {
             std::lock_guard<std::mutex> guard(shards_[id].mutex);
-            auto& table = shards_[id].locks;
-            const auto before = table.size();
-            table.erase(std::remove_if(table.begin(), table.end(), [&](const RangeLock& held) {
-                return held.txn_id == txn_id && held.kind == kind && same_range(held.range, range);
-            }), table.end());
-            removed = removed || table.size() != before;
-            shard_empty_for_txn = std::none_of(table.begin(), table.end(), [&](const RangeLock& held) {
-                return held.txn_id == txn_id;
-            });
+            auto& shard = shards_[id];
+            if (is_point_range(range)) {
+                const auto it = shard.point_locks.find(range.StartKey);
+                if (it != shard.point_locks.end()) {
+                    const auto before = it->second.size();
+                    it->second.erase(std::remove_if(it->second.begin(), it->second.end(), [&](const RangeLock& held) {
+                        return held.txn_id == txn_id && held.kind == kind && same_range(held.range, range);
+                    }), it->second.end());
+                    removed = removed || it->second.size() != before;
+                    if (it->second.empty()) shard.point_locks.erase(it);
+                }
+            } else {
+                const auto before = shard.range_locks.size();
+                shard.range_locks.erase(std::remove_if(shard.range_locks.begin(), shard.range_locks.end(), [&](const RangeLock& held) {
+                    return held.txn_id == txn_id && held.kind == kind && same_range(held.range, range);
+                }), shard.range_locks.end());
+                removed = removed || shard.range_locks.size() != before;
+            }
+            for (const auto& entry : shard.point_locks)
+                for (const auto& held : entry.second)
+                    if (held.txn_id == txn_id) shard_empty_for_txn = false;
+            if (shard_empty_for_txn)
+                for (const auto& held : shard.range_locks)
+                    if (held.txn_id == txn_id) shard_empty_for_txn = false;
         }
         if (shard_empty_for_txn) forget_shard(txn_id, id);
     }
@@ -148,10 +196,18 @@ RC LockManager::unlock_all(txnid_t txn_id) {
     if (ids.empty()) ids = all_shards();
     for (const auto id : ids) {
         std::lock_guard<std::mutex> guard(shards_[id].mutex);
-        auto& table = shards_[id].locks;
-        table.erase(std::remove_if(table.begin(), table.end(), [&](const RangeLock& held) {
+        auto& shard = shards_[id];
+        for (auto it = shard.point_locks.begin(); it != shard.point_locks.end();) {
+            auto& table = it->second;
+            table.erase(std::remove_if(table.begin(), table.end(), [&](const RangeLock& held) {
+                return held.txn_id == txn_id;
+            }), table.end());
+            if (table.empty()) it = shard.point_locks.erase(it);
+            else ++it;
+        }
+        shard.range_locks.erase(std::remove_if(shard.range_locks.begin(), shard.range_locks.end(), [&](const RangeLock& held) {
             return held.txn_id == txn_id;
-        }), table.end());
+        }), shard.range_locks.end());
     }
     forget_txn(txn_id);
     return RCOK;
@@ -164,11 +220,17 @@ std::size_t LockManager::get_lock_count(txnid_t txn_id) const {
     guards.reserve(ids.size());
     for (const auto id : ids) guards.emplace_back(shards_[id].mutex);
     std::vector<RangeLock> unique;
-    for (const auto id : ids) for (const auto& lock : shards_[id].locks) {
-        if (txn_id != 0 && lock.txn_id != txn_id) continue;
+    auto add = [&](const RangeLock& lock) {
+        if (txn_id != 0 && lock.txn_id != txn_id) return;
         if (std::find_if(unique.begin(), unique.end(), [&](const RangeLock& other) {
                 return same_lock(lock, other);
             }) == unique.end()) unique.push_back(lock);
+    };
+    for (const auto id : ids) {
+        const auto& shard = shards_[id];
+        for (const auto& entry : shard.point_locks)
+            for (const auto& lock : entry.second) add(lock);
+        for (const auto& lock : shard.range_locks) add(lock);
     }
     return unique.size();
 }
@@ -178,9 +240,23 @@ bool LockManager::detect_conflict(const RangeLock& request) const {
     std::vector<std::unique_lock<std::mutex>> guards;
     guards.reserve(ids.size());
     for (const auto id : ids) guards.emplace_back(shards_[id].mutex);
-    for (const auto id : ids)
-        for (const auto& held : shards_[id].locks)
-            if (request.conflicts(held)) return true;
+    auto inspect = [&](const RangeLock& held) { return request.conflicts(held); };
+    for (const auto id : ids) {
+        const auto& shard = shards_[id];
+        if (is_point_range(request.range)) {
+            const auto it = shard.point_locks.find(request.range.StartKey);
+            if (it != shard.point_locks.end())
+                for (const auto& held : it->second) if (inspect(held)) return true;
+        } else {
+            auto it = request.range.has_start ? shard.point_locks.lower_bound(request.range.StartKey)
+                                              : shard.point_locks.begin();
+            for (; it != shard.point_locks.end(); ++it) {
+                if (request.range.has_end && it->first > request.range.EndKey) break;
+                for (const auto& held : it->second) if (inspect(held)) return true;
+            }
+        }
+        for (const auto& held : shard.range_locks) if (inspect(held)) return true;
+    }
     return false;
 }
 
@@ -190,10 +266,25 @@ std::vector<txnid_t> LockManager::conflicting_txns(const RangeLock& request) con
     guards.reserve(ids.size());
     for (const auto id : ids) guards.emplace_back(shards_[id].mutex);
     std::vector<txnid_t> result;
-    for (const auto id : ids) for (const auto& held : shards_[id].locks) {
+    auto inspect = [&](const RangeLock& held) {
         if (request.conflicts(held) &&
             std::find(result.begin(), result.end(), held.txn_id) == result.end())
             result.push_back(held.txn_id);
+    };
+    for (const auto id : ids) {
+        const auto& shard = shards_[id];
+        if (is_point_range(request.range)) {
+            const auto it = shard.point_locks.find(request.range.StartKey);
+            if (it != shard.point_locks.end()) for (const auto& held : it->second) inspect(held);
+        } else {
+            auto it = request.range.has_start ? shard.point_locks.lower_bound(request.range.StartKey)
+                                              : shard.point_locks.begin();
+            for (; it != shard.point_locks.end(); ++it) {
+                if (request.range.has_end && it->first > request.range.EndKey) break;
+                for (const auto& held : it->second) inspect(held);
+            }
+        }
+        for (const auto& held : shard.range_locks) inspect(held);
     }
     return result;
 }
@@ -204,10 +295,17 @@ std::vector<RangeLock> LockManager::snapshot() const {
     guards.reserve(ids.size());
     for (const auto id : ids) guards.emplace_back(shards_[id].mutex);
     std::vector<RangeLock> result;
-    for (const auto id : ids) for (const auto& lock : shards_[id].locks)
+    auto add = [&](const RangeLock& lock) {
         if (std::find_if(result.begin(), result.end(), [&](const RangeLock& other) {
                 return same_lock(lock, other);
             }) == result.end()) result.push_back(lock);
+    };
+    for (const auto id : ids) {
+        const auto& shard = shards_[id];
+        for (const auto& entry : shard.point_locks)
+            for (const auto& lock : entry.second) add(lock);
+        for (const auto& lock : shard.range_locks) add(lock);
+    }
     return result;
 }
 

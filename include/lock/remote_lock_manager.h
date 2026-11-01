@@ -16,7 +16,7 @@
 namespace rrl {
 
 constexpr std::size_t kRemoteLockShards = 16;
-constexpr std::size_t kRemoteLockSlotsPerShard = 256;
+constexpr std::size_t kRemoteLockSlotsPerShard = 1024;
 constexpr std::size_t kRemoteLockSlots = kRemoteLockShards * kRemoteLockSlotsPerShard;
 
 struct alignas(64) RemoteLockSlot {

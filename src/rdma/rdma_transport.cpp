@@ -12,6 +12,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <cstdlib>
 #include <thread>
@@ -383,6 +384,24 @@ bool post_batch_and_poll(RdmaConnection::Impl* impl,
     }
 }
 
+// A single work request is one segment over the registered scratch buffer, so
+// the parameters must satisfy three things: a usable host buffer, a length that
+// fits both that buffer and the 32-bit SGE length field, and a plausible remote
+// address. read_batch/write_batch already refused malformed requests while the
+// single-request entry points did not: an oversized length silently truncated
+// into sge.length and then memcpy'd past the scratch buffer.
+bool valid_transfer(const void* buffer, std::size_t length, std::size_t capacity) {
+    return buffer != nullptr && length != 0 && length <= capacity &&
+           length <= std::numeric_limits<std::uint32_t>::max();
+}
+
+// RDMA atomics are only defined on naturally aligned remote addresses; an
+// unaligned one comes back as IBV_WC_REM_INV_REQ_OPCODE several round trips
+// later, which is far harder to attribute than refusing it here.
+bool valid_atomic_target(std::uint64_t remote_address) {
+    return remote_address != 0 && (remote_address % sizeof(std::uint64_t)) == 0;
+}
+
 }  // namespace
 
 RdmaConnection::RdmaConnection() : impl_(new Impl) {}
@@ -474,7 +493,9 @@ std::uint64_t RdmaConnection::failure_count() const {
 
 bool RdmaConnection::read(std::uint64_t remote_address, std::uint32_t remote_rkey,
                           void* destination, std::size_t length) {
-    if (!connected_ || impl_->failed || length > impl_->scratch.size()) return false;
+    if (!connected_ || impl_->failed) return false;
+    if (!valid_transfer(destination, length, impl_->scratch.size())) return false;
+    if (remote_address == 0) return false;
     ibv_sge sge{};
     sge.addr = reinterpret_cast<std::uintptr_t>(impl_->scratch.data());
     sge.length = static_cast<std::uint32_t>(length);
@@ -490,7 +511,9 @@ bool RdmaConnection::read(std::uint64_t remote_address, std::uint32_t remote_rke
 
 bool RdmaConnection::write(std::uint64_t remote_address, std::uint32_t remote_rkey,
                            const void* source, std::size_t length) {
-    if (!connected_ || impl_->failed || length > impl_->scratch.size()) return false;
+    if (!connected_ || impl_->failed) return false;
+    if (!valid_transfer(source, length, impl_->scratch.size())) return false;
+    if (remote_address == 0) return false;
     std::memcpy(impl_->scratch.data(), source, length);
     ibv_sge sge{};
     sge.addr = reinterpret_cast<std::uintptr_t>(impl_->scratch.data());
@@ -507,6 +530,7 @@ bool RdmaConnection::compare_swap(std::uint64_t remote_address, std::uint32_t re
                                   std::uint64_t compare, std::uint64_t swap,
                                   std::uint64_t& previous) {
     if (!connected_ || impl_->failed) return false;
+    if (!valid_atomic_target(remote_address)) return false;
     std::uint64_t result = 0;
     ibv_sge sge{};
     sge.addr = reinterpret_cast<std::uintptr_t>(&result);
@@ -532,8 +556,7 @@ bool RdmaConnection::read_batch(const std::vector<RdmaReadRequest>& requests) {
     if (!connected_ || impl_->failed || requests.size() > 128) return false;
     std::size_t total = 0;
     for (const auto& request : requests) {
-        if (!request.destination || request.length == 0 ||
-            request.length > impl_->scratch.size() ||
+        if (!valid_transfer(request.destination, request.length, impl_->scratch.size()) ||
             total > impl_->scratch.size() - request.length)
             return false;
         total += request.length;
@@ -569,8 +592,7 @@ bool RdmaConnection::write_batch(const std::vector<RdmaWriteRequest>& requests) 
     if (!connected_ || impl_->failed || requests.size() > 128) return false;
     std::size_t total = 0;
     for (const auto& request : requests) {
-        if (!request.source || request.length == 0 ||
-            request.length > impl_->scratch.size() ||
+        if (!valid_transfer(request.source, request.length, impl_->scratch.size()) ||
             total > impl_->scratch.size() - request.length)
             return false;
         total += request.length;

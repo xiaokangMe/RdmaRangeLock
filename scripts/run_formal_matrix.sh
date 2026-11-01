@@ -15,6 +15,11 @@ GID_INDEX="${RRL_RDMA_GID_INDEX:-3}"
 KEYS="${RRL_KEYS:-10000}"
 TRANSACTIONS="${RRL_TRANSACTIONS:-5000}"
 DURATION="${RRL_DURATION:-0}"
+# RDMA connection count. "auto" lets the runner apply its documented policy
+# (min(threads, 2), measured in docs/notes/rdma-connection-policy-2026-11-01.md);
+# a number forces that value. One connection per thread is never the default any
+# more: it was 2.2x-2.6x slower than two connections at t=8 and t=16.
+RDMA_CONNECTIONS="${RRL_RDMA_CONNECTIONS:-auto}"
 OPERATIONS="${RRL_OPERATIONS:-10}"
 ZIPF="${RRL_ZIPF:-0.99}"
 TPCC_ITEMS="${RRL_TPCC_ITEMS:-5}"
@@ -52,6 +57,13 @@ case "$MODE" in
     local|cross-host) ;;
     *) echo "--mode must be local or cross-host" >&2; exit 2 ;;
 esac
+
+if [[ "$RDMA_CONNECTIONS" != "auto" ]]; then
+    if ! [[ "$RDMA_CONNECTIONS" =~ ^[1-9][0-9]*$ ]]; then
+        echo "RRL_RDMA_CONNECTIONS must be 'auto' or a positive integer, got '$RDMA_CONNECTIONS'" >&2
+        exit 2
+    fi
+fi
 
 if [[ "$MODE" == "cross-host" && "$SYNC_REMOTE" == "1" ]]; then
     if [[ ! -f "$SSH_KEY" ]]; then
@@ -97,6 +109,25 @@ mkdir -p "$RESULT_DIR" "$LOG_DIR"
 RESULT_FILE="$RESULT_DIR/formal-${MODE}-${STAMP}.csv"
 FAILED_FILE="$LOG_DIR/failed-cases.txt"
 : > "$FAILED_FILE"
+
+# The effective configuration is written next to the results, so a table can
+# always be traced back to the knob values that produced it.
+{
+    echo "mode=$MODE"
+    echo "transport=$([[ "$MODE" == local ]] && echo loopback || echo rdma)"
+    echo "build_dir=$BUILD_DIR"
+    echo "git_head=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    echo "duration_s=$DURATION"
+    echo "transactions=$TRANSACTIONS"
+    echo "runs=$RUNS"
+    echo "threads=$(IFS=,; echo "${THREADS[*]}")"
+    echo "workloads=$(IFS=,; echo "${WORKLOADS[*]}")"
+    echo "local_ccs=$(IFS=,; echo "${LOCAL_CCS[*]}")"
+    echo "rdma_ccs=$(IFS=,; echo "${RDMA_CCS[*]}")"
+    echo "ranges=$(IFS=,; echo "${RANGE_LENGTHS[*]}")"
+    echo "buckets=$(IFS=,; echo "${BUCKETS[*]}")"
+    echo "rdma_connections=$RDMA_CONNECTIONS"
+} > "$LOG_DIR/config.txt"
 FAILED_CASES=()
 # The result header is taken from the runner itself rather than duplicated
 # here: a hard-coded copy silently drifted every time the runner gained a
@@ -141,6 +172,9 @@ run_case() {
     if [[ "$bucket" != "0" ]]; then args+=(--bucket "$bucket"); fi
     if [[ "$cc" == rdma-* ]]; then
         args+=(--rdma-host "$RDMA_HOST" --rdma-port "$PORT")
+        if [[ "$RDMA_CONNECTIONS" != "auto" ]]; then
+            args+=(--rdma-connections "$RDMA_CONNECTIONS")
+        fi
     fi
 
     if [[ "$MODE" == "cross-host" ]]; then

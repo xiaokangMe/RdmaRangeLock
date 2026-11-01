@@ -1,6 +1,7 @@
 #include "txn/workload.h"
 #include "lock/remote_lock_manager.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <fstream>
 #include <initializer_list>
@@ -26,6 +27,21 @@ std::size_t auto_bucket_width(WorkloadKind kind) {
         case WorkloadKind::TpccNewOrder:
         default: return 16;
     }
+}
+
+// RDMA connection policy, measured rather than assumed. A connection owns one
+// QP, one completion queue and one scratch buffer, so it can serve exactly one
+// thread at a time; extra connections only add more callers racing for the same
+// 16 remote gates. On the loopback pair (2,000-3,000 transactions per point,
+// docs/notes/rdma-connection-policy-2026-11-01.md) two connections beat
+// one-per-thread by 2.17x at t=8 and 2.56x at t=16, and were within 10% of the
+// best point at t=4. The published matrix therefore uses min(threads, 2) unless
+// --rdma-connections overrides it.
+constexpr std::size_t kDefaultRdmaConnections = 2;
+
+std::size_t resolve_connection_count(std::size_t threads, std::size_t requested) {
+    if (requested != 0) return std::max<std::size_t>(1, requested);
+    return std::max<std::size_t>(1, std::min<std::size_t>(threads, kDefaultRdmaConnections));
 }
 
 std::string config_value(const std::string& text, const std::string& key) {
@@ -90,7 +106,7 @@ int main(int argc, char** argv) {
     std::string cc = "none";
     std::string rdma_host = "127.0.0.1";
     std::uint16_t rdma_port = 19876;
-    // 0 keeps the historical behaviour of one connection per worker thread.
+    // 0 selects the documented default (min(threads, 2)); a value forces it.
     std::size_t rdma_connections = 0;
     bool csv = false;
     bool bucket_auto = false;
@@ -141,6 +157,8 @@ int main(int argc, char** argv) {
 
     RunStats stats;
     RemoteLockManager::Diagnostics rdma_diag{};
+    // 0 on every non-RDMA protocol: no connection was opened for this run.
+    std::size_t active_connections = 0;
     RdmaFailureInfo rdma_failure{};
     std::int64_t rdma_failure_shard = -1;
     if (cc == "record-2pl") {
@@ -155,7 +173,8 @@ int main(int argc, char** argv) {
         stats = run_hierarchical_lock(*index, locks, trace, config.threads);
     } else if (cc == "rdma-next-key" || cc == "rdma-hierarchical") {
         RemoteLockManager locks;
-        locks.set_connection_count(rdma_connections != 0 ? rdma_connections : config.threads);
+        active_connections = resolve_connection_count(config.threads, rdma_connections);
+        locks.set_connection_count(active_connections);
         if (!locks.connect(rdma_host, rdma_port)) {
             std::cerr << "failed to connect RDMA lock server at " << rdma_host << ":" << rdma_port << "\n";
             return 2;
@@ -188,7 +207,7 @@ int main(int argc, char** argv) {
                   << rdma_diag.gate_attempts << ',' << rdma_diag.gate_retries << ',' << rdma_diag.gate_aborts << ',' << rdma_diag.batches << ','
                   << rdma_failure.opcode << ',' << rdma_failure_shard << ',' << rdma_failure.wr_index << ',' << rdma_failure.elapsed_us << ',' << rdma_failure.qp_num << ','
                   << rdma_diag.gate_transport_errors << ','
-                  << (rdma_connections != 0 ? rdma_connections : config.threads) << ','
+                  << active_connections << ','
                   << config.hierarchy_bucket_width << '\n';
     } else {
         std::cout << "workload=" << WorkloadTrace::name(config.kind)
@@ -224,6 +243,7 @@ int main(int argc, char** argv) {
                   << ",rdma_failure_shard=" << rdma_failure_shard
                   << ",rdma_failure_wr=" << rdma_failure.wr_index
                   << ",rdma_failure_us=" << rdma_failure.elapsed_us
+                  << ",rdma_connections=" << active_connections
                   << ",rdma_failure_qp=" << rdma_failure.qp_num
                   << ",hierarchy_bucket_width=" << config.hierarchy_bucket_width << "\n";
     }

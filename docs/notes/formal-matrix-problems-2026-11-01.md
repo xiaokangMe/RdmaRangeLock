@@ -48,11 +48,18 @@
 
 两者是同一个病灶的两种表现：**全分片 gate 的 all-or-nothing 获取**。
 
-### 顺带一个数据矛盾
+### 已查明：313 txn/s 是 1 秒超时，不是性能劣化
 
-`fig09` 里 `hierarchical b64` 在 t16 掉到 313 txn/s，而相邻的 t8 是 2364、t32 是 1965。
-三次重复的中位数都低，不是单次抖动，但形状不合常理（t32 反而回升）。暂按待复测处理，
-不要在这个点上写结论。
+`fig09` 里 `hierarchical b64` 在 t16 的 313 txn/s，经复测确认为 **一次固定 1 秒的 RDMA 超时**
+把 elapsed 拉长所致：`5000 事务 / 1.001s ≈ 4,990 attempted txn/s`，吞吐 = committed/elapsed = 313。
+
+- 全矩阵 432 个 case 里有 **36 个（8.3%）** 命中这个指纹，散布在 t2/t4/t8/t16/t32 与两个协议上，
+  与 bucket 宽度、线程数、协议均无关；
+- t16 b64 只是运气差（三次重复里两次命中），8 次定点击复测 **8/8 命中**；
+- 链路计数全为 0（`port_rcv_errors`、`xmit_discards`、`out_of_buffer`），排除物理层。
+
+详见 `docs/notes/rdma-one-second-stall-2026-11-01.md`。**结论：313 不能当性能数字用；
+跨主机所有吞吐都要先剔除 elapsed≈1.00s 的行。**
 
 ---
 

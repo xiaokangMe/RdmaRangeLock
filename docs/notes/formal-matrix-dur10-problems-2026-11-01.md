@@ -184,3 +184,7 @@ scripts/plot_dur10.py
 P3 已做第一阶段优化：`RemoteLockManager` 为每个事务缓存已经成功取得的逻辑锁。重复的根意向锁、桶锁或同范围锁在模式已被满足时直接本地返回；只有模式升级才重新访问远端槽表。事务结束时，`get_lock_count(txn)` 也优先使用该缓存，避免额外的 gate/读槽往返。runner 另输出实际提交的 RDMA WR 数 `rdma_operations`，与逻辑 `lock_acquires` 分开统计。
 
 本机回环定向验证（t32、YCSB-E、range=8、2 秒）中，hierarchical 的提交吞吐为 bucket=16/64/256：3,180/3,334/3,575 txn/s，三档均 `rdma_timeouts=0`、`rdma_completion_errors=0`、`lock_gate_aborts=0`、`lock_capacity_aborts=0`。这不是正式矩阵数据；跨主机仍需重新基线。更进一步的批量锁请求或 RDMA WR 链合并仍属于后续优化。P7 是历史数据口径问题，旧 5000 事务窗口跨主机数据不再作为性能基线。上述验证均不是新的正式矩阵数据，正式矩阵仍需在本提交后重新构建和运行。
+
+### P3 第二阶段状态（WR 批量提交）
+
+已完成跨分片 WR 链批量提交，并保留单分片直接路径。定向 10 秒验证见 `docs/notes/rdma-p3-wr-batch-2026-11-01.md`；该验证不是正式矩阵，旧正式矩阵数据没有改写。

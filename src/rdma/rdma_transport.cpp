@@ -279,6 +279,51 @@ bool post_and_poll(RdmaConnection::Impl* impl, ibv_send_wr& wr, ibv_sge& sge) {
     }
 }
 
+
+bool post_batch_and_poll(RdmaConnection::Impl* impl,
+                         std::vector<ibv_send_wr>& wrs,
+                         std::vector<ibv_sge>& sges) {
+    if (wrs.empty() || wrs.size() != sges.size() || wrs.size() > 64) return false;
+    for (std::size_t i = 0; i < wrs.size(); ++i) {
+        wrs[i].sg_list = &sges[i];
+        wrs[i].num_sge = 1;
+        // RC QPs preserve work-request order; signal only the tail so one
+        // completion covers the complete chain before scratch reuse.
+        wrs[i].send_flags = i + 1 == wrs.size() ? IBV_SEND_SIGNALED : 0;
+        wrs[i].next = i + 1 == wrs.size() ? nullptr : &wrs[i + 1];
+    }
+    ibv_send_wr* bad = nullptr;
+    if (ibv_post_send(impl->qp, &wrs.front(), &bad) != 0) {
+        // A prefix may already be in flight without a signaled completion.
+        // Never reuse its registered buffer on this QP after partial posting.
+        std::size_t posted = 0;
+        while (posted < wrs.size() && &wrs[posted] != bad) ++posted;
+        impl->operations.fetch_add(posted, std::memory_order_relaxed);
+        impl->failed = true;
+        return false;
+    }
+    impl->operations.fetch_add(wrs.size(), std::memory_order_relaxed);
+    ibv_wc wc{};
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    for (;;) {
+        const int polled = ibv_poll_cq(impl->cq, 1, &wc);
+        if (polled < 0) { impl->failed = true; return false; }
+        if (polled > 0) {
+            if (wc.status != IBV_WC_SUCCESS) {
+                impl->completion_errors.fetch_add(1, std::memory_order_relaxed);
+                impl->failed = true;
+            }
+            return wc.status == IBV_WC_SUCCESS;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            impl->rdma_timeouts.fetch_add(1, std::memory_order_relaxed);
+            impl->failed = true;
+            return false;
+        }
+        std::this_thread::yield();
+    }
+}
+
 }  // namespace
 
 RdmaConnection::RdmaConnection() : impl_(new Impl) {}
@@ -399,6 +444,107 @@ bool RdmaConnection::compare_swap(std::uint64_t remote_address, std::uint32_t re
     wr.wr.atomic.swap = swap;
     if (!post_and_poll(impl_, wr, sge)) return false;
     std::memcpy(&previous, impl_->scratch.data(), sizeof(previous));
+    return true;
+}
+
+
+bool RdmaConnection::read_batch(const std::vector<RdmaReadRequest>& requests) {
+    if (requests.empty()) return true;
+    if (!connected_ || impl_->failed || requests.size() > 64) return false;
+    std::size_t total = 0;
+    for (const auto& request : requests) {
+        if (!request.destination || request.length == 0 ||
+            request.length > impl_->scratch.size() ||
+            total > impl_->scratch.size() - request.length)
+            return false;
+        total += request.length;
+    }
+    if (requests.size() == 1) {
+        const auto& request = requests.front();
+        return read(request.remote_address, request.remote_rkey,
+                    request.destination, request.length);
+    }
+    std::vector<ibv_send_wr> wrs(requests.size());
+    std::vector<ibv_sge> sges(requests.size());
+    std::vector<std::size_t> offsets(requests.size());
+    std::size_t offset = 0;
+    for (std::size_t i = 0; i < requests.size(); ++i) {
+        const auto& request = requests[i];
+        offsets[i] = offset;
+        sges[i].addr = reinterpret_cast<std::uintptr_t>(impl_->scratch.data() + offset);
+        sges[i].length = static_cast<std::uint32_t>(request.length);
+        sges[i].lkey = impl_->local_mr->lkey;
+        wrs[i].opcode = IBV_WR_RDMA_READ;
+        wrs[i].wr.rdma.remote_addr = request.remote_address;
+        wrs[i].wr.rdma.rkey = request.remote_rkey;
+        offset += request.length;
+    }
+    if (!post_batch_and_poll(impl_, wrs, sges)) return false;
+    for (std::size_t i = 0; i < requests.size(); ++i)
+        std::memcpy(requests[i].destination, impl_->scratch.data() + offsets[i], requests[i].length);
+    return true;
+}
+
+bool RdmaConnection::write_batch(const std::vector<RdmaWriteRequest>& requests) {
+    if (requests.empty()) return true;
+    if (!connected_ || impl_->failed || requests.size() > 64) return false;
+    std::size_t total = 0;
+    for (const auto& request : requests) {
+        if (!request.source || request.length == 0 ||
+            request.length > impl_->scratch.size() ||
+            total > impl_->scratch.size() - request.length)
+            return false;
+        total += request.length;
+    }
+    if (requests.size() == 1) {
+        const auto& request = requests.front();
+        return write(request.remote_address, request.remote_rkey,
+                     request.source, request.length);
+    }
+    std::vector<ibv_send_wr> wrs(requests.size());
+    std::vector<ibv_sge> sges(requests.size());
+    std::size_t offset = 0;
+    for (std::size_t i = 0; i < requests.size(); ++i) {
+        const auto& request = requests[i];
+        std::memcpy(impl_->scratch.data() + offset, request.source, request.length);
+        sges[i].addr = reinterpret_cast<std::uintptr_t>(impl_->scratch.data() + offset);
+        sges[i].length = static_cast<std::uint32_t>(request.length);
+        sges[i].lkey = impl_->local_mr->lkey;
+        wrs[i].opcode = IBV_WR_RDMA_WRITE;
+        wrs[i].wr.rdma.remote_addr = request.remote_address;
+        wrs[i].wr.rdma.rkey = request.remote_rkey;
+        offset += request.length;
+    }
+    return post_batch_and_poll(impl_, wrs, sges);
+}
+
+bool RdmaConnection::compare_swap_batch(const std::vector<RdmaCompareSwapRequest>& requests) {
+    if (requests.empty()) return true;
+    if (!connected_ || impl_->failed || requests.size() > 64) return false;
+    const std::size_t bytes = requests.size() * sizeof(std::uint64_t);
+    if (bytes > impl_->scratch.size()) return false;
+    for (const auto& request : requests)
+        if (!request.previous) return false;
+    if (requests.size() == 1) {
+        const auto& request = requests.front();
+        return compare_swap(request.remote_address, request.remote_rkey,
+                            request.compare, request.swap, *request.previous);
+    }
+    std::vector<ibv_send_wr> wrs(requests.size());
+    std::vector<ibv_sge> sges(requests.size());
+    for (std::size_t i = 0; i < requests.size(); ++i) {
+        sges[i].addr = reinterpret_cast<std::uintptr_t>(impl_->scratch.data() + i * sizeof(std::uint64_t));
+        sges[i].length = sizeof(std::uint64_t);
+        sges[i].lkey = impl_->local_mr->lkey;
+        wrs[i].opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+        wrs[i].wr.atomic.remote_addr = requests[i].remote_address;
+        wrs[i].wr.atomic.rkey = requests[i].remote_rkey;
+        wrs[i].wr.atomic.compare_add = requests[i].compare;
+        wrs[i].wr.atomic.swap = requests[i].swap;
+    }
+    if (!post_batch_and_poll(impl_, wrs, sges)) return false;
+    for (std::size_t i = 0; i < requests.size(); ++i)
+        std::memcpy(requests[i].previous, impl_->scratch.data() + i * sizeof(std::uint64_t), sizeof(std::uint64_t));
     return true;
 }
 

@@ -15,6 +15,28 @@ struct RdmaRemoteMemory {
     std::uint64_t length{0};
 };
 
+struct RdmaReadRequest {
+    std::uint64_t remote_address{0};
+    std::uint32_t remote_rkey{0};
+    void* destination{nullptr};
+    std::size_t length{0};
+};
+
+struct RdmaWriteRequest {
+    std::uint64_t remote_address{0};
+    std::uint32_t remote_rkey{0};
+    const void* source{nullptr};
+    std::size_t length{0};
+};
+
+struct RdmaCompareSwapRequest {
+    std::uint64_t remote_address{0};
+    std::uint32_t remote_rkey{0};
+    std::uint64_t compare{0};
+    std::uint64_t swap{0};
+    std::uint64_t* previous{nullptr};
+};
+
 // A small RC-QP transport. TCP is used only for exchanging QP and MR
 // attributes; lock-table data moves through one-sided verbs operations.
 class RdmaConnection {
@@ -34,6 +56,9 @@ public:
     bool compare_swap(std::uint64_t remote_address, std::uint32_t remote_rkey,
                       std::uint64_t compare, std::uint64_t swap,
                       std::uint64_t& previous);
+    bool read_batch(const std::vector<RdmaReadRequest>& requests);
+    bool write_batch(const std::vector<RdmaWriteRequest>& requests);
+    bool compare_swap_batch(const std::vector<RdmaCompareSwapRequest>& requests);
     bool wait_for_disconnect();
     std::uint64_t timeout_count() const;
     std::uint64_t completion_error_count() const;

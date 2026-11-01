@@ -1,0 +1,14 @@
+{
+  "index": "v2",
+  "cc": "rdma-hierarchical",
+  "workload": "ycsb-e",
+  "keys": 10000,
+  "transactions": 5000,
+  "operations": 10,
+  "range": 8,
+  "bucket": 64,
+  "threads": 32,
+  "zipf": 0.99,
+  "duration": 10,
+  "seed": 8
+}

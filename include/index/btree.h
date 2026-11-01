@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -98,6 +99,7 @@ public:
 private:
     using Page = BTreePage;
     std::unique_ptr<Page> make_page(bool leaf) const;
+    RC insert_new(idx_key_t key, void* value);
     RC insert_descent(idx_key_t key, void* value);
     RC insert_pessimistic(idx_key_t key, void* value);
     RC insert_forcing_root_split(idx_key_t key, void* value);

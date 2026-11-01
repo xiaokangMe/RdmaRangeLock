@@ -109,26 +109,40 @@ std::unique_ptr<BTreeLatch::Page> BTreeLatch::insert_recursive(
 
 RC BTreeLatch::insert(idx_key_t key, void* value) {
     if (order_ == 0) return ERROR;
-    // Fast path: one descent under shared latches, then an exclusive latch on
-    // the leaf. Updates and inserts into a leaf with room both finish here, so
-    // a genuine insert no longer pays a probe descent plus a writer descent.
+    return insert_new(key, value);
+}
+
+// Inserts a key that is known not to be in the tree. One shared-latch descent
+// plus an exclusive leaf latch covers the common case; a full leaf falls
+// through to the crabbing split path.
+RC BTreeLatch::insert_new(idx_key_t key, void* value) {
     for (int attempt = 0; attempt < 4; ++attempt) {
         std::shared_lock<std::shared_mutex> root_shared(root_guard_);
         if (root_ == nullptr) break;
-        std::vector<std::shared_lock<std::shared_mutex>> chain;
-        chain.reserve(8);
+        // Two-latch crabbing: keep only the parent and the node being visited.
+        // Holding every ancestor while upgrading the leaf made concurrent
+        // updates contend on shared latches they never needed.
         Page* page = root_.get();
-        chain.emplace_back(page->latch);
+        std::shared_lock<std::shared_mutex> current(page->latch);
+        std::shared_lock<std::shared_mutex> previous;
         while (!page->is_leaf) {
             const auto pos = std::upper_bound(page->keys.begin(), page->keys.end(), key);
             Page* child = page->children[static_cast<std::size_t>(pos - page->keys.begin())].get();
-            chain.emplace_back(child->latch);
+            std::shared_lock<std::shared_mutex> child_lock(child->latch);
+            previous = std::move(current);
+            current = std::move(child_lock);
             page = child;
         }
-        // Keeping the parent's shared latch until the leaf is exclusively
-        // latched prevents a concurrent split from moving this key elsewhere.
-        chain.pop_back();
+        current.unlock();
+        // A single-level tree has no parent latch to drop.
+        if (previous.owns_lock()) previous.unlock();
         std::unique_lock<std::shared_mutex> leaf_lock(page->latch);
+        // The parent was released before the upgrade, so a concurrent split may
+        // have moved this key to a new right sibling. That shows up as the key
+        // being above everything the leaf still holds, and the descent simply
+        // restarts; holding the parent across the upgrade instead made every
+        // update contend on the parent latch for no benefit.
+        if (!page->keys.empty() && key > page->keys.back()) continue;
         const auto pos = std::lower_bound(page->keys.begin(), page->keys.end(), key);
         const std::size_t index = static_cast<std::size_t>(pos - page->keys.begin());
         if (pos != page->keys.end() && *pos == key) {
@@ -141,14 +155,11 @@ RC BTreeLatch::insert(idx_key_t key, void* value) {
             size_.fetch_add(1, std::memory_order_relaxed);
             return RCOK;
         }
-        break;  // leaf is full: fall through to the split-capable path
+        break;  // leaf is full: fall through to the crabbing split path
     }
     return insert_pessimistic(key, value);
 }
 
-// Bayer-Schkolnick crabbing: latch the child before releasing the parent, and
-// drop every ancestor as soon as a node is known not to split. No tree-wide
-// writer mutex is involved, so disjoint leaves insert concurrently.
 RC BTreeLatch::insert_descent(idx_key_t key, void* value) {
     std::shared_lock<std::shared_mutex> root_shared(root_guard_);
     if (root_ == nullptr) return WAIT;

@@ -12,6 +12,7 @@ import argparse
 import csv
 import glob
 import os
+import csv_schema
 import statistics as stats
 from collections import defaultdict
 
@@ -54,7 +55,7 @@ THREADS = [1, 2, 4, 8, 16, 32]
 
 def load(path):
     with open(path, newline="") as handle:
-        return list(csv.DictReader(handle))
+        return csv_schema.load_rows(handle)
 
 
 def number(row, field):

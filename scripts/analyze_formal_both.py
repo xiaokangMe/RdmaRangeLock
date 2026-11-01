@@ -4,6 +4,7 @@
 import csv
 import glob
 import os
+import csv_schema
 import statistics as st
 from collections import defaultdict
 
@@ -18,7 +19,7 @@ def latest(pattern):
     if not files:
         raise SystemExit("no file for " + pattern)
     with open(files[-1], newline="") as handle:
-        return files[-1], list(csv.DictReader(handle))
+        return files[-1], csv_schema.load_rows(handle)
 
 
 def med(rows, field):

@@ -459,9 +459,8 @@ void RdmaConnection::set_operation_tag(RdmaOpTag tag) {
     if (impl_) impl_->op_tag = static_cast<std::uint8_t>(tag);
 }
 
-const RdmaFailureInfo& RdmaConnection::last_failure() const {
-    static const RdmaFailureInfo kNone{};
-    if (!impl_) return kNone;
+RdmaFailureInfo RdmaConnection::last_failure() const {
+    if (!impl_) return RdmaFailureInfo{};
     std::lock_guard<std::mutex> guard(impl_->failure_mutex);
     return impl_->last_failure;
 }

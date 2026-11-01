@@ -7,6 +7,7 @@ import glob
 import hashlib
 import io
 import os
+import csv_schema
 import statistics as stats
 from collections import defaultdict
 

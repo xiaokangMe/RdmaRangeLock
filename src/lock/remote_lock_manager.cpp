@@ -36,11 +36,6 @@ std::uint64_t make_token(const void* address, std::size_t slot) {
 
 }  // namespace
 
-struct RemoteLockManager::ConnectionSlot {
-    std::unique_ptr<RdmaConnection> connection;
-    std::uint64_t owner_token{0};
-};
-
 struct RemoteLockManager::LoadedShard {
     std::size_t shard{0};
     std::vector<RemoteLockSlot> slots;
@@ -85,11 +80,7 @@ bool RemoteLockManager::connect(const std::string& host, std::uint16_t port) {
     }
     namespace_token_ = make_token(this, connection_count_) & 0x0000ffffffffffffULL;
     if (namespace_token_ == 0) namespace_token_ = 1;
-    for (auto& shard : txn_cache_) {
-        std::lock_guard<std::mutex> guard(shard.mutex);
-        shard.shards.clear();
-        shard.locks.clear();
-    }
+    txn_cache_.clear();
     connections_.reserve(connection_count_);
     for (std::size_t i = 0; i < connection_count_; ++i) {
         auto slot = std::make_unique<ConnectionSlot>();
@@ -156,19 +147,19 @@ RemoteLockManager::Diagnostics RemoteLockManager::diagnostics() const {
     result.gate_retries = gate_retry_count_.load(std::memory_order_relaxed);
     result.gate_aborts = gate_abort_count_.load(std::memory_order_relaxed);
     result.batches = batch_count_.load(std::memory_order_relaxed);
+    result.gate_transport_errors = gate_transport_errors_.load(std::memory_order_relaxed);
     return result;
 }
 
-const RdmaFailureInfo& RemoteLockManager::last_failure() const {
-    static const RdmaFailureInfo kNone{};
+RdmaFailureInfo RemoteLockManager::last_failure() const {
     for (const auto& slot : connections_)
         if (slot && slot->connection && slot->connection->failure_count() != 0)
             return slot->connection->last_failure();
-    return kNone;
+    return RdmaFailureInfo{};
 }
 
 std::int64_t RemoteLockManager::last_failure_shard() const {
-    const auto& failure = last_failure();
+    const RdmaFailureInfo failure = last_failure();
     if (failure.remote_address < shards_address_) return -1;
     const std::uint64_t offset = failure.remote_address - shards_address_;
     if (offset >= kRemoteLockShards * sizeof(RemoteLockShard)) return -1;
@@ -253,94 +244,14 @@ std::vector<std::size_t> RemoteLockManager::shard_ids(const KeyRangeEnt& range,
     return shard_ids(range);
 }
 
-RemoteLockManager::TxnCacheShard& RemoteLockManager::cache_shard(txnid_t txn_id) const {
-    return txn_cache_[static_cast<std::size_t>(txn_id % kRemoteTxnCacheShards)];
-}
-
-void RemoteLockManager::remember_shards(txnid_t txn_id,
-                                        const std::vector<std::size_t>& ids) const {
-    auto& shard = cache_shard(txn_id);
-    std::lock_guard<std::mutex> guard(shard.mutex);
-    auto& saved = shard.shards[txn_id];
-    for (const std::size_t id : ids)
-        if (std::find(saved.begin(), saved.end(), id) == saved.end()) saved.push_back(id);
-    std::sort(saved.begin(), saved.end());
-}
-
 std::vector<std::size_t> RemoteLockManager::shards_for_txn(txnid_t txn_id) const {
-    auto& shard = cache_shard(txn_id);
-    std::lock_guard<std::mutex> guard(shard.mutex);
-    const auto it = shard.shards.find(txn_id);
-    if (it != shard.shards.end() && !it->second.empty()) return it->second;
-    std::vector<std::size_t> all(kRemoteLockShards);
-    for (std::size_t i = 0; i < all.size(); ++i) all[i] = i;
-    return all;
+    return txn_cache_.shards_or_all(txn_id, kRemoteLockShards);
 }
 
-bool RemoteLockManager::cached_lock_satisfies(txnid_t txn_id, LockMode mode,
-                                               const KeyRangeEnt& range,
-                                               LockKind kind) const {
-    auto& shard = cache_shard(txn_id);
-    std::lock_guard<std::mutex> guard(shard.mutex);
-    const auto it = shard.locks.find(txn_id);
-    if (it == shard.locks.end()) return false;
-    for (const auto& held : it->second) {
-        if (held.kind == kind && same_range(held.range, range) &&
-            lock_mode_join(held.mode, mode) == held.mode) return true;
-    }
-    return false;
-}
-
-void RemoteLockManager::remember_lock(txnid_t txn_id, LockMode mode,
-                                       const KeyRangeEnt& range,
-                                       LockKind kind) const {
-    auto& shard = cache_shard(txn_id);
-    std::lock_guard<std::mutex> guard(shard.mutex);
-    auto& saved = shard.locks[txn_id];
-    for (auto& held : saved) {
-        if (held.kind == kind && same_range(held.range, range)) {
-            held.mode = lock_mode_join(held.mode, mode);
-            return;
-        }
-    }
-    saved.push_back(CachedLock{mode, kind, range});
-}
-
-void RemoteLockManager::forget_lock(txnid_t txn_id, const KeyRangeEnt& range,
-                                    LockKind kind) const {
-    auto& shard = cache_shard(txn_id);
-    std::lock_guard<std::mutex> guard(shard.mutex);
-    const auto it = shard.locks.find(txn_id);
-    if (it == shard.locks.end()) return;
-    auto& saved = it->second;
-    saved.erase(std::remove_if(saved.begin(), saved.end(), [&](const CachedLock& held) {
-        return held.kind == kind && same_range(held.range, range);
-    }), saved.end());
-    if (saved.empty()) shard.locks.erase(it);
-}
-
-std::size_t RemoteLockManager::cached_lock_count(txnid_t txn_id) const {
-    auto& shard = cache_shard(txn_id);
-    std::lock_guard<std::mutex> guard(shard.mutex);
-    const auto it = shard.locks.find(txn_id);
-    return it == shard.locks.end() ? 0 : it->second.size();
-}
-
-void RemoteLockManager::forget_shard(txnid_t txn_id, std::size_t shard) const {
-    auto& cache = cache_shard(txn_id);
-    std::lock_guard<std::mutex> guard(cache.mutex);
-    const auto it = cache.shards.find(txn_id);
-    if (it == cache.shards.end()) return;
-    auto& saved = it->second;
-    saved.erase(std::remove(saved.begin(), saved.end(), shard), saved.end());
-    if (saved.empty()) cache.shards.erase(it);
-}
-
-void RemoteLockManager::drop_cache(txnid_t txn_id) const {
-    auto& cache = cache_shard(txn_id);
-    std::lock_guard<std::mutex> guard(cache.mutex);
-    cache.shards.erase(txn_id);
-    cache.locks.erase(txn_id);
+void RemoteLockManager::refresh_txn_shards(txnid_t txn_id) const {
+    txn_cache_.refresh_shards(txn_id, [this](const TxnLockCache::CachedLock& held) {
+        return shard_ids(held.range, held.kind, held.mode);
+    });
 }
 
 std::uint64_t RemoteLockManager::shard_base(std::size_t shard) const {
@@ -351,20 +262,26 @@ std::uint32_t RemoteLockManager::current_shards_rkey() const {
     return current_connection().remote_memory().rkey;
 }
 
-bool RemoteLockManager::try_enter_shards(const std::vector<std::size_t>& ids,
-                                         std::vector<std::size_t>& acquired) const {
+RemoteLockManager::GateOutcome RemoteLockManager::try_enter_shards(
+    const std::vector<std::size_t>& ids, std::vector<std::size_t>& acquired) const {
     acquired.clear();
-    if (ids.empty()) return true;
+    if (ids.empty()) return GateOutcome::Acquired;
     auto& connection = current_connection();
     connection.set_operation_tag(RdmaOpTag::Gate);
     const auto owner = current_owner_token();
     if (ids.size() == 1) {
         std::uint64_t previous = 0;
         if (!connection.compare_swap(shard_base(ids.front()) + offsetof(RemoteLockShard, gate),
-                                     current_shards_rkey(), 0, owner, previous) || previous != 0)
-            return false;
+                                     current_shards_rkey(), 0, owner, previous)) {
+            // The CAS may have landed even though the completion did not, so
+            // the gate is released unconditionally. The compare makes this a
+            // no-op when the gate belongs to somebody else.
+            leave_shards(ids);
+            return GateOutcome::TransportError;
+        }
+        if (previous != 0) return GateOutcome::Busy;
         acquired.push_back(ids.front());
-        return true;
+        return GateOutcome::Acquired;
     }
     std::vector<std::uint64_t> previous(ids.size(), 0);
     std::vector<RdmaCompareSwapRequest> requests;
@@ -373,21 +290,27 @@ bool RemoteLockManager::try_enter_shards(const std::vector<std::size_t>& ids,
         requests.push_back({shard_base(ids[i]) + offsetof(RemoteLockShard, gate),
                             current_shards_rkey(), 0, owner, &previous[i]});
     }
-    if (!connection.compare_swap_batch(requests)) return false;
+    if (!connection.compare_swap_batch(requests)) {
+        // A batch that fails to post leaves it unknown which gates were taken.
+        // Releasing every requested gate is safe for the same reason as above,
+        // and skipping it is what used to strand gates on a transport error.
+        leave_shards(ids);
+        return GateOutcome::TransportError;
+    }
     for (std::size_t i = 0; i < ids.size(); ++i)
         if (previous[i] == 0) acquired.push_back(ids[i]);
     if (acquired.size() != ids.size()) {
         leave_shards(acquired);
         acquired.clear();
-        return false;
+        return GateOutcome::Busy;
     }
-    return true;
+    return GateOutcome::Acquired;
 }
 
-bool RemoteLockManager::enter_shards(const std::vector<std::size_t>& ids,
-                                     std::vector<std::size_t>& acquired,
-                                     bool reliable) const {
-    if (ids.empty()) { acquired.clear(); return true; }
+RemoteLockManager::GateOutcome RemoteLockManager::enter_shards(
+    const std::vector<std::size_t>& ids, std::vector<std::size_t>& acquired,
+    bool reliable) const {
+    if (ids.empty()) { acquired.clear(); return GateOutcome::Acquired; }
     // A no-wait gate is the correctness boundary, but aborting on the first
     // collision turns a short queue into a false conflict. lock() therefore
     // keeps a bounded spin: unbounded blocking there would turn the
@@ -397,7 +320,12 @@ bool RemoteLockManager::enter_shards(const std::vector<std::size_t>& ids,
     gate_attempts_.fetch_add(1, std::memory_order_relaxed);
     const std::size_t limit = reliable ? 4096 : gate_retries_;
     for (std::size_t attempt = 0;; ++attempt) {
-        if (try_enter_shards(ids, acquired)) return true;
+        const GateOutcome outcome = try_enter_shards(ids, acquired);
+        if (outcome == GateOutcome::Acquired) return outcome;
+        if (outcome == GateOutcome::TransportError) {
+            gate_transport_errors_.fetch_add(1, std::memory_order_relaxed);
+            return outcome;
+        }
         if (attempt >= limit) break;
         gate_retry_count_.fetch_add(1, std::memory_order_relaxed);
         if (reliable) {
@@ -417,7 +345,7 @@ bool RemoteLockManager::enter_shards(const std::vector<std::size_t>& ids,
         }
     }
     gate_abort_count_.fetch_add(1, std::memory_order_relaxed);
-    return false;
+    return GateOutcome::Busy;
 }
 
 void RemoteLockManager::leave_shards(const std::vector<std::size_t>& acquired) const {
@@ -527,11 +455,16 @@ RC RemoteLockManager::lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& ran
                            LockKind kind, std::vector<txnid_t>* conflicts) {
     if (!connected() || range.empty() || !range.valid()) return ERROR;
     if (conflicts) conflicts->clear();
-    if (cached_lock_satisfies(txn_id, mode, range, kind)) return RCOK;
+    if (txn_cache_.satisfies(txn_id, mode, range, kind)) return RCOK;
+    std::unique_lock<std::mutex> io(current_slot().io_mutex);
     const auto ids = shard_ids(range, kind, mode);
     LocalGateGuard local(gate_mutexes_, ids, local_gate_enabled_);
     std::vector<std::size_t> acquired;
-    if (!enter_shards(ids, acquired)) return AbortGate;
+    switch (enter_shards(ids, acquired)) {
+        case GateOutcome::Acquired: break;
+        case GateOutcome::Busy: return AbortGate;
+        case GateOutcome::TransportError: return ERROR;
+    }
 
     std::vector<LoadedShard> tables;
     if (!load_tables(ids, tables)) {
@@ -614,26 +547,25 @@ RC RemoteLockManager::lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& ran
         leave_shards(acquired);
         return ERROR;
     }
-    remember_shards(txn_id, ids);
-    remember_lock(txn_id, mode, range, kind);
+    txn_cache_.remember_shards(txn_id, ids);
+    txn_cache_.remember(txn_id, mode, range, kind);
     leave_shards(acquired);
     return RCOK;
 }
 
 RC RemoteLockManager::release(txnid_t txn_id, const KeyRangeEnt* range, LockKind kind) {
     if (!connected()) return Abort;
-    std::vector<std::size_t> ids;
-    {
-        auto& cache = cache_shard(txn_id);
-        std::lock_guard<std::mutex> guard(cache.mutex);
-        const auto it = cache.shards.find(txn_id);
-        if (it != cache.shards.end()) ids = it->second;
-    }
+    std::unique_lock<std::mutex> io(current_slot().io_mutex);
+    std::vector<std::size_t> ids = txn_cache_.shards(txn_id);
     if (ids.empty()) ids = range != nullptr ? shard_ids(*range) : shards_for_txn(txn_id);
 
     LocalGateGuard local(gate_mutexes_, ids, local_gate_enabled_);
     std::vector<std::size_t> acquired;
-    if (!enter_shards(ids, acquired, true)) return AbortGate;
+    switch (enter_shards(ids, acquired, true)) {
+        case GateOutcome::Acquired: break;
+        case GateOutcome::Busy: return AbortGate;
+        case GateOutcome::TransportError: return ERROR;
+    }
 
     std::vector<LoadedShard> tables;
     if (!load_tables(ids, tables)) {
@@ -685,10 +617,13 @@ RC RemoteLockManager::release(txnid_t txn_id, const KeyRangeEnt* range, LockKind
     leave_shards(acquired);
 
     if (range == nullptr) {
-        for (const std::size_t shard : ids) forget_shard(txn_id, shard);
-        drop_cache(txn_id);
+        // The lock cache is only valid while the transaction holds something;
+        // leaving the entry behind makes every later release walk shards that
+        // hold nothing of its own.
+        txn_cache_.drop(txn_id);
     } else if (removed) {
-        forget_lock(txn_id, *range, kind);
+        txn_cache_.forget(txn_id, *range, kind);
+        refresh_txn_shards(txn_id);
     }
     return removed ? RCOK : Abort;
 }
@@ -703,8 +638,9 @@ RC RemoteLockManager::unlock_all(txnid_t txn_id) {
 
 std::size_t RemoteLockManager::get_lock_count(txnid_t txn_id) const {
     if (!connected()) return 0;
+    std::unique_lock<std::mutex> io(current_slot().io_mutex);
     if (txn_id != 0) {
-        const auto cached = cached_lock_count(txn_id);
+        const auto cached = txn_cache_.lock_count(txn_id);
         if (cached != 0) return cached;
     }
     std::vector<std::size_t> ids;
@@ -717,7 +653,7 @@ std::size_t RemoteLockManager::get_lock_count(txnid_t txn_id) const {
     const txnid_t id = txn_id == 0 ? 0 : wire_txn(txn_id);
     LocalGateGuard local(gate_mutexes_, ids, local_gate_enabled_);
     std::vector<std::size_t> acquired;
-    if (!enter_shards(ids, acquired, true)) return 0;
+    if (enter_shards(ids, acquired, true) != GateOutcome::Acquired) return 0;
     std::vector<LoadedShard> tables;
     if (!load_tables(ids, tables)) {
         leave_shards(acquired);

@@ -12,17 +12,19 @@ using namespace rrl;
 
 namespace {
 
-// Bucket width policy for v6. Measured on the local matrix (see
-// docs/notes/v6-bucket-width-2026-11-01.md): range scans want a wide bucket so
-// one lock covers many rows, point-write workloads want a narrow bucket so
-// unrelated keys do not share a lock. The middle value stays the default for
-// TPC-C, which mixes both shapes.
+// Bucket width policy for v6, measured rather than guessed: see
+// docs/notes/v6-bucket-width-2026-11-01.md. A range scan wants a wide bucket so
+// one lock covers many rows; every point-write workload measured so far wants a
+// narrow bucket so unrelated keys do not share a lock. The TPC-C workloads were
+// swept as well and follow the point-write case, not the middle value.
 std::size_t auto_bucket_width(WorkloadKind kind) {
     switch (kind) {
-        case WorkloadKind::YcsbA:
-        case WorkloadKind::YcsbB: return 16;
         case WorkloadKind::YcsbE: return 256;
-        default: return 64;
+        case WorkloadKind::YcsbA:
+        case WorkloadKind::YcsbB:
+        case WorkloadKind::TpccPayment:
+        case WorkloadKind::TpccNewOrder:
+        default: return 16;
     }
 }
 
@@ -88,6 +90,8 @@ int main(int argc, char** argv) {
     std::string cc = "none";
     std::string rdma_host = "127.0.0.1";
     std::uint16_t rdma_port = 19876;
+    // 0 keeps the historical behaviour of one connection per worker thread.
+    std::size_t rdma_connections = 0;
     bool csv = false;
     bool bucket_auto = false;
     std::string config_path;
@@ -115,6 +119,7 @@ int main(int argc, char** argv) {
         else if (option == "--rdma-host") rdma_host = value;
         else if (option == "--rdma-port") rdma_port = static_cast<std::uint16_t>(std::stoull(value));
         else if (option == "--threads") config.threads = std::stoull(value);
+        else if (option == "--rdma-connections") rdma_connections = std::stoull(value);
         else if (option == "--duration") config.duration_seconds = std::stoull(value);
         else if (option == "--seed") config.seed = std::stoull(value);
         else if (option == "--zipf") config.zipf_theta = std::stod(value);
@@ -150,7 +155,7 @@ int main(int argc, char** argv) {
         stats = run_hierarchical_lock(*index, locks, trace, config.threads);
     } else if (cc == "rdma-next-key" || cc == "rdma-hierarchical") {
         RemoteLockManager locks;
-        locks.set_connection_count(config.threads);
+        locks.set_connection_count(rdma_connections != 0 ? rdma_connections : config.threads);
         if (!locks.connect(rdma_host, rdma_port)) {
             std::cerr << "failed to connect RDMA lock server at " << rdma_host << ":" << rdma_port << "\n";
             return 2;
@@ -172,6 +177,7 @@ int main(int argc, char** argv) {
         std::cout << "workload,index,cc,threads,transactions,committed,aborted,operations,reads,updates,inserts,deletes,range_reads,rows_found,rows_scanned,rows_rechecked,lock_acquires,lock_conflicts,lock_capacity_aborts,lock_gate_aborts,elapsed_ns,rdma_timeouts,rdma_completion_errors,rdma_operations,throughput_committed_txn_s,throughput_attempt_txn_s,checksum,"
                   << "rdma_gate_attempts,rdma_gate_retries,rdma_gate_aborts,rdma_batches,"
                   << "rdma_failure_op,rdma_failure_shard,rdma_failure_wr,rdma_failure_us,rdma_failure_qp,"
+                  << "rdma_gate_transport_errors,rdma_connections,"
                   << "hierarchy_bucket_width\n";
         std::cout << WorkloadTrace::name(config.kind) << ',' << index_name << ',' << cc << ',' << config.threads << ','
                   << stats.transactions << ',' << stats.committed << ',' << stats.aborted << ',' << stats.operations << ','
@@ -181,6 +187,8 @@ int main(int argc, char** argv) {
                   << stats.rdma_timeouts << ',' << stats.rdma_completion_errors << ',' << stats.rdma_operations << ',' << stats.throughput() << ',' << stats.attempt_throughput() << ',' << stats.checksum << ','
                   << rdma_diag.gate_attempts << ',' << rdma_diag.gate_retries << ',' << rdma_diag.gate_aborts << ',' << rdma_diag.batches << ','
                   << rdma_failure.opcode << ',' << rdma_failure_shard << ',' << rdma_failure.wr_index << ',' << rdma_failure.elapsed_us << ',' << rdma_failure.qp_num << ','
+                  << rdma_diag.gate_transport_errors << ','
+                  << (rdma_connections != 0 ? rdma_connections : config.threads) << ','
                   << config.hierarchy_bucket_width << '\n';
     } else {
         std::cout << "workload=" << WorkloadTrace::name(config.kind)

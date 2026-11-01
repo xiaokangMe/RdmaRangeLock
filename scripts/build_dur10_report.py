@@ -7,6 +7,7 @@ import glob
 import hashlib
 import io
 import os
+import csv_schema
 import statistics as st
 from collections import defaultdict
 
@@ -22,12 +23,12 @@ LOCAL_CCS = ["none", "record-2pl", "gap-lock", "next-key", "hierarchical"]
 def latest(pattern):
     files = sorted(glob.glob(os.path.join(RESULTS, pattern)))
     with open(files[-1], newline="") as h:
-        return files[-1], list(csv.DictReader(h))
+        return files[-1], csv_schema.load_rows(h)
 
 
 def load(name):
     with open(os.path.join(RESULTS, name), newline="") as h:
-        return list(csv.DictReader(h))
+        return csv_schema.load_rows(h)
 
 
 def med(rows, f):

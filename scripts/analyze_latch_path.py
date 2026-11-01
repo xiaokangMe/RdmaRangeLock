@@ -12,6 +12,7 @@ import argparse
 import csv
 import glob
 import os
+import csv_schema
 import statistics as stats
 from collections import defaultdict
 

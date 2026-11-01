@@ -12,6 +12,7 @@
 #include "common/range.h"
 #include "lock/lock_manager.h"
 #include "lock/remote_lock_slot.h"
+#include "lock/txn_lock_cache.h"
 #include "lock/slot_index.h"
 #include "rdma/rdma_transport.h"
 
@@ -38,7 +39,9 @@ public:
         // Round trips saved: each batch call carries several work requests in
         // one post, so this counts the batched calls rather than single ops.
         std::uint64_t batches{0};
-        std::uint64_t local_gate_waits{0};
+        // Gate acquisitions that failed on the transport rather than on a busy
+        // gate; these are the ones the caller must treat as a hard error.
+        std::uint64_t gate_transport_errors{0};
     };
 
     bool connect(const std::string& host, std::uint16_t port);
@@ -51,7 +54,9 @@ public:
     Diagnostics diagnostics() const;
     // Details of the most recent failed work request: opcode, shard, WR index,
     // QP and phase tag, so a one-second stall can be localised.
-    const RdmaFailureInfo& last_failure() const;
+    // Returned by value: handing out a reference into a mutex-protected record
+    // is a race as soon as another thread overwrites it.
+    RdmaFailureInfo last_failure() const;
     std::int64_t last_failure_shard() const;
     std::uint64_t timeouts_by_tag(RdmaOpTag tag) const;
     RC lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& range,
@@ -63,41 +68,37 @@ public:
     std::size_t get_lock_count(txnid_t txn_id = 0) const override;
 
 private:
-    struct ConnectionSlot;
-    struct CachedLock {
-        LockMode mode{LockMode::IS};
-        LockKind kind{LockKind::Predicate};
-        KeyRangeEnt range{};
+    // One work queue, one completion queue and one scratch buffer: a connection
+    // can only serve one thread at a time. When fewer connections than threads
+    // are requested, callers queue here instead of corrupting each other's
+    // buffers; with one connection per thread the mutex is uncontended.
+    struct ConnectionSlot {
+        std::unique_ptr<RdmaConnection> connection;
+        std::uint64_t owner_token{0};
+        mutable std::mutex io_mutex;
     };
     struct LoadedShard;
-    struct TxnCacheShard {
-        mutable std::mutex mutex;
-        std::unordered_map<txnid_t, std::vector<std::size_t>> shards;
-        std::unordered_map<txnid_t, std::vector<CachedLock>> locks;
-    };
     class LocalGateGuard;
+
+    // A gate that is busy and a gate whose CAS did not complete are different
+    // failures: the first is contention the caller may retry, the second means
+    // the transport is broken and nothing was acquired.
+    enum class GateOutcome : std::uint8_t { Acquired, Busy, TransportError };
 
     std::vector<std::size_t> shard_ids(const KeyRangeEnt& range) const;
     std::vector<std::size_t> shard_ids(const KeyRangeEnt& range,
                                        LockKind kind, LockMode mode) const;
-    TxnCacheShard& cache_shard(txnid_t txn_id) const;
-    void remember_shards(txnid_t txn_id, const std::vector<std::size_t>& ids) const;
     std::vector<std::size_t> shards_for_txn(txnid_t txn_id) const;
-    bool cached_lock_satisfies(txnid_t txn_id, LockMode mode,
-                               const KeyRangeEnt& range, LockKind kind) const;
-    void remember_lock(txnid_t txn_id, LockMode mode,
-                       const KeyRangeEnt& range, LockKind kind) const;
-    void forget_lock(txnid_t txn_id, const KeyRangeEnt& range, LockKind kind) const;
-    std::size_t cached_lock_count(txnid_t txn_id) const;
-    void forget_shard(txnid_t txn_id, std::size_t shard) const;
-    void drop_cache(txnid_t txn_id) const;
+    // Rebuilds the shard set from the locks still cached, so a single unlock
+    // stops the release path from visiting shards that hold nothing.
+    void refresh_txn_shards(txnid_t txn_id) const;
     // reliable=false keeps the no-wait acquisition semantics used by lock().
     // reliable=true waits with backoff until the gate is free, which is what a
     // release path needs: abandoning a release leaks the locks behind it.
-    bool enter_shards(const std::vector<std::size_t>& ids,
-                      std::vector<std::size_t>& acquired, bool reliable = false) const;
-    bool try_enter_shards(const std::vector<std::size_t>& ids,
-                          std::vector<std::size_t>& acquired) const;
+    GateOutcome enter_shards(const std::vector<std::size_t>& ids,
+                             std::vector<std::size_t>& acquired, bool reliable = false) const;
+    GateOutcome try_enter_shards(const std::vector<std::size_t>& ids,
+                                 std::vector<std::size_t>& acquired) const;
     void leave_shards(const std::vector<std::size_t>& acquired) const;
     bool load_tables(const std::vector<std::size_t>& ids,
                      std::vector<LoadedShard>& tables) const;
@@ -131,12 +132,13 @@ private:
     mutable std::atomic<std::uint64_t> gate_retry_count_{0};
     mutable std::atomic<std::uint64_t> gate_abort_count_{0};
     mutable std::atomic<std::uint64_t> batch_count_{0};
+    mutable std::atomic<std::uint64_t> gate_transport_errors_{0};
     // Local gate serialisation. The remote CAS gate is already the correctness
     // boundary, so this is purely a performance knob: waiting on an in-process
     // mutex is far cheaper than losing a CAS round trip and retrying. It is on
     // by default and can be disabled with RRL_LOCAL_GATE=0 for A/B runs.
     mutable std::array<std::mutex, kRemoteLockShards> gate_mutexes_;
-    mutable std::array<TxnCacheShard, kRemoteTxnCacheShards> txn_cache_;
+    mutable TxnLockCache txn_cache_;
 };
 
 }  // namespace rrl

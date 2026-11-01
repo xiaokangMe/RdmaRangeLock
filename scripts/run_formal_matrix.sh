@@ -98,8 +98,12 @@ RESULT_FILE="$RESULT_DIR/formal-${MODE}-${STAMP}.csv"
 FAILED_FILE="$LOG_DIR/failed-cases.txt"
 : > "$FAILED_FILE"
 FAILED_CASES=()
-RUNNER_HEADER="workload,index,cc,threads,transactions,committed,aborted,operations,reads,updates,inserts,deletes,range_reads,rows_found,rows_scanned,rows_rechecked,lock_acquires,lock_conflicts,lock_capacity_aborts,lock_gate_aborts,elapsed_ns,rdma_timeouts,rdma_completion_errors,rdma_operations,throughput_committed_txn_s,throughput_attempt_txn_s,checksum"
-printf 'transport,server_host,client_host,run,seed,range,bucket,zipf,%s\n' "$RUNNER_HEADER" > "$RESULT_FILE"
+# The result header is taken from the runner itself rather than duplicated
+# here: a hard-coded copy silently drifted every time the runner gained a
+# column, which is exactly how the diagnostics columns ended up unlabelled.
+RESULT_HEADER=""
+RESULT_FIELDS=0
+: > "$RESULT_FILE"
 
 SERVER_PID=""
 SERVER_LOG="$LOG_DIR/lock-server.log"
@@ -163,6 +167,18 @@ run_case() {
             return 1
             ;;
     esac
+    if [[ -z "$RESULT_HEADER" ]]; then
+        RESULT_HEADER="$(printf '%s\n' "$output" | head -n 1)"
+        RESULT_FIELDS=$(printf '%s' "$RESULT_HEADER" | awk -F, '{print NF}')
+        printf 'transport,server_host,client_host,run,seed,range,bucket,zipf,%s\n' \
+            "$RESULT_HEADER" > "$RESULT_FILE"
+    fi
+    local row_fields
+    row_fields=$(printf '%s' "$line" | awk -F, '{print NF}')
+    if [[ "$row_fields" -ne "$RESULT_FIELDS" ]]; then
+        echo "schema mismatch for $case_id: header has $RESULT_FIELDS fields, row has $row_fields" >&2
+        return 1
+    fi
     printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
         "$TRANSPORT" "$RDMA_HOST" "$CLIENT_LABEL" "$run_id" "$seed" \
         "$range_length" "$bucket" "$ZIPF" "$line" >> "$RESULT_FILE"

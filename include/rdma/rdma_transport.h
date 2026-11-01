@@ -91,7 +91,8 @@ public:
     // Tagging is per connection and therefore per owning thread; it lets the
     // manager record which protocol step issued the request that stalled.
     void set_operation_tag(RdmaOpTag tag);
-    const RdmaFailureInfo& last_failure() const;
+    // Snapshot, not a reference: the record is overwritten by later failures.
+    RdmaFailureInfo last_failure() const;
     std::uint64_t failure_count() const;
     const RdmaRemoteMemory& remote_memory() const { return remote_memory_; }
     bool connected() const { return connected_; }

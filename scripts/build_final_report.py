@@ -117,6 +117,14 @@ def load_config(log_dir_glob):
     return matches[-1], lines
 
 
+def config_value(lines, key):
+    for line in lines:
+        name, _, value = line.partition("=")
+        if name == key:
+            return value
+    return None
+
+
 def main():
     local_path, local = load_latest("formal-local-*.csv")
     cross_path, cross = load_latest("formal-cross-host-*.csv")
@@ -140,14 +148,12 @@ def main():
                 decay[(workload, cc)] = b / a
 
     ycsbe = "ycsb-e"
-    nk_r1 = med(lt, (ycsbe, "next-key", "0", "8", "1"), "lock_acquires")
-    nk_r128 = med(lt, (ycsbe, "next-key", "0", "128", "1"), "lock_acquires")
-    hi_r1 = med(lt, (ycsbe, "hierarchical", "256", "8", "1"), "lock_acquires")
-    hi_r128 = med(lt, (ycsbe, "hierarchical", "256", "128", "1"), "lock_acquires")
-    nk_tx_r1 = med(lt, (ycsbe, "next-key", "0", "8", "1"), "transactions")
-    hi_tx_r1 = med(lt, (ycsbe, "hierarchical", "256", "8", "1"), "transactions")
-
-    def per_txn(acquires, txns):
+    # Per-transaction lock counts: each range has its own transaction count, so
+    # dividing one range's acquisitions by another range's transactions is wrong.
+    def per_txn(cc, bucket, rng):
+        key = (ycsbe, cc, str(bucket), rng, "1")
+        acquires = med(lt, key, "lock_acquires")
+        txns = med(lt, key, "transactions")
         return acquires / txns if acquires and txns else 0.0
 
     # bucket argmax at t=1 and t=32 for each workload
@@ -201,10 +207,15 @@ li{margin:4px 0}
 </style></head><body><div class="wrap">
 """)
 
+    local_cfg_path, local_cfg = load_config("formal-local-*")
+    cross_cfg_path, cross_cfg = load_config("formal-cross-host-*")
+    local_commit = config_value(local_cfg, "git_head") or git_head()
+    cross_commit = config_value(cross_cfg, "git_head") or "?"
     html_parts.append("<h1>RdmaRangeLock 正式矩阵：本地六版本 + 跨主机两协议</h1>")
-    html_parts.append('<div class="sub">commit <code>%s</code>　本地 %d 次运行　跨主机 %s 次运行　'
-                      '10 秒窗口　每点 3 次重复取中位数</div>'
-                      % (git_head(), len(local), len(cross) if cross else 0))
+    html_parts.append('<div class="sub">本地 <code>%s</code>（%d 次运行）　跨主机 <code>%s</code>'
+                      '（%s 次运行）　10 秒窗口　每点 3 次重复取中位数</div>'
+                      % (local_commit, len(local), cross_commit,
+                         len(cross) if cross else 0))
 
     local_short = len([w for w in windows_local if w < 9.5])
     capacity_total = sum(float(r["lock_capacity_aborts"]) for r in local)
@@ -236,24 +247,32 @@ li{margin:4px 0}
             % (1 / decay[(ycsbe, "next-key")], 1 / decay[(ycsbe, "hierarchical")],
                100 * med(lt, (ycsbe, "hierarchical", "256", "8", "1"), "throughput_committed_txn_s")
                / med(lt, (ycsbe, "next-key", "0", "8", "1"), "throughput_committed_txn_s")))
-    if nk_r128 and hi_r128 and nk_tx_r1 and hi_tx_r1:
-        bullets.append(
-            "锁成本是机制层面的差别：YCSB-E range=128 时 next-key 每事务 <b>%.0f</b> 次加锁、"
-            "hierarchical 每事务 <b>%.0f</b> 次（range=8 时分别是 %.0f 与 %.0f），"
-            "而两者返回的行数完全相同。"
-            % (per_txn(nk_r128, nk_tx_r1), per_txn(hi_r128, hi_tx_r1),
-               per_txn(nk_r1, nk_tx_r1), per_txn(hi_r1, hi_tx_r1)))
+    bullets.append(
+        "锁成本是机制层面的差别：YCSB-E 单线程下 next-key 每事务加锁 <b>%.0f / %.0f / %.0f</b> 次"
+        "（range 8/32/128），hierarchical 为 <b>%.0f / %.0f / %.0f</b> 次——随扫描宽度增长的是前者，"
+        "后者几乎不动，而两者返回的行数完全相同。"
+        % (per_txn("next-key", 0, "8"), per_txn("next-key", 0, "32"), per_txn("next-key", 0, "128"),
+           per_txn("hierarchical", bucket_for("ycsb-e"), "8"),
+           per_txn("hierarchical", bucket_for("ycsb-e"), "32"),
+           per_txn("hierarchical", bucket_for("ycsb-e"), "128")))
     if ("ycsb-a", "hierarchical") in decay:
         bullets.append(
             "写冲突负载上排序反转：YCSB-A 无锁基线衰减 %.1f×，hierarchical 衰减 <b>%.1f×</b>，"
             "是五种协议里最差的一档；它在 YCSB-E 上却是最好的。两条曲线必须成对出现。"
             % (1 / decay[("ycsb-a", "none")], 1 / decay[("ycsb-a", "hierarchical")]))
     if bucket_best:
-        parts = []
+        wide, narrow = [], []
         for workload in WORKLOADS:
+            name = WL_LABEL[workload].split("（")[0]
             if (workload, "1") in bucket_best:
-                parts.append("%s→%d" % (WL_LABEL[workload].split("（")[0], bucket_best[(workload, "1")][1]))
-        bullets.append("单线程桶宽最优值：" + "，".join(parts) + "。与 <code>--bucket auto</code> 的策略一致（YCSB-E 取 256，其余取 16）。")
+                wide.append("%s→%d" % (name, bucket_best[(workload, "1")][1]))
+            if (workload, "32") in bucket_best:
+                narrow.append("%s→%d" % (name, bucket_best[(workload, "32")][1]))
+        bullets.append(
+            "桶宽最优点随并发移动：单线程最优是 %s，32 线程最优是 %s。"
+            "<code>--bucket auto</code> 取 YCSB-E 256、其余 16，即在高并发端偏保守——"
+            "单线程上让出约 10%%，换取 t=32 时不出现 6 倍级的反转。"
+            % ("、".join(wide), "、".join(narrow)))
     if cross:
         nk1 = med(defaultdict(list), tuple(), "x") if False else None
         ct = defaultdict(list)
@@ -267,8 +286,10 @@ li{margin:4px 0}
                 "这个差距是传输成本（每把锁约 5.5 个单边往返），不是锁协议差异。"
                 % (nk, loc, loc / nk))
         bullets.append(
-            "跨主机中止全部来自真实锁冲突：27/27 与全部正式的跨主机运行中 "
-            "<code>lock_capacity_aborts</code> 与 <code>lock_gate_aborts</code> 合计为 0。")
+            "跨主机 %d 次运行中 <code>lock_capacity_aborts</code> 与 "
+            "<code>lock_gate_aborts</code> 合计均为 0，中止全部来自真实锁冲突——"
+            "这是把锁槽扩到 8192 之后才成立的（预检时 1024 槽下 range=128 t=32 有 95%% 的中止来自容量）。"
+            % len(cross))
     html_parts.append("<ul>%s</ul>" % "".join("<li>%s</li>" % b for b in bullets))
 
     html_parts.append('<div class="note">旧矩阵（<code>formal-*-20261031*.csv</code>、'
@@ -386,16 +407,19 @@ li{margin:4px 0}
     html_parts.append("<h2>04　配置与数据身份</h2>")
     html_parts.append(table(
         ["项", "值"], [
-            ["commit", "<code>%s</code>" % git_head()],
+            ["本地 commit", "<code>%s</code>　<code>%s</code>"
+             % (local_commit, os.path.basename(local_cfg_path or ""))],
             ["本地结果", "<code>%s</code><br>%d 行<br>sha256 <code>%s</code>"
              % (os.path.basename(local_path), len(local), sha256(local_path))],
-        ] + ([["跨主机结果", "<code>%s</code><br>%d 行<br>sha256 <code>%s</code>"
+        ] + ([["跨主机 commit", "<code>%s</code>　<code>%s</code>"
+               % (cross_commit, os.path.basename(cross_cfg_path or ""))],
+              ["跨主机结果", "<code>%s</code><br>%d 行<br>sha256 <code>%s</code>"
                % (os.path.basename(cross_path), len(cross), sha256(cross_path))]]
              if cross else [])))
-    cfg_path, cfg_lines = load_config("formal-local-*")
-    if cfg_lines:
-        html_parts.append("<h3>本地矩阵启动时写入的 <code>config.txt</code></h3>")
-        html_parts.append("<pre>%s</pre>" % html.escape("\n".join(cfg_lines)))
+    for label, lines in (("本地", local_cfg), ("跨主机", cross_cfg)):
+        if lines:
+            html_parts.append("<h3>%s矩阵启动时写入的 <code>config.txt</code></h3>" % label)
+            html_parts.append("<pre>%s</pre>" % html.escape("\n".join(lines)))
     html_parts.append('<p class="small">重新生成：<code>scripts/analyze_final.py</code>、'
                       '<code>scripts/plot_final.py</code>、<code>scripts/build_final_report.py</code>。'
                       '原始 CSV 按 CONSTRAINTS 不入库，校验和与路径见上表。</p>')

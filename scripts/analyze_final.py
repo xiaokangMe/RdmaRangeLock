@@ -28,6 +28,13 @@ OUT_DIR = os.path.join(ROOT, "figures", "final")
 THREADS = [1, 2, 4, 8, 16, 32]
 
 LOCAL_CCS = ["none", "record-2pl", "gap-lock", "next-key", "hierarchical"]
+# The value --bucket auto picks, so every table below describes the same
+# configuration the published matrix uses.
+AUTO_BUCKET = {"ycsb-e": 256}
+
+
+def auto_bucket(workload):
+    return AUTO_BUCKET.get(workload, 16)
 RDMA_CCS = ["rdma-next-key", "rdma-hierarchical"]
 WORKLOADS = ["ycsb-a", "ycsb-e", "tpcc-payment", "tpcc-new-order"]
 
@@ -147,7 +154,7 @@ def local_tables(rows, out):
     for workload in WORKLOADS:
         rng = "8" if workload == "ycsb-e" else "0"
         for cc in LOCAL_CCS:
-            bucket = 64 if cc == "hierarchical" else 0
+            bucket = auto_bucket(workload) if cc == "hierarchical" else 0
             key = (workload, cc, str(bucket), rng, "32")
             txns = med(table, key, "transactions")
             if not txns:
@@ -164,7 +171,7 @@ def local_tables(rows, out):
     out.append("| cc | range | lock_acquires/txn | rows_found/txn | 锁/返回行 |")
     out.append("|---|---:|---:|---:|---:|")
     for cc in LOCAL_CCS:
-        bucket = 64 if cc == "hierarchical" else 0
+        bucket = auto_bucket("ycsb-e") if cc == "hierarchical" else 0
         for rng in ("8", "32", "128"):
             key = ("ycsb-e", cc, str(bucket), rng, "1")
             txns = med(table, key, "transactions")
@@ -215,7 +222,7 @@ def cross_tables(rows, out):
     out.append("| cc | abort% | conflicts | capacity | gate | ops/txn | connections |")
     out.append("|---|---:|---:|---:|---:|---:|---:|")
     for cc in RDMA_CCS:
-        bucket = 64 if cc == "rdma-hierarchical" else 0
+        bucket = auto_bucket("ycsb-e") if cc == "rdma-hierarchical" else 0
         key = (cc, str(bucket), "8", "32")
         txns = med(table, key, "transactions")
         if not txns:

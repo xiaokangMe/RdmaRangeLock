@@ -20,7 +20,7 @@ namespace rrl {
 
 // Per-transaction bookkeeping is split across caches so that a manager-wide
 // mutex is not on the path of every lock request.
-constexpr std::size_t kRemoteTxnCacheShards = 64;
+constexpr std::size_t kRemoteTxnCacheShards = TxnLockCache::kShards;
 // One work request batch. Sized to cover every shard touched by one range
 // request without falling back to a second round trip.
 constexpr std::size_t kRemoteBatchLimit = 128;
@@ -52,6 +52,7 @@ public:
         std::uint64_t lock_calls{0}, cache_hits{0};
         std::uint64_t io_wait_ns{0}, local_gate_wait_ns{0}, gate_hold_ns{0};
         std::uint64_t index_build_ns{0}, lookup_ns{0}, slot_checks{0};
+        std::uint64_t txn_wait_ns{0};
         std::uint64_t sync_calls{0}, sync_ns{0}, read_bytes{0}, write_bytes{0};
         std::array<std::uint64_t, 6> phase_calls{}, phase_ns{};
     };
@@ -105,6 +106,7 @@ private:
     // Used only by the friend regression test, never configured at runtime.
     void (*after_gates_test_hook_)() = nullptr;
     void (*gate_state_test_hook_)(bool) = nullptr;
+    void (*before_cache_test_hook_)() = nullptr;
 
     // A gate that is busy and a gate whose CAS did not complete are different
     // failures: the first is contention the caller may retry, the second means
@@ -158,6 +160,11 @@ private:
     // Full snapshot build+lookup measurements favor a scan for this backend.
     // RRL_SLOT_LOOKUP=index retains the explicit comparison path.
     bool slot_lookup_linear_{true};
+    // Keep remote publication and post-gate cache bookkeeping in transaction
+    // order, including when one transaction is served by different QPs.
+    // Lock order: transaction stripe -> QP io -> local gates -> remote gates.
+    mutable std::array<std::mutex, kRemoteTxnCacheShards> txn_operation_mutexes_;
+    mutable std::atomic<std::uint64_t> txn_wait_ns_{0};
     mutable std::atomic<std::uint64_t> lock_calls_{0}, cache_hits_{0};
     mutable std::atomic<std::uint64_t> io_wait_ns_{0}, local_gate_wait_ns_{0}, gate_hold_ns_{0};
     mutable std::atomic<std::uint64_t> index_build_ns_{0}, lookup_ns_{0}, slot_checks_{0};

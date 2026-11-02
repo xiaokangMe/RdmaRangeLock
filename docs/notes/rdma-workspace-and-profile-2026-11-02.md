@@ -51,3 +51,13 @@ CSV 追加 rdma_local_errors、profile 开关、linear 标志、逻辑请求/cac
 最终默认策略和原始数据定位见 rdma-lookup-profile-results-2026-11-02.md。
 
 默认策略切换后的最终验收：.66 硬件 CTest 24/24、8 个短负载及恢复/握手故障检查通过；.66→.67 的 loopback/workspace/profile 三个定向回归 3/3 通过。未启动完整矩阵。
+
+## 复查补充：同事务跨 QP 的发布/缓存顺序
+
+gate 后记账必须保留事务内操作顺序。例如事务已持 A，线程一发布 B 后尚未 remember_shards，线程二 unlock_all 若只读到 A 的旧 shard 集合，就可能漏放 B，并留下与远端不一致的缓存。固定 64 个事务操作 stripe（与现有 cache 分片数量一致），按 txn_id 选择；整个 lock/release/单事务 count 持有对应 stripe，再取得 io_mutex → 本地 gate → 远端 gate。缓存记账结束后才释放事务 stripe。不同 txn 的 hash 碰撞只增加等待，不改变区间语义，也不增加动态分配。全局 count 仍靠全 shard gate 获取槽表快照。
+
+新增私有 test hook 在 gate/local gate 已释放但缓存未记账处暂停；回归确认同事务 operation stripe 不可重入，并并发请求 unlock_all，最终 A/B 两 shard 的锁均清零，其他事务可取得 B。新增 profile 事务 stripe 等待时间，独立于 QP I/O 等待。测量提交 befd2b2 早于该补充，前述数字只说明当时的查询策略对照；最终代码的正式基线仍须重测。
+
+补充验收还覆盖“远端已发布、cache 尚未记账”处抛 bad_alloc：返回 ERROR、gate 已释放、manager 已失效；后续调用不能复用 cache。默认 linear/profile off 与 index/profile on 分别完成硬件 CTest 24/24、8 个短负载和握手/恢复故障检查；跨主机三项定向回归 3/3。64 条 operation stripe 与现有 cache 分片常量绑定，避免两处常量漂移。
+
+异常 fixture 在断连通知前（gate_state hook）直接用独立 QP 验证所有 gate 为零，再等待其全 shard 哨兵在最后一个 shard 被回收且 gate 释放。等待有 10 秒 deadline，观察真实回收条件，不使用固定 sleep；因此精确计数回归不再受到前一用例尚在执行的异步恢复影响。最终两种策略的 24/24 和跨主机 3/3 均通过，未放宽计数断言。

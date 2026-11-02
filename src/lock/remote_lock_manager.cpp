@@ -253,6 +253,7 @@ RemoteLockManager::Diagnostics RemoteLockManager::diagnostics() const {
     result.index_build_ns = index_build_ns_.load(std::memory_order_relaxed);
     result.lookup_ns = lookup_ns_.load(std::memory_order_relaxed);
     result.slot_checks = slot_checks_.load(std::memory_order_relaxed);
+    result.txn_wait_ns = txn_wait_ns_.load(std::memory_order_relaxed);
     for (const auto& slot : connections_) {
         const auto p = slot->connection->profile();
         result.sync_calls += p.sync_calls; result.sync_ns += p.sync_ns;
@@ -582,6 +583,9 @@ RC RemoteLockManager::lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& ran
                            LockKind kind, std::vector<txnid_t>* conflicts) {
     try {
         if (!connected()) return ERROR;
+        const auto txn_queued = profile_start(profile_enabled_);
+        std::unique_lock<std::mutex> operation(txn_operation_mutexes_[txn_id % kRemoteTxnCacheShards]);
+        profile_add(profile_enabled_, txn_queued, txn_wait_ns_);
         auto& slot = current_slot();
         const auto queued = profile_start(profile_enabled_);
         std::unique_lock<std::mutex> io(slot.io_mutex);
@@ -594,6 +598,9 @@ RC RemoteLockManager::lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& ran
 RC RemoteLockManager::release(txnid_t txn_id, const KeyRangeEnt* range, LockKind kind) {
     try {
         if (!connected()) return ERROR;
+        const auto txn_queued = profile_start(profile_enabled_);
+        std::unique_lock<std::mutex> operation(txn_operation_mutexes_[txn_id % kRemoteTxnCacheShards]);
+        profile_add(profile_enabled_, txn_queued, txn_wait_ns_);
         auto& slot = current_slot();
         const auto queued = profile_start(profile_enabled_);
         std::unique_lock<std::mutex> io(slot.io_mutex);
@@ -606,6 +613,9 @@ RC RemoteLockManager::release(txnid_t txn_id, const KeyRangeEnt* range, LockKind
 std::size_t RemoteLockManager::get_lock_count(txnid_t txn_id) const {
     try {
         if (!connected()) { record_count_error(ERROR); return 0; }
+        const auto txn_queued = profile_start(profile_enabled_);
+        std::unique_lock<std::mutex> operation(txn_operation_mutexes_[txn_id % kRemoteTxnCacheShards]);
+        profile_add(profile_enabled_, txn_queued, txn_wait_ns_);
         auto& slot = current_slot();
         const auto queued = profile_start(profile_enabled_);
         std::unique_lock<std::mutex> io(slot.io_mutex);
@@ -727,6 +737,7 @@ RC RemoteLockManager::lock_impl(txnid_t txn_id, LockMode mode, const KeyRangeEnt
     }
     if (!gate.release()) return ERROR;
     local.release();
+    if (before_cache_test_hook_) before_cache_test_hook_();
     txn_cache_.remember_shards(txn_id, ids);
     txn_cache_.remember(txn_id, mode, range, kind);
     return RCOK;

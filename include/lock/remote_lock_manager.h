@@ -155,7 +155,9 @@ private:
     std::size_t gate_retries_{64};
     bool local_gate_enabled_{true};
     bool profile_enabled_{false};
-    bool slot_lookup_linear_{false};
+    // Full snapshot build+lookup measurements favor a scan for this backend.
+    // RRL_SLOT_LOOKUP=index retains the explicit comparison path.
+    bool slot_lookup_linear_{true};
     mutable std::atomic<std::uint64_t> lock_calls_{0}, cache_hits_{0};
     mutable std::atomic<std::uint64_t> io_wait_ns_{0}, local_gate_wait_ns_{0}, gate_hold_ns_{0};
     mutable std::atomic<std::uint64_t> index_build_ns_{0}, lookup_ns_{0}, slot_checks_{0};

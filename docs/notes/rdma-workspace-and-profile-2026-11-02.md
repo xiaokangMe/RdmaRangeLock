@@ -34,7 +34,7 @@ RRL_RDMA_PROFILE=1 启用计时/流量统计，默认关闭。区分 WR 数与 p
 
 ## 7–8 工具与验收
 
-RRL_SLOT_LOOKUP=index|linear（此提交默认 index）；两路径共用 for_each_candidate、RangeLock::conflicts 与 find_owned 的精确匹配。随机差分包含 40,000 查询及主动 owned 命中。RRL_RDMA_PROFILE=0|1 默认 0，关闭时新增计时器不读时钟，新增计数保持 0；原超时检测仍照常读时钟。
+RRL_SLOT_LOOKUP=index|linear（测量提交 befd2b2 默认 index，随后依数据改为 linear）；两路径共用 for_each_candidate、RangeLock::conflicts 与 find_owned 的精确匹配。随机差分包含 40,000 查询及主动 owned 命中。RRL_RDMA_PROFILE=0|1 默认 0，关闭时新增计时器不读时钟，新增计数保持 0；原超时检测仍照常读时钟。
 
 CSV 追加 rdma_local_errors、profile 开关、linear 标志、逻辑请求/cache 命中、QP I/O 互斥等待、本地 gate 等待、远端 gate 持有时间、索引构建时间、冲突及 owned 查询时间、冲突候选检查量、同步提交次数及耗时、读写字节，以及 None/Gate/LoadCounts/LoadSlots/StoreSlot/ReleaseGate 六阶段调用/耗时。gate_hold 从全部 gate 成功取得后计至释放完成，不包含获取阶段，也不包含缓存记账；io_wait 包括 mutex 调用开销，不是 NIC send queue 深度。sync_calls 是实际 post_send 尝试次数（失败测量拒绝），sync_ns 从 post 前到 completion/失败处理结束；bytes 只计成功提交的 READ/WRITE 载荷，不含 CAS、协议包头。各项是累计总量，不是延迟分位数；并发累计等待不能除墙钟时间当作单线程占比。
 
@@ -47,3 +47,7 @@ CSV 追加 rdma_local_errors、profile 开关、linear 标志、逻辑请求/cac
 两个脚本要求源码/config/script 已提交、工作区干净，记录真实源码提交并构建对应目标，三次重复、交替策略顺序、拒绝覆盖已有文件。原始数据保持忽略，不进 Git。微基准使用 experiments/configs/slot-lookup-bench.json（8 种容量×5 种分布，完整 build+conflict+owned 成本）；next-key 用 experiments/configs/rdma-lookup-profile.json（固定 1,000 事务的小型诊断，不是正式性能矩阵）。后者只支持 YCSB-E/next-key，依赖独占且空的服务端；以全部 key 域作保守活跃槽界，4×4×(256+2)=4,128 < 8,192/shard，脚本拒绝超界。默认不启动服务，不扩大到跨机完整矩阵。
 
 验证：默认 index/profile off 与 linear/profile on 各跑硬件 CTest 24/24 无跳过、8 个短负载及故障检查通过。尚未在此提交生成性能结论，先提交代码，再记录对应源码版本的数据。
+
+最终默认策略和原始数据定位见 rdma-lookup-profile-results-2026-11-02.md。
+
+默认策略切换后的最终验收：.66 硬件 CTest 24/24、8 个短负载及恢复/握手故障检查通过；.66→.67 的 loopback/workspace/profile 三个定向回归 3/3 通过。未启动完整矩阵。

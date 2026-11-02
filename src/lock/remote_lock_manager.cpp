@@ -12,6 +12,9 @@ namespace rrl {
 namespace {
 
 constexpr std::uint64_t kMaxKey = std::numeric_limits<std::uint64_t>::max();
+// A successful connection generation is unique across object lifetimes, even
+// when an allocator reconstructs a manager at the same address.
+std::atomic<std::uint64_t> next_connection_generation{1};
 constexpr std::size_t kNoSlot = std::numeric_limits<std::size_t>::max();
 
 bool same_range(const KeyRangeEnt& lhs, const KeyRangeEnt& rhs) {
@@ -101,7 +104,8 @@ bool RemoteLockManager::connect(const std::string& host, std::uint16_t port) {
         connections_.push_back(std::move(slot));
     }
     next_connection_.store(0, std::memory_order_relaxed);
-    ++connection_generation_;
+    connection_generation_ = next_connection_generation.fetch_add(1, std::memory_order_relaxed);
+    if (connection_generation_ == 0) std::abort();
     return connected();
 }
 
@@ -148,14 +152,19 @@ RemoteLockManager::Diagnostics RemoteLockManager::diagnostics() const {
     result.gate_aborts = gate_abort_count_.load(std::memory_order_relaxed);
     result.batches = batch_count_.load(std::memory_order_relaxed);
     result.gate_transport_errors = gate_transport_errors_.load(std::memory_order_relaxed);
+    result.count_errors = count_errors_.load(std::memory_order_acquire);
+    result.last_count_error = last_count_error_.load(std::memory_order_relaxed);
     return result;
 }
 
 RdmaFailureInfo RemoteLockManager::last_failure() const {
-    for (const auto& slot : connections_)
-        if (slot && slot->connection && slot->connection->failure_count() != 0)
-            return slot->connection->last_failure();
-    return RdmaFailureInfo{};
+    RdmaFailureInfo latest{};
+    for (const auto& slot : connections_) {
+        if (!slot || !slot->connection) continue;
+        const auto snapshot = slot->connection->last_failure();
+        if (snapshot.sequence > latest.sequence) latest = snapshot;
+    }
+    return latest;
 }
 
 std::int64_t RemoteLockManager::last_failure_shard() const {
@@ -180,7 +189,8 @@ RemoteLockManager::ConnectionSlot& RemoteLockManager::current_slot() const {
     };
     static thread_local std::unordered_map<const RemoteLockManager*, Assignment> assignments;
     auto it = assignments.find(this);
-    if (it == assignments.end() || it->second.generation != connection_generation_) {
+    if (it == assignments.end() || it->second.generation != connection_generation_ ||
+        it->second.index >= connections_.size()) {
         const auto index = next_connection_.fetch_add(1, std::memory_order_relaxed) % connections_.size();
         if (it == assignments.end()) it = assignments.emplace(this, Assignment{index, connection_generation_}).first;
         else it->second = Assignment{index, connection_generation_};
@@ -632,8 +642,13 @@ RC RemoteLockManager::unlock_all(txnid_t txn_id) {
     return release(txn_id, nullptr, LockKind::Predicate);
 }
 
+void RemoteLockManager::record_count_error(RC rc) const {
+    last_count_error_.store(rc, std::memory_order_relaxed);
+    count_errors_.fetch_add(1, std::memory_order_release);
+}
+
 std::size_t RemoteLockManager::get_lock_count(txnid_t txn_id) const {
-    if (!connected()) return 0;
+    if (!connected()) { record_count_error(ERROR); return 0; }
     std::unique_lock<std::mutex> io(current_slot().io_mutex);
     if (txn_id != 0) {
         const auto cached = txn_cache_.lock_count(txn_id);
@@ -649,10 +664,15 @@ std::size_t RemoteLockManager::get_lock_count(txnid_t txn_id) const {
     const txnid_t id = txn_id == 0 ? 0 : wire_txn(txn_id);
     LocalGateGuard local(gate_mutexes_, ids, local_gate_enabled_);
     std::vector<std::size_t> acquired;
-    if (enter_shards(ids, acquired, true) != GateOutcome::Acquired) return 0;
+    const auto outcome = enter_shards(ids, acquired, true);
+    if (outcome != GateOutcome::Acquired) {
+        record_count_error(outcome == GateOutcome::Busy ? AbortGate : ERROR);
+        return 0;
+    }
     std::vector<LoadedShard> tables;
     if (!load_tables(ids, tables)) {
         leave_shards(acquired);
+        record_count_error(ERROR);
         return 0;
     }
     std::vector<RangeLock> unique;
@@ -665,7 +685,7 @@ std::size_t RemoteLockManager::get_lock_count(txnid_t txn_id) const {
                 }) == unique.end()) unique.push_back(lock);
         }
     }
-    if (!leave_shards(acquired)) return 0;
+    if (!leave_shards(acquired)) { record_count_error(ERROR); return 0; }
     return unique.size();
 }
 

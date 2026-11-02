@@ -7,6 +7,7 @@
 #include <cctype>
 #include <limits>
 #include <random>
+#include <stdexcept>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -186,7 +187,7 @@ WorkloadKind WorkloadTrace::parse_kind(const std::string& in) {
     if (v == "e" || v == "ycsb-e") return WorkloadKind::YcsbE;
     if (v == "payment" || v == "tpcc-payment") return WorkloadKind::TpccPayment;
     if (v == "new-order" || v == "tpcc-new-order") return WorkloadKind::TpccNewOrder;
-    return WorkloadKind::YcsbA;
+    throw std::invalid_argument("unknown workload: " + in);
 }
 
 const char* WorkloadTrace::name(WorkloadKind k) {
@@ -382,7 +383,9 @@ RunStats run_record_2pl(BTreeIndex& index, LockManager& locks, const WorkloadTra
                             if (timed && std::chrono::steady_clock::now() >= deadline) { stop_after_txn = true; ok = false; break; }
                             ++a.acquires;
                             if (!record_lock_result(a, stopped, locks.lock(tid, LockMode::S, KeyRangeEnt::point(row.key), LockKind::Record))) { ok = false; break; }
-                            a.checksum += row.key ^ *static_cast<uint64_t*>(row.value);
+                            void* value = nullptr;
+                            if (!index.lookup(row.key, value)) { ok = false; break; }
+                            a.checksum += row.key ^ *static_cast<uint64_t*>(value);
                         }
                     } else {
                         const LockMode mode = (op.kind == OperationKind::Read) ? LockMode::S : LockMode::X;
@@ -446,16 +449,18 @@ RunStats run_gap_lock(BTreeIndex& index, LockManager& locks, const WorkloadTrace
                     ++a.ops;
                     if (op.kind == OperationKind::RangeRead) {
                         ++a.ranges;
-                        const auto rows = index.scan_range(KeyRangeEnt::half_open(op.key, op.end_key));
-                        a.scanned += rows.size();
-                        a.found += rows.size();
                         if (!acquire(tid, LockMode::S, KeyRangeEnt::open(op.key, op.end_key), LockKind::Gap) ||
                             !acquire(tid, LockMode::S, KeyRangeEnt::point(op.key), LockKind::Gap) ||
                             !acquire(tid, LockMode::S, KeyRangeEnt::point(op.end_key), LockKind::Gap)) { ok = false; break; }
+                        const auto rows = index.scan_range(KeyRangeEnt::half_open(op.key, op.end_key));
+                        a.scanned += rows.size();
+                        a.found += rows.size();
                         for (const auto& row : rows) {
                             if (timed && std::chrono::steady_clock::now() >= deadline) { stop_after_txn = true; ok = false; break; }
                             if (!acquire(tid, LockMode::S, KeyRangeEnt::point(row.key), LockKind::Record)) { ok = false; break; }
-                            a.checksum += row.key ^ *static_cast<uint64_t*>(row.value);
+                            void* value = nullptr;
+                            if (!index.lookup(row.key, value)) { ok = false; break; }
+                            a.checksum += row.key ^ *static_cast<uint64_t*>(value);
                         }
                     } else if (op.kind == OperationKind::Read) {
                         if (!acquire(tid, LockMode::S, KeyRangeEnt::point(op.key), LockKind::Record)) { ok = false; break; }
@@ -536,7 +541,6 @@ RunStats run_next_key_lock(BTreeIndex& index, IRangeLockManager& locks,
                                 : right_closed(previous, row.key);
                             if (!acquire(tid, LockMode::S, interval)) { ok = false; break; }
                             previous = row.key;
-                            a.checksum += row.key ^ *static_cast<uint64_t*>(row.value);
                         }
                         if (ok) {
                             // The supremum next-key interval protects the tail
@@ -554,6 +558,10 @@ RunStats run_next_key_lock(BTreeIndex& index, IRangeLockManager& locks,
                                 if (verify.size() != rows.size()) ok = false;
                                 else for (size_t n = 0; n < rows.size(); ++n)
                                     if (verify[n].key != rows[n].key) { ok = false; break; }
+                                // The candidate scan predates the locks. Values
+                                // belong to the validated scan under next-key locks.
+                                if (ok) for (const auto& row : verify)
+                                    a.checksum += row.key ^ *static_cast<uint64_t*>(row.value);
                             }
                         }
                     } else if (op.kind == OperationKind::Read) {

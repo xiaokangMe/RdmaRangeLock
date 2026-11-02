@@ -8,6 +8,9 @@ import argparse
 import csv
 import io
 import os
+import select
+import threading
+import time
 from pathlib import Path
 import socket
 import subprocess
@@ -43,6 +46,73 @@ def check_workload_smoke(root, build, env, port):
     print("8 short workload checks: CSV schema/accounting/errors passed", flush=True)
 
 
+def connect_control(port):
+    end = time.monotonic() + 5
+    while True:
+        try:
+            return socket.create_connection(("127.0.0.1", port), timeout=1)
+        except ConnectionRefusedError:
+            if time.monotonic() >= end:
+                raise
+            # Waiting for a listener during process startup, not a concurrency
+            # workaround. Handshake behavior below is checked by peer EOF.
+            threading.Event().wait(0.01)
+
+
+def check_stalled_server_peer(build, env):
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        listener.settimeout(5)
+        case_env = env.copy()
+        case_env["RRL_TEST_RDMA_PORT"] = str(listener.getsockname()[1])
+        case_env["RRL_RDMA_CONTROL_TIMEOUT_MS"] = "200"
+        # The fake server accepts TCP but never returns QP/MR attributes.
+        child = subprocess.Popen([str(build / "rrl_rdma_diagnostics_test"), "handshake"], env=case_env)
+        try:
+            with listener.accept()[0] as peer:
+                child.wait(timeout=5)
+                if child.returncode:
+                    raise RuntimeError("client control deadline failed")
+        finally:
+            if child.poll() is None:
+                child.terminate()
+                child.wait(timeout=5)
+
+
+def check_partial_client(build, env, port):
+    for data in (b"", b"\x01"):
+        with connect_control(port) as peer:
+            if data:
+                peer.sendall(data)
+            peer.settimeout(3)
+            if peer.recv(1) != b"":
+                raise RuntimeError("server did not reject incomplete handshake")
+    subprocess.run([str(build / "rrl_rdma_lock_loopback_test")], env=env, check=True, timeout=30)
+    print("empty/partial client handshakes rejected; listener still serves QPs", flush=True)
+
+
+def check_recovery_budget(build, env, port, server):
+    child = subprocess.Popen([str(build / "rrl_rdma_recovery_test"), "budget"], env=env,
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+        if not select.select([child.stdout], [], [], 5)[0] or child.stdout.readline().strip() != "budget owner ready":
+            raise RuntimeError("budget owner failed to connect")
+        # Occupy the serial handshake acceptor, then close an established owner.
+        # Recovery must stop at its overall budget even while queued behind it.
+        with connect_control(port) as stalled:
+            stalled.sendall(b"\x01")
+            child.communicate("x", timeout=5)
+            if child.returncode:
+                raise RuntimeError("budget owner failed")
+            if server.wait(timeout=2) != 2:
+                raise RuntimeError("overall budget failed to stop queued recovery")
+    finally:
+        if child.poll() is None:
+            child.terminate()
+            child.wait(timeout=5)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default="build-recovery-fix")
@@ -53,27 +123,40 @@ def main():
     env.setdefault("RRL_RDMA_GID_INDEX", "3")
     env["RRL_TEST_RDMA_HOST"] = "127.0.0.1"
     with tempfile.TemporaryDirectory(prefix="rrl-recovery-") as tmp:
-        for case in ("suite", "unsafe", "unknown"):
+        for case in ("suite", "partial", "unsafe", "unknown", "budget"):
+            case_env = env.copy()
+            if case == "partial":
+                case_env["RRL_RDMA_CONTROL_TIMEOUT_MS"] = "200"
+            if case == "budget":
+                case_env["RRL_RDMA_CONTROL_TIMEOUT_MS"] = "3000"
+                case_env["RRL_RDMA_RECOVERY_TIMEOUT_MS"] = "200"
             port = unused_port()
-            env["RRL_TEST_RDMA_PORT"] = str(port)
+            case_env["RRL_TEST_RDMA_PORT"] = str(port)
             with open(Path(tmp) / (case + ".log"), "w+") as log:
                 server = subprocess.Popen([str(build / "rrl_rdma_lock_server"), str(port)],
-                                          env=env, stdout=log, stderr=log)
+                                          env=case_env, stdout=log, stderr=log)
                 try:
                     if case == "suite":
                         subprocess.run(["ctest", "--test-dir", str(build), "--output-on-failure"],
-                                       env=env, check=True, timeout=180)
-                        check_workload_smoke(root, build, env, port)
+                                       env=case_env, check=True, timeout=180)
+                        check_workload_smoke(root, build, case_env, port)
                         if server.poll() is not None:
                             raise RuntimeError("server died during correctness suite")
+                    elif case == "partial":
+                        check_partial_client(build, case_env, port)
+                        if server.poll() is not None:
+                            raise RuntimeError("listener died after rejecting handshake")
                     else:
-                        subprocess.run([str(build / "rrl_rdma_recovery_test"), case],
-                                       env=env, check=True, timeout=30)
+                        if case == "budget":
+                            check_recovery_budget(build, case_env, port, server)
+                        else:
+                            subprocess.run([str(build / "rrl_rdma_recovery_test"), case],
+                                           env=case_env, check=True, timeout=30)
                         if server.wait(timeout=15) != 2:
                             raise RuntimeError("uncertain mutation did not fail closed")
                         log.flush()
                         log.seek(0)
-                        if "uncertain mutation while holding gate" not in log.read():
+                        if ("overall recovery deadline" if case == "budget" else "uncertain mutation while holding gate") not in log.read():
                             raise RuntimeError("server failed for an unrelated reason")
                 except BaseException:
                     log.flush()
@@ -84,12 +167,14 @@ def main():
                     if server.poll() is None:
                         server.terminate()
                     server.wait(timeout=15)
+    check_stalled_server_peer(build, env)
     # Explicit environment + unavailable server must fail, never skip.
     env["RRL_TEST_RDMA_PORT"] = str(unused_port())
-    result = subprocess.run([str(build / "rrl_rdma_lock_loopback_test")], env=env, timeout=15)
+    result = subprocess.run([str(build / "rrl_rdma_lock_loopback_test")], env=env,
+                            capture_output=True, text=True, timeout=15)
     if result.returncode != 1:
         raise RuntimeError("configured connection failure was not reported as test failure")
-    print("RDMA suite + unsafe mutation rejection + unavailable-server check: OK", flush=True)
+    print("RDMA suite + handshake deadlines + recovery budget + unsafe mutation rejection + unavailable-server check: OK", flush=True)
 
 
 if __name__ == "__main__":

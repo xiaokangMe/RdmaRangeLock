@@ -23,6 +23,11 @@ int main(int argc, char** argv) {
     constexpr std::uint64_t owner = 0x123456789ULL;
     RdmaConnection failed;
     check(failed.connect_client(host, port, owner), "failed-owner connect");
+    if (argc > 1 && std::string(argv[1]) == "budget") {
+        std::cout << "budget owner ready" << std::endl;
+        std::cin.get();
+        return 0;
+    }
     const auto remote = failed.remote_memory();
     const auto base = remote.address + offsetof(RemoteLockRegion, shards);
     const auto gate = base + offsetof(RemoteLockShard, gate);

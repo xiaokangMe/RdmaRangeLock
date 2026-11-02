@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -20,7 +21,10 @@ enum class RdmaOpTag : std::uint8_t {
     ReleaseGate = 5,
 };
 
-// Everything needed to explain a single failed work request.
+constexpr std::uint32_t kRdmaUnknownWr = UINT32_MAX;
+
+// Everything needed to explain a single failed work request. Unknown request
+// identity (poll error/timeout) uses kRdmaUnknownWr and zero address/length.
 struct RdmaFailureInfo {
     std::uint32_t opcode{0};
     std::uint32_t status{0};
@@ -29,6 +33,8 @@ struct RdmaFailureInfo {
     std::uint64_t remote_address{0};
     std::uint64_t elapsed_us{0};
     std::uint64_t qp_num{0};
+    // Process-wide publication sequence, comparable across connections.
+    std::uint64_t sequence{0};
     std::uint8_t tag{0};
     std::uint8_t reserved[7]{};
 };
@@ -99,6 +105,11 @@ public:
     bool write_batch(const std::vector<RdmaWriteRequest>& requests);
     bool compare_swap_batch(const std::vector<RdmaCompareSwapRequest>& requests);
     bool wait_for_disconnect();
+    // Additional absolute budget, used for the complete server recovery.
+    void set_deadline(std::chrono::steady_clock::time_point deadline);
+    // After accept_server() returns false, a malformed/timed-out handshake may
+    // be rejected without stopping the listener. Resource/listener errors are fatal.
+    bool rejected_handshake() const;
     std::uint64_t timeout_count() const;
     std::uint64_t timeout_count(RdmaOpTag tag) const;
     std::uint64_t completion_error_count() const;

@@ -42,6 +42,10 @@ public:
         // Gate acquisitions that failed on the transport rather than on a busy
         // gate; these are the ones the caller must treat as a hard error.
         std::uint64_t gate_transport_errors{0};
+        // get_lock_count retains its size_t contract. A zero is valid only if
+        // this monotonic counter did not change during the observation.
+        std::uint64_t count_errors{0};
+        RC last_count_error{RCOK};
     };
 
     bool connect(const std::string& host, std::uint16_t port);
@@ -68,6 +72,8 @@ public:
     std::size_t get_lock_count(txnid_t txn_id = 0) const override;
 
 private:
+    friend struct RemoteLockManagerTestPeer;
+    void record_count_error(RC rc) const;
     // One work queue, one completion queue and one scratch buffer: a connection
     // can only serve one thread at a time. When fewer connections than threads
     // are requested, callers queue here instead of corrupting each other's
@@ -133,6 +139,8 @@ private:
     mutable std::atomic<std::uint64_t> gate_abort_count_{0};
     mutable std::atomic<std::uint64_t> batch_count_{0};
     mutable std::atomic<std::uint64_t> gate_transport_errors_{0};
+    mutable std::atomic<std::uint64_t> count_errors_{0};
+    mutable std::atomic<RC> last_count_error_{RCOK};
     // Local gate serialisation. The remote CAS gate is already the correctness
     // boundary, so this is purely a performance knob: waiting on an in-process
     // mutex is far cheaper than losing a CAS round trip and retrying. It is on

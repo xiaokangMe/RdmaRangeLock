@@ -1,4 +1,6 @@
 #include "rdma/rdma_transport.h"
+#include "common/config_parse.h"
+#include "control_io.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -23,6 +25,7 @@ namespace {
 
 constexpr std::size_t kScratchBytes = 1u << 20;
 constexpr std::uint8_t kPort = 1;
+std::atomic<std::uint64_t> next_failure_sequence{1};
 
 int gid_index() {
     const char* value = std::getenv("RRL_RDMA_GID_INDEX");
@@ -43,24 +46,14 @@ struct WireInfo {
     std::uint64_t owner_token{0};
 };
 
-bool send_all(int fd, const void* data, std::size_t length) {
-    const auto* p = static_cast<const std::uint8_t*>(data);
-    while (length != 0) {
-        const ssize_t n = ::send(fd, p, length, MSG_NOSIGNAL);
-        if (n <= 0) return false;
-        p += n; length -= static_cast<std::size_t>(n);
-    }
-    return true;
-}
-
-bool recv_all(int fd, void* data, std::size_t length) {
-    auto* p = static_cast<std::uint8_t*>(data);
-    while (length != 0) {
-        const ssize_t n = ::recv(fd, p, length, MSG_WAITALL);
-        if (n <= 0) return false;
-        p += n; length -= static_cast<std::size_t>(n);
-    }
-    return true;
+using control::send_all;
+using control::recv_all;
+using Clock = std::chrono::steady_clock;
+Clock::time_point handshake_deadline(Clock::time_point overall) {
+    const char* value = std::getenv("RRL_RDMA_CONTROL_TIMEOUT_MS");
+    const auto ms = value ? parse_unsigned(value, "RRL_RDMA_CONTROL_TIMEOUT_MS") : 3000;
+    if (ms == 0 || ms > 600000) throw std::invalid_argument("control timeout must be 1..600000 ms");
+    return std::min(overall, Clock::now() + std::chrono::milliseconds(ms));
 }
 
 int make_listen_socket(std::uint16_t port) {
@@ -90,8 +83,8 @@ void enable_keepalive(int fd) {
     ::setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count));
 }
 
-int make_client_socket(const std::string& host, std::uint16_t port) {
-    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+int make_client_socket(const std::string& host, std::uint16_t port, Clock::time_point deadline) {
+    const int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (fd < 0) return -1;
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -100,7 +93,14 @@ int make_client_socket(const std::string& host, std::uint16_t port) {
         ::close(fd); return -1;
     }
     if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        ::close(fd); return -1;
+        if (errno != EINPROGRESS || !control::wait_fd(fd, POLLOUT, deadline)) {
+            ::close(fd); return -1;
+        }
+        int error = 0;
+        socklen_t size = sizeof(error);
+        if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &size) != 0 || error != 0) {
+            ::close(fd); return -1;
+        }
     }
     enable_keepalive(fd);
     return fd;
@@ -133,6 +133,8 @@ struct RdmaConnection::Impl {
     mutable std::mutex failure_mutex;
     std::atomic<bool> failed{false};
     RdmaOpTag peer_failure_tag{RdmaOpTag::None};
+    Clock::time_point deadline{Clock::time_point::max()};
+    bool rejected_handshake{false};
 
     Impl() {
         for (auto& counter : timeouts_by_tag) counter.store(0, std::memory_order_relaxed);
@@ -290,6 +292,7 @@ void record_failure(RdmaConnection::Impl* impl, std::uint32_t status, std::uint3
     info.qp_num = impl->qp ? impl->qp->qp_num : 0;
     info.tag = impl->op_tag;
     std::lock_guard<std::mutex> guard(impl->failure_mutex);
+    info.sequence = next_failure_sequence.fetch_add(1, std::memory_order_relaxed);
     impl->last_failure = info;
 }
 
@@ -311,11 +314,16 @@ void fail_connection(RdmaConnection::Impl* impl) {
 }
 
 bool post_and_poll(RdmaConnection::Impl* impl, ibv_send_wr& wr, ibv_sge& sge) {
+    wr.wr_id = 1;
     wr.sg_list = &sge;
     wr.num_sge = 1;
     wr.send_flags = IBV_SEND_SIGNALED;
     ibv_send_wr* bad = nullptr;
     const auto started = std::chrono::steady_clock::now();
+    if (started >= impl->deadline) {
+        record_failure(impl, 0xfffffffdu, wr.opcode, wr_remote_address(wr), sge.length, 0, started, true);
+        fail_connection(impl); return false;
+    }
     if (ibv_post_send(impl->qp, &wr, &bad) != 0) {
         record_failure(impl, 0xffffffffu, wr.opcode, wr_remote_address(wr), sge.length, 0, started, false);
         fail_connection(impl);
@@ -323,7 +331,7 @@ bool post_and_poll(RdmaConnection::Impl* impl, ibv_send_wr& wr, ibv_sge& sge) {
     }
     impl->operations.fetch_add(1, std::memory_order_relaxed);
     ibv_wc wc{};
-    const auto deadline = started + std::chrono::seconds(1);
+    const auto deadline = std::min(impl->deadline, started + std::chrono::seconds(1));
     for (;;) {
         const int polled = ibv_poll_cq(impl->cq, 1, &wc);
         if (polled < 0) {
@@ -348,11 +356,23 @@ bool post_and_poll(RdmaConnection::Impl* impl, ibv_send_wr& wr, ibv_sge& sge) {
     }
 }
 
+void record_batch_failure(RdmaConnection::Impl* impl, std::uint32_t status,
+                          const std::vector<ibv_send_wr>& wrs,
+                          const std::vector<ibv_sge>& sges, std::size_t index,
+                          Clock::time_point started, bool timeout) {
+    if (index < wrs.size())
+        record_failure(impl, status, wrs[index].opcode, wr_remote_address(wrs[index]),
+                       sges[index].length, static_cast<std::uint32_t>(index), started, timeout);
+    else
+        record_failure(impl, status, wrs.front().opcode, 0, 0, kRdmaUnknownWr, started, timeout);
+}
+
 bool post_batch_and_poll(RdmaConnection::Impl* impl,
                          std::vector<ibv_send_wr>& wrs,
                          std::vector<ibv_sge>& sges) {
     if (wrs.empty() || wrs.size() != sges.size() || wrs.size() > 128) return false;
     for (std::size_t i = 0; i < wrs.size(); ++i) {
+        wrs[i].wr_id = i + 1;
         wrs[i].sg_list = &sges[i];
         wrs[i].num_sge = 1;
         // Fence the signaled tail behind prior READ/atomic responses before
@@ -363,39 +383,42 @@ bool post_batch_and_poll(RdmaConnection::Impl* impl,
     }
     ibv_send_wr* bad = nullptr;
     const auto started = std::chrono::steady_clock::now();
+    if (started >= impl->deadline) {
+        record_batch_failure(impl, 0xfffffffdu, wrs, sges, kRdmaUnknownWr, started, true);
+        fail_connection(impl); return false;
+    }
     if (ibv_post_send(impl->qp, &wrs.front(), &bad) != 0) {
         // A prefix may already be in flight without a signaled completion.
         // Never reuse its registered buffer on this QP after partial posting.
         std::size_t posted = 0;
         while (posted < wrs.size() && &wrs[posted] != bad) ++posted;
         impl->operations.fetch_add(posted, std::memory_order_relaxed);
-        record_failure(impl, 0xffffffffu, wrs.front().opcode, wr_remote_address(wrs.front()),
-                       sges.front().length, static_cast<std::uint32_t>(posted), started, false);
+        record_batch_failure(impl, 0xffffffffu, wrs, sges, posted, started, false);
         fail_connection(impl);
         return false;
     }
     impl->operations.fetch_add(wrs.size(), std::memory_order_relaxed);
     ibv_wc wc{};
-    const auto deadline = started + std::chrono::seconds(1);
+    const auto deadline = std::min(impl->deadline, started + std::chrono::seconds(1));
     for (;;) {
         const int polled = ibv_poll_cq(impl->cq, 1, &wc);
         if (polled < 0) {
-            record_failure(impl, 0xfffffffeu, wrs.front().opcode, wr_remote_address(wrs.front()),
-                           sges.front().length, 0, started, false);
+            record_batch_failure(impl, 0xfffffffeu, wrs, sges, kRdmaUnknownWr, started, false);
             fail_connection(impl);
             return false;
         }
         if (polled > 0) {
-            if (wc.status != IBV_WC_SUCCESS) {
-                record_failure(impl, static_cast<std::uint32_t>(wc.status), wrs.front().opcode,
-                               wr_remote_address(wrs.front()), sges.front().length, 0, started, false);
+            if (wc.status != IBV_WC_SUCCESS || wc.wr_id != wrs.size()) {
+                const auto index = wc.wr_id > 0 && wc.wr_id <= wrs.size() ? wc.wr_id - 1 : kRdmaUnknownWr;
+                const auto status = wc.status == IBV_WC_SUCCESS ? 0xfffffffcu : static_cast<std::uint32_t>(wc.status);
+                record_batch_failure(impl, status, wrs, sges, index, started, false);
                 fail_connection(impl);
+                return false;
             }
-            return wc.status == IBV_WC_SUCCESS;
+            return true;
         }
         if (std::chrono::steady_clock::now() >= deadline) {
-            record_failure(impl, 0xfffffffdu, wrs.front().opcode, wr_remote_address(wrs.front()),
-                           sges.front().length, 0, started, true);
+            record_batch_failure(impl, 0xfffffffdu, wrs, sges, kRdmaUnknownWr, started, true);
             fail_connection(impl);
             return false;
         }
@@ -429,22 +452,38 @@ RdmaListener::~RdmaListener() { if (fd_ >= 0) ::close(fd_); }
 RdmaConnection::RdmaConnection() : impl_(new Impl) {}
 RdmaConnection::~RdmaConnection() { delete impl_; }
 
+void RdmaConnection::set_deadline(std::chrono::steady_clock::time_point deadline) {
+    impl_->deadline = deadline;
+}
+
+bool RdmaConnection::rejected_handshake() const { return impl_->rejected_handshake; }
+
 bool RdmaConnection::connect_client(const std::string& host, std::uint16_t tcp_port,
                                     std::uint64_t owner_token) {
+    if (impl_->context || impl_->socket_fd >= 0) return false; // One-shot QP lifetime.
+    const auto deadline = handshake_deadline(impl_->deadline);
     if (!create_resources(impl_, nullptr, 0, true)) return false;
     int fd = -1;
-    for (int attempt = 0; attempt < 100 && fd < 0; ++attempt) {
-        fd = make_client_socket(host, tcp_port);
+    // Only startup connection refusal is retried. One absolute deadline also
+    // covers nonblocking connect and the complete QP/MR exchange.
+    for (int attempt = 0; attempt < 100 && fd < 0 && Clock::now() < deadline; ++attempt) {
+        fd = make_client_socket(host, tcp_port, deadline);
         if (fd < 0) std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     if (fd < 0) return false;
     impl_->socket_fd = fd;
+    auto reject = [&] {
+        impl_->failed.store(true, std::memory_order_release);
+        ::shutdown(fd, SHUT_RDWR);
+        return false;
+    };
     WireInfo local{};
-    if (!query_local(impl_, local)) return false;
+    if (!query_local(impl_, local)) return reject();
     local.owner_token = owner_token;
-    if (!send_all(fd, &local, sizeof(local))) return false;
+    if (!send_all(fd, &local, sizeof(local), deadline)) return reject();
     WireInfo remote{};
-    if (!recv_all(fd, &remote, sizeof(remote)) || !transition_ready(impl_, remote)) return false;
+    if (!recv_all(fd, &remote, sizeof(remote), deadline) || Clock::now() >= deadline ||
+        !transition_ready(impl_, remote)) return reject();
     impl_->peer_owner_token = remote.owner_token;
     remote_memory_ = {remote.address, remote.rkey, remote.length};
     connected_ = true;
@@ -457,21 +496,25 @@ bool RdmaConnection::accept_server(std::uint16_t tcp_port, void* region, std::si
 }
 
 bool RdmaConnection::accept_server(RdmaListener& listener, void* region, std::size_t region_length) {
-    if (!listener.valid() || !create_resources(impl_, region, region_length, false)) return false;
-    const int fd = ::accept(listener.fd_, nullptr, nullptr);
+    if (!listener.valid() || impl_->context || !create_resources(impl_, region, region_length, false)) return false;
+    int fd = -1;
+    do { fd = ::accept(listener.fd_, nullptr, nullptr); } while (fd < 0 && errno == EINTR);
     if (fd < 0) return false;
     impl_->socket_fd = fd;
+    impl_->rejected_handshake = true;
+    const auto deadline = handshake_deadline(impl_->deadline);
     enable_keepalive(fd);
     WireInfo remote{};
-    if (!recv_all(fd, &remote, sizeof(remote))) return false;
+    if (!recv_all(fd, &remote, sizeof(remote), deadline)) return false;
     WireInfo local{};
     if (!query_local(impl_, local)) return false;
     local.address = reinterpret_cast<std::uint64_t>(impl_->region_mr->addr);
     local.rkey = impl_->region_mr->rkey;
     local.length = region_length;
-    if (!transition_ready(impl_, remote) || !send_all(fd, &local, sizeof(local))) return false;
+    if (!transition_ready(impl_, remote) || !send_all(fd, &local, sizeof(local), deadline)) return false;
     impl_->peer_owner_token = remote.owner_token;
     remote_memory_ = {remote.address, remote.rkey, remote.length};
+    impl_->rejected_handshake = false;
     connected_ = true;
     return true;
 }

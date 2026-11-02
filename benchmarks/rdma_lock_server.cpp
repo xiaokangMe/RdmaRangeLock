@@ -1,6 +1,9 @@
 #include "lock/remote_lock_manager.h"
+#include "common/config_parse.h"
 
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -16,11 +19,40 @@ namespace {
     std::_Exit(2);
 }
 
+class RecoveryBudget {
+public:
+    RecoveryBudget(std::uint64_t owner, std::chrono::milliseconds duration)
+        : deadline(std::chrono::steady_clock::now() + duration), watchdog_([this, owner] {
+            std::unique_lock<std::mutex> guard(mutex_);
+            if (!cv_.wait_until(guard, deadline, [this] { return done_; }))
+                recovery_failed(owner, "overall recovery deadline");
+        }) {}
+    ~RecoveryBudget() {
+        { std::lock_guard<std::mutex> guard(mutex_); done_ = true; }
+        cv_.notify_one(); watchdog_.join();
+    }
+    const std::chrono::steady_clock::time_point deadline;
+private:
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool done_{false};
+    std::thread watchdog_;
+};
+
+std::chrono::milliseconds recovery_timeout() {
+    const char* value = std::getenv("RRL_RDMA_RECOVERY_TIMEOUT_MS");
+    const auto ms = value ? parse_unsigned(value, "RRL_RDMA_RECOVERY_TIMEOUT_MS") : 5000;
+    if (!ms || ms > 600000) throw std::invalid_argument("recovery timeout must be 1..600000 ms");
+    return std::chrono::milliseconds(ms);
+}
+
 void clear_owner_state(std::uint16_t port, std::uint64_t owner, RdmaOpTag failed_tag) {
     if (owner == 0) return; // Unowned probes/recovery connections never publish locks.
     // Use NIC atomics for both ordinary clients and recovery. CPU atomics are
     // not a portable mutual exclusion mechanism against remote NIC atomics.
+    RecoveryBudget budget(owner, recovery_timeout());
     RdmaConnection recovery;
+    recovery.set_deadline(budget.deadline);
     if (!recovery.connect_client("127.0.0.1", port)) recovery_failed(owner, "connect");
     const auto remote = recovery.remote_memory();
     const auto token = owner | (std::uint64_t{1} << 63);
@@ -29,7 +61,7 @@ void clear_owner_state(std::uint16_t port, std::uint64_t owner, RdmaOpTag failed
         const auto base = remote.address + offsetof(RemoteLockRegion, shards) +
                           shard * sizeof(RemoteLockShard);
         const auto gate = base + offsetof(RemoteLockShard, gate);
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        const auto deadline = budget.deadline;
         for (;;) {
             std::uint64_t previous = 0;
             if (!recovery.compare_swap(gate, remote.rkey, 0, token, previous))
@@ -72,8 +104,16 @@ void clear_owner_state(std::uint16_t port, std::uint64_t owner, RdmaOpTag failed
 }
 }
 
-int main(int argc, char** argv) {
-    const std::uint16_t port = argc > 1 ? static_cast<std::uint16_t>(std::stoul(argv[1])) : 19876;
+int run(int argc, char** argv) {
+    if (argc > 2) throw std::invalid_argument("usage: lock_server [port]");
+    const auto parsed = argc > 1 ? parse_unsigned(argv[1], "port") : 19876;
+    if (!parsed || parsed > 65535) throw std::invalid_argument("port must be 1..65535");
+    const auto port = static_cast<std::uint16_t>(parsed);
+    (void)recovery_timeout();
+    if (const char* value = std::getenv("RRL_RDMA_CONTROL_TIMEOUT_MS")) {
+        const auto ms = parse_unsigned(value, "RRL_RDMA_CONTROL_TIMEOUT_MS");
+        if (!ms || ms > 600000) throw std::invalid_argument("control timeout must be 1..600000 ms");
+    }
     auto region_owner = std::unique_ptr<RemoteLockRegion>(new RemoteLockRegion());
     RemoteLockRegion& region = *region_owner;
     RdmaListener listener(port);
@@ -82,7 +122,9 @@ int main(int argc, char** argv) {
     for (;;) {
         auto* connection = new RdmaConnection();
         if (!connection->accept_server(listener, &region, sizeof(region))) {
+            const bool rejected = connection->rejected_handshake();
             delete connection;
+            if (rejected) { std::cerr << "RDMA control handshake rejected\n"; continue; }
             std::cerr << "RDMA lock server accept failed\n";
             return 2;
         }
@@ -96,4 +138,9 @@ int main(int argc, char** argv) {
             clear_owner_state(port, owner, tag);
         }).detach();
     }
+}
+
+int main(int argc, char** argv) {
+    try { return run(argc, argv); }
+    catch (const std::exception& error) { std::cerr << error.what() << "\n"; return 2; }
 }

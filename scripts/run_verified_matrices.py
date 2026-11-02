@@ -95,8 +95,8 @@ def main():
         (Path("/tmp/rrl-verified-campaign-state.json")).write_text(json.dumps(state, indent=2))
         print(status, flush=True)
 
-    def remote(text, **kwargs):
-        return subprocess.run(ssh + [text], check=True, **kwargs)
+    def remote(command_text, **kwargs):
+        return subprocess.run(ssh + [command_text], check=True, **kwargs)
 
     publish("building")
     for host, argv in (("server", ["uname", "-a"]), ("cpu", ["lscpu"])):

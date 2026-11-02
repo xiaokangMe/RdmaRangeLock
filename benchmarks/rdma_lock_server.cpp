@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <iostream>
+#include <memory>
 #include <thread>
 
 using namespace rrl;
@@ -30,7 +31,10 @@ void clear_owner_state(RemoteLockRegion& region, std::uint64_t owner) {
 
 int main(int argc, char** argv) {
     const std::uint16_t port = argc > 1 ? static_cast<std::uint16_t>(std::stoul(argv[1])) : 19876;
-    RemoteLockRegion region{};
+    // 8 MB at the current capacity: heap, not stack, so growing the table later
+    // cannot silently overflow the default stack.
+    auto region_owner = std::unique_ptr<RemoteLockRegion>(new RemoteLockRegion());
+    RemoteLockRegion& region = *region_owner;
     std::cout << "RDMA lock server listening on port " << port << std::endl;
     for (;;) {
         auto* connection = new RdmaConnection();

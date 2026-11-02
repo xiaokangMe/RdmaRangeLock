@@ -8,7 +8,13 @@
 namespace rrl {
 
 constexpr std::size_t kRemoteLockShards = 16;
-constexpr std::size_t kRemoteLockSlotsPerShard = 1024;
+// Capacity, not semantics: one slot per held lock, and a transaction that
+// scans 128 keys holds about 1200 next-key entries. The preflight measured
+// 1024 slots per shard saturating at range=128 with 32 threads (89-97% of
+// aborts were AbortCapacity), so the table was widened to 8192. Reads and
+// writes only touch the active_slots prefix, so this costs memory and nothing
+// per operation.
+constexpr std::size_t kRemoteLockSlotsPerShard = 8192;
 constexpr std::size_t kRemoteLockSlots = kRemoteLockShards * kRemoteLockSlotsPerShard;
 
 // One published lock. Kept cache-line sized so a slot read or write is a single

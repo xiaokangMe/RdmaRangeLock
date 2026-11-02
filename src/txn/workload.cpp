@@ -97,7 +97,7 @@ void new_order(TransactionTrace& t, const WorkloadConfig& c, std::mt19937_64& g,
 
 using SeedValues = std::unordered_map<idx_key_t, std::uint64_t>;
 
-void seed_index(BTreeIndex& index, const WorkloadTrace& trace, SeedValues& seed) {
+bool seed_index(BTreeIndex& index, const WorkloadTrace& trace, SeedValues& seed) {
     std::unordered_set<idx_key_t> insert_keys;
     for (const auto& txn : trace.transactions())
         for (const auto& op : txn.operations)
@@ -106,14 +106,15 @@ void seed_index(BTreeIndex& index, const WorkloadTrace& trace, SeedValues& seed)
         if (insert_keys.find(k) != insert_keys.end()) continue;
         auto [it, inserted] = seed.emplace(k, k);
         (void)inserted;
-        index.insert(k, &it->second);
+        if (index.insert(k, &it->second) != RCOK) return false;
     }
     for (const auto& txn : trace.transactions())
         for (const auto& op : txn.operations) {
             if (op.kind == OperationKind::Insert || op.kind == OperationKind::Delete) continue;
             auto [it, inserted] = seed.emplace(op.key, op.key);
-            if (inserted) index.insert(op.key, &it->second);
+            if (inserted && index.insert(op.key, &it->second) != RCOK) return false;
         }
+    return true;
 }
 
 namespace {
@@ -130,7 +131,8 @@ struct alignas(64) LocalAcc {
     std::uint64_t ranges{0}, found{0}, scanned{0}, rechecked{0};
     std::uint64_t acquires{0}, conflicts{0}, capacity{0}, gate{0};
     std::uint64_t checksum{0};
-    std::uint64_t padding[7]{};
+    std::uint64_t lock_errors{0}, index_errors{0}, release_errors{0}, failed_tx{0};
+    std::uint64_t held{0};
 };
 static_assert(sizeof(LocalAcc) % 64 == 0, "per-thread counters must not share a cache line");
 
@@ -155,6 +157,10 @@ RunStats merge_parts(const std::vector<LocalAcc>& parts,
         result.lock_capacity_aborts += part.capacity;
         result.lock_gate_aborts += part.gate;
         result.checksum += part.checksum;
+        result.lock_errors += part.lock_errors;
+        result.index_errors += part.index_errors;
+        result.lock_release_failures += part.release_errors;
+        result.failed_transactions += part.failed_tx;
     }
     result.elapsed_ns = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -222,12 +228,46 @@ double RunStats::attempt_throughput() const {
 namespace {
 
 template <typename Acc>
-bool record_lock_result(Acc& acc, RC rc) {
-    if (rc == RCOK) return true;
+bool record_lock_result(Acc& acc, std::atomic<bool>& stopped, RC rc) {
+    if (rc == RCOK) { ++acc.held; return true; }
     if (rc == AbortCapacity) ++acc.capacity;
     else if (rc == AbortGate) ++acc.gate;
-    else ++acc.conflicts;
+    else if (rc == AbortConflict) ++acc.conflicts;
+    else { ++acc.lock_errors; stopped.store(true, std::memory_order_relaxed); }
     return false;
+}
+
+// A write error invalidates the run: there is no undo log in this harness.
+// Do not report a partially applied write set as a committed transaction.
+bool apply_write(BTreeIndex& index, const Operation& op, LocalAcc& acc,
+                 std::atomic<bool>& stopped) {
+    const RC rc = op.kind == OperationKind::Delete ? index.erase(op.key)
+        : index.insert(op.key, const_cast<uint64_t*>(&op.value));
+    // Delete of a missing key is a workload no-op; other non-RCOK values fail.
+    if (rc == RCOK || (op.kind == OperationKind::Delete && rc == Abort)) return true;
+    ++acc.index_errors;
+    stopped.store(true, std::memory_order_relaxed);
+    return false;
+}
+
+void finish_transaction(BTreeIndex& index, IRangeLockManager& locks, txnid_t tid,
+                        const std::vector<const Operation*>& writes, bool ok,
+                        LocalAcc& acc, std::atomic<bool>& stopped) {
+    if (ok) for (const auto* op : writes)
+        if (!apply_write(index, *op, acc, stopped)) { ok = false; break; }
+    // The commit/abort decision precedes strict-2PL release. A release failure
+    // invalidates measurement even when the writes were already committed.
+    if (acc.held || acc.lock_errors) {
+        const RC rc = locks.unlock_all(tid);
+        if (rc != RCOK && !(acc.held == 0 && rc == Abort)) {
+            ++acc.release_errors;
+            stopped.store(true, std::memory_order_relaxed);
+        }
+    }
+    if (acc.lock_errors || acc.index_errors || acc.release_errors) ++acc.failed_tx;
+    else if (ok) ++acc.committed;
+    else ++acc.aborted;
+    ++acc.tx;
 }
 
 }  // namespace
@@ -235,7 +275,9 @@ bool record_lock_result(Acc& acc, RC rc) {
 RunStats run_workload(BTreeIndex& index, const WorkloadTrace& trace, size_t threads) {
     if (!threads) threads = 1;
     SeedValues seed;
-    seed_index(index, trace, seed);
+    if (!seed_index(index, trace, seed)) { RunStats failed; failed.index_errors = 1; return failed; }
+    if (trace.transactions().empty()) return {};
+    std::atomic<bool> stopped{false};
     const size_t worker_count = std::min(threads, std::max<size_t>(1, trace.transactions().size()));
     std::vector<LocalAcc> parts(worker_count);
     const auto begin = std::chrono::steady_clock::now();
@@ -249,8 +291,11 @@ RunStats run_workload(BTreeIndex& index, const WorkloadTrace& trace, size_t thre
         workers.emplace_back([&, worker] {
             LocalAcc& a = parts[worker];
             for (size_t j = worker, rounds = 0;; j += worker_count, ++rounds) {
+                if (stopped.load(std::memory_order_relaxed)) break;
+                a.held = 0;
                 if (timed) { if ((rounds % 64) == 0 && std::chrono::steady_clock::now() >= deadline) break; }
                 else if (j >= total_txns) break;
+                bool ok = true;
                 for (const Operation& op : trace.transactions()[j % total_txns].operations) {
                     ++a.ops;
                     switch (op.kind) {
@@ -265,15 +310,15 @@ RunStats run_workload(BTreeIndex& index, const WorkloadTrace& trace, size_t thre
                     }
                     case OperationKind::Update:
                         ++a.updates;
-                        index.insert(op.key, const_cast<uint64_t*>(&op.value));
+                        ok = apply_write(index, op, a, stopped);
                         break;
                     case OperationKind::Insert:
                         ++a.inserts;
-                        index.insert(op.key, const_cast<uint64_t*>(&op.value));
+                        ok = apply_write(index, op, a, stopped);
                         break;
                     case OperationKind::Delete:
                         ++a.deletes;
-                        index.erase(op.key);
+                        ok = apply_write(index, op, a, stopped);
                         break;
                     case OperationKind::RangeRead: {
                         ++a.ranges;
@@ -284,9 +329,11 @@ RunStats run_workload(BTreeIndex& index, const WorkloadTrace& trace, size_t thre
                         break;
                     }
                     }
+                    if (!ok) break;
                 }
                 ++a.tx;
-                ++a.committed;
+                if (ok) ++a.committed;
+                else ++a.failed_tx;
             }
         });
     for (auto& worker : workers) worker.join();
@@ -297,7 +344,9 @@ RunStats run_record_2pl(BTreeIndex& index, LockManager& locks, const WorkloadTra
                         size_t threads) {
     if (!threads) threads = 1;
     SeedValues seed;
-    seed_index(index, trace, seed);
+    if (!seed_index(index, trace, seed)) { RunStats failed; failed.index_errors = 1; return failed; }
+    if (trace.transactions().empty()) return {};
+    std::atomic<bool> stopped{false};
     const size_t worker_count = std::min(threads, std::max<size_t>(1, trace.transactions().size()));
     std::vector<LocalAcc> parts(worker_count);
     const auto begin = std::chrono::steady_clock::now();
@@ -311,6 +360,8 @@ RunStats run_record_2pl(BTreeIndex& index, LockManager& locks, const WorkloadTra
         workers.emplace_back([&, worker] {
             LocalAcc& a = parts[worker];
             for (size_t i = worker, rounds = 0;; i += worker_count, ++rounds) {
+                if (stopped.load(std::memory_order_relaxed)) break;
+                a.held = 0;
                 if (timed) { if ((rounds % 64) == 0 && std::chrono::steady_clock::now() >= deadline) break; }
                 else if (i >= total_txns) break;
                 const auto& txn = trace.transactions()[i % total_txns];
@@ -330,13 +381,13 @@ RunStats run_record_2pl(BTreeIndex& index, LockManager& locks, const WorkloadTra
                         for (const auto& row : rows) {
                             if (timed && std::chrono::steady_clock::now() >= deadline) { stop_after_txn = true; ok = false; break; }
                             ++a.acquires;
-                            if (!record_lock_result(a, locks.lock(tid, LockMode::S, KeyRangeEnt::point(row.key), LockKind::Record))) { ok = false; break; }
+                            if (!record_lock_result(a, stopped, locks.lock(tid, LockMode::S, KeyRangeEnt::point(row.key), LockKind::Record))) { ok = false; break; }
                             a.checksum += row.key ^ *static_cast<uint64_t*>(row.value);
                         }
                     } else {
                         const LockMode mode = (op.kind == OperationKind::Read) ? LockMode::S : LockMode::X;
                         ++a.acquires;
-                        if (!record_lock_result(a, locks.lock(tid, mode, KeyRangeEnt::point(op.key), LockKind::Record))) { ok = false; break; }
+                        if (!record_lock_result(a, stopped, locks.lock(tid, mode, KeyRangeEnt::point(op.key), LockKind::Record))) { ok = false; break; }
                         if (op.kind == OperationKind::Read) {
                             ++a.reads;
                             void* value = nullptr;
@@ -347,15 +398,7 @@ RunStats run_record_2pl(BTreeIndex& index, LockManager& locks, const WorkloadTra
                     }
                     if (!ok) break;
                 }
-                if (ok) {
-                    for (const Operation* op : writes) {
-                        if (op->kind == OperationKind::Delete) index.erase(op->key);
-                        else index.insert(op->key, const_cast<uint64_t*>(&op->value));
-                    }
-                    ++a.committed;
-                } else ++a.aborted;
-                if (locks.get_lock_count(tid) > 0) locks.unlock_all(tid);
-                ++a.tx;
+                finish_transaction(index, locks, tid, writes, ok, a, stopped);
                 if (stop_after_txn) break;
             }
         });
@@ -367,7 +410,9 @@ RunStats run_gap_lock(BTreeIndex& index, LockManager& locks, const WorkloadTrace
                       size_t threads) {
     if (!threads) threads = 1;
     SeedValues seed;
-    seed_index(index, trace, seed);
+    if (!seed_index(index, trace, seed)) { RunStats failed; failed.index_errors = 1; return failed; }
+    if (trace.transactions().empty()) return {};
+    std::atomic<bool> stopped{false};
     const size_t worker_count = std::min(threads, std::max<size_t>(1, trace.transactions().size()));
     std::vector<LocalAcc> parts(worker_count);
     const auto begin = std::chrono::steady_clock::now();
@@ -382,10 +427,12 @@ RunStats run_gap_lock(BTreeIndex& index, LockManager& locks, const WorkloadTrace
             LocalAcc& a = parts[worker];
             auto acquire = [&](txnid_t txn, LockMode mode, const KeyRangeEnt& range, LockKind kind) {
                 ++a.acquires;
-                if (!record_lock_result(a, locks.lock(txn, mode, range, kind))) return false;
+                if (!record_lock_result(a, stopped, locks.lock(txn, mode, range, kind))) return false;
                 return true;
             };
             for (size_t i = worker, rounds = 0;; i += worker_count, ++rounds) {
+                if (stopped.load(std::memory_order_relaxed)) break;
+                a.held = 0;
                 if (timed) { if ((rounds % 64) == 0 && std::chrono::steady_clock::now() >= deadline) break; }
                 else if (i >= total_txns) break;
                 const auto& txn = trace.transactions()[i % total_txns];
@@ -424,15 +471,7 @@ RunStats run_gap_lock(BTreeIndex& index, LockManager& locks, const WorkloadTrace
                     }
                     if (!ok) break;
                 }
-                if (ok) {
-                    for (const Operation* op : writes) {
-                        if (op->kind == OperationKind::Delete) index.erase(op->key);
-                        else index.insert(op->key, const_cast<uint64_t*>(&op->value));
-                    }
-                    ++a.committed;
-                } else ++a.aborted;
-                if (locks.get_lock_count(tid) > 0) locks.unlock_all(tid);
-                ++a.tx;
+                finish_transaction(index, locks, tid, writes, ok, a, stopped);
                 if (stop_after_txn) break;
             }
         });
@@ -444,7 +483,9 @@ RunStats run_next_key_lock(BTreeIndex& index, IRangeLockManager& locks,
                            const WorkloadTrace& trace, size_t threads) {
     if (!threads) threads = 1;
     SeedValues seed;
-    seed_index(index, trace, seed);
+    if (!seed_index(index, trace, seed)) { RunStats failed; failed.index_errors = 1; return failed; }
+    if (trace.transactions().empty()) return {};
+    std::atomic<bool> stopped{false};
     const size_t worker_count = std::min(threads, std::max<size_t>(1, trace.transactions().size()));
     std::vector<LocalAcc> parts(worker_count);
     const auto begin = std::chrono::steady_clock::now();
@@ -459,10 +500,12 @@ RunStats run_next_key_lock(BTreeIndex& index, IRangeLockManager& locks,
             LocalAcc& a = parts[worker];
             auto acquire = [&](txnid_t txn, LockMode mode, const KeyRangeEnt& range) {
                 ++a.acquires;
-                if (!record_lock_result(a, locks.lock(txn, mode, range, LockKind::NextKey))) return false;
+                if (!record_lock_result(a, stopped, locks.lock(txn, mode, range, LockKind::NextKey))) return false;
                 return true;
             };
             for (size_t i = worker, rounds = 0;; i += worker_count, ++rounds) {
+                if (stopped.load(std::memory_order_relaxed)) break;
+                a.held = 0;
                 if (timed) { if ((rounds % 64) == 0 && std::chrono::steady_clock::now() >= deadline) break; }
                 else if (i >= total_txns) break;
                 const auto& txn = trace.transactions()[i % total_txns];
@@ -526,15 +569,7 @@ RunStats run_next_key_lock(BTreeIndex& index, IRangeLockManager& locks,
                     }
                     if (!ok) break;
                 }
-                if (ok) {
-                    for (const Operation* op : writes) {
-                        if (op->kind == OperationKind::Delete) index.erase(op->key);
-                        else index.insert(op->key, const_cast<uint64_t*>(&op->value));
-                    }
-                    ++a.committed;
-                } else ++a.aborted;
-                locks.unlock_all(tid);
-                ++a.tx;
+                finish_transaction(index, locks, tid, writes, ok, a, stopped);
                 if (stop_after_txn) break;
             }
         });
@@ -547,7 +582,9 @@ RunStats run_hierarchical_lock(BTreeIndex& index, IRangeLockManager& locks,
                                const WorkloadTrace& trace, size_t threads) {
     if (!threads) threads = 1;
     SeedValues seed;
-    seed_index(index, trace, seed);
+    if (!seed_index(index, trace, seed)) { RunStats failed; failed.index_errors = 1; return failed; }
+    if (trace.transactions().empty()) return {};
+    std::atomic<bool> stopped{false};
     const size_t worker_count = std::min(threads, std::max<size_t>(1, trace.transactions().size()));
     std::vector<LocalAcc> parts(worker_count);
     const auto begin = std::chrono::steady_clock::now();
@@ -569,10 +606,12 @@ RunStats run_hierarchical_lock(BTreeIndex& index, IRangeLockManager& locks,
             };
             auto acquire = [&](txnid_t txn, LockMode mode, const KeyRangeEnt& range, LockKind kind) {
                 ++a.acquires;
-                if (!record_lock_result(a, locks.lock(txn, mode, range, kind))) return false;
+                if (!record_lock_result(a, stopped, locks.lock(txn, mode, range, kind))) return false;
                 return true;
             };
             for (size_t i = worker, rounds = 0;; i += worker_count, ++rounds) {
+                if (stopped.load(std::memory_order_relaxed)) break;
+                a.held = 0;
                 if (timed) { if ((rounds % 64) == 0 && std::chrono::steady_clock::now() >= deadline) break; }
                 else if (i >= total_txns) break;
                 const auto& txn = trace.transactions()[i % total_txns];
@@ -619,15 +658,7 @@ RunStats run_hierarchical_lock(BTreeIndex& index, IRangeLockManager& locks,
                     }
                     if (!ok) break;
                 }
-                if (ok) {
-                    for (const Operation* op : writes) {
-                        if (op->kind == OperationKind::Delete) index.erase(op->key);
-                        else index.insert(op->key, const_cast<uint64_t*>(&op->value));
-                    }
-                    ++a.committed;
-                } else ++a.aborted;
-                locks.unlock_all(tid);
-                ++a.tx;
+                finish_transaction(index, locks, tid, writes, ok, a, stopped);
                 if (stop_after_txn) break;
             }
         });

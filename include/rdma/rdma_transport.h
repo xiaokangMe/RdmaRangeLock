@@ -61,6 +61,20 @@ struct RdmaCompareSwapRequest {
     std::uint64_t* previous{nullptr};
 };
 
+// Keep the listening socket alive across handshakes; closing it after each
+// accept discards other queued control connections during disconnect recovery.
+class RdmaListener {
+public:
+    explicit RdmaListener(std::uint16_t port);
+    ~RdmaListener();
+    RdmaListener(const RdmaListener&) = delete;
+    RdmaListener& operator=(const RdmaListener&) = delete;
+    bool valid() const { return fd_ >= 0; }
+private:
+    friend class RdmaConnection;
+    int fd_{-1};
+};
+
 // A small RC-QP transport. TCP is used only for exchanging QP and MR
 // attributes; lock-table data moves through one-sided verbs operations.
 class RdmaConnection {
@@ -73,6 +87,7 @@ public:
     bool connect_client(const std::string& host, std::uint16_t tcp_port,
                         std::uint64_t owner_token = 0);
     bool accept_server(std::uint16_t tcp_port, void* region, std::size_t region_length);
+    bool accept_server(RdmaListener& listener, void* region, std::size_t region_length);
     bool read(std::uint64_t remote_address, std::uint32_t remote_rkey,
               void* destination, std::size_t length);
     bool write(std::uint64_t remote_address, std::uint32_t remote_rkey,
@@ -95,7 +110,9 @@ public:
     RdmaFailureInfo last_failure() const;
     std::uint64_t failure_count() const;
     const RdmaRemoteMemory& remote_memory() const { return remote_memory_; }
-    bool connected() const { return connected_; }
+    bool connected() const;
+    // Valid only after wait_for_disconnect(): None means an unannounced close.
+    RdmaOpTag peer_failure_tag() const;
     std::uint64_t peer_owner_token() const;
 
 public:

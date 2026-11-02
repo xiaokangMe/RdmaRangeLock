@@ -82,7 +82,7 @@ private:
 
     // A gate that is busy and a gate whose CAS did not complete are different
     // failures: the first is contention the caller may retry, the second means
-    // the transport is broken and nothing was acquired.
+    // the transport is broken and ownership needs peer recovery.
     enum class GateOutcome : std::uint8_t { Acquired, Busy, TransportError };
 
     std::vector<std::size_t> shard_ids(const KeyRangeEnt& range) const;
@@ -99,7 +99,7 @@ private:
                              std::vector<std::size_t>& acquired, bool reliable = false) const;
     GateOutcome try_enter_shards(const std::vector<std::size_t>& ids,
                                  std::vector<std::size_t>& acquired) const;
-    void leave_shards(const std::vector<std::size_t>& acquired) const;
+    bool leave_shards(const std::vector<std::size_t>& acquired) const;
     bool load_tables(const std::vector<std::size_t>& ids,
                      std::vector<LoadedShard>& tables) const;
     bool write_chunks(const std::vector<RdmaWriteRequest>& writes) const;

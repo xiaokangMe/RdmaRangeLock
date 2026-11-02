@@ -73,7 +73,7 @@ int make_listen_socket(std::uint16_t port) {
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
     addr.sin_port = htons(port);
     if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
-        ::listen(fd, 1) != 0) {
+        ::listen(fd, SOMAXCONN) != 0) {
         ::close(fd); return -1;
     }
     return fd;
@@ -131,14 +131,15 @@ struct RdmaConnection::Impl {
     std::uint8_t op_tag{0};
     RdmaFailureInfo last_failure{};
     mutable std::mutex failure_mutex;
-    bool failed{false};
+    std::atomic<bool> failed{false};
+    RdmaOpTag peer_failure_tag{RdmaOpTag::None};
 
     Impl() {
         for (auto& counter : timeouts_by_tag) counter.store(0, std::memory_order_relaxed);
     }
 
     ~Impl() {
-        if (qp) ibv_destroy_qp(qp);
+        if (qp && ibv_destroy_qp(qp) != 0) std::abort();
         if (region_mr) ibv_dereg_mr(region_mr);
         if (local_mr) ibv_dereg_mr(local_mr);
         if (cq) ibv_destroy_cq(cq);
@@ -292,6 +293,23 @@ void record_failure(RdmaConnection::Impl* impl, std::uint32_t status, std::uint3
     impl->last_failure = info;
 }
 
+// A failed completion leaves ownership uncertain. Quiesce the QP before
+// notifying the peer; recovery must never race a late WRITE/CAS from this QP.
+void fail_connection(RdmaConnection::Impl* impl) {
+    impl->failed.store(true, std::memory_order_release);
+    if (impl->qp) {
+        if (ibv_destroy_qp(impl->qp) != 0) std::abort();
+        impl->qp = nullptr;
+    }
+    if (impl->socket_fd >= 0) {
+        const std::uint8_t notice = 0x80u | impl->op_tag;
+        // Failure notification must not block the caller holding local gates.
+        // A lost notice is treated conservatively as an unannounced crash.
+        (void)::send(impl->socket_fd, &notice, sizeof(notice), MSG_NOSIGNAL | MSG_DONTWAIT);
+        ::shutdown(impl->socket_fd, SHUT_RDWR);
+    }
+}
+
 bool post_and_poll(RdmaConnection::Impl* impl, ibv_send_wr& wr, ibv_sge& sge) {
     wr.sg_list = &sge;
     wr.num_sge = 1;
@@ -300,7 +318,7 @@ bool post_and_poll(RdmaConnection::Impl* impl, ibv_send_wr& wr, ibv_sge& sge) {
     const auto started = std::chrono::steady_clock::now();
     if (ibv_post_send(impl->qp, &wr, &bad) != 0) {
         record_failure(impl, 0xffffffffu, wr.opcode, wr_remote_address(wr), sge.length, 0, started, false);
-        impl->failed = true;
+        fail_connection(impl);
         return false;
     }
     impl->operations.fetch_add(1, std::memory_order_relaxed);
@@ -310,20 +328,20 @@ bool post_and_poll(RdmaConnection::Impl* impl, ibv_send_wr& wr, ibv_sge& sge) {
         const int polled = ibv_poll_cq(impl->cq, 1, &wc);
         if (polled < 0) {
             record_failure(impl, 0xfffffffeu, wr.opcode, wr_remote_address(wr), sge.length, 0, started, false);
-            impl->failed = true;
+            fail_connection(impl);
             return false;
         }
         if (polled > 0) {
             if (wc.status != IBV_WC_SUCCESS) {
                 record_failure(impl, static_cast<std::uint32_t>(wc.status), wr.opcode,
                                wr_remote_address(wr), sge.length, 0, started, false);
-                impl->failed = true;
+                fail_connection(impl);
             }
             return wc.status == IBV_WC_SUCCESS;
         }
         if (std::chrono::steady_clock::now() >= deadline) {
             record_failure(impl, 0xfffffffdu, wr.opcode, wr_remote_address(wr), sge.length, 0, started, true);
-            impl->failed = true;
+            fail_connection(impl);
             return false;
         }
         std::this_thread::yield();
@@ -337,9 +355,10 @@ bool post_batch_and_poll(RdmaConnection::Impl* impl,
     for (std::size_t i = 0; i < wrs.size(); ++i) {
         wrs[i].sg_list = &sges[i];
         wrs[i].num_sge = 1;
-        // RC QPs preserve work-request order; signal only the tail so one
-        // completion covers the complete chain before scratch reuse.
-        wrs[i].send_flags = i + 1 == wrs.size() ? IBV_SEND_SIGNALED : 0;
+        // Fence the signaled tail behind prior READ/atomic responses before
+        // reusing their scratch segments. Do not rely on NIC issue ordering
+        // alone as a completion barrier for earlier unsignaled operations.
+        wrs[i].send_flags = i + 1 == wrs.size() ? (IBV_SEND_SIGNALED | IBV_SEND_FENCE) : 0;
         wrs[i].next = i + 1 == wrs.size() ? nullptr : &wrs[i + 1];
     }
     ibv_send_wr* bad = nullptr;
@@ -352,7 +371,7 @@ bool post_batch_and_poll(RdmaConnection::Impl* impl,
         impl->operations.fetch_add(posted, std::memory_order_relaxed);
         record_failure(impl, 0xffffffffu, wrs.front().opcode, wr_remote_address(wrs.front()),
                        sges.front().length, static_cast<std::uint32_t>(posted), started, false);
-        impl->failed = true;
+        fail_connection(impl);
         return false;
     }
     impl->operations.fetch_add(wrs.size(), std::memory_order_relaxed);
@@ -363,21 +382,21 @@ bool post_batch_and_poll(RdmaConnection::Impl* impl,
         if (polled < 0) {
             record_failure(impl, 0xfffffffeu, wrs.front().opcode, wr_remote_address(wrs.front()),
                            sges.front().length, 0, started, false);
-            impl->failed = true;
+            fail_connection(impl);
             return false;
         }
         if (polled > 0) {
             if (wc.status != IBV_WC_SUCCESS) {
                 record_failure(impl, static_cast<std::uint32_t>(wc.status), wrs.front().opcode,
                                wr_remote_address(wrs.front()), sges.front().length, 0, started, false);
-                impl->failed = true;
+                fail_connection(impl);
             }
             return wc.status == IBV_WC_SUCCESS;
         }
         if (std::chrono::steady_clock::now() >= deadline) {
             record_failure(impl, 0xfffffffdu, wrs.front().opcode, wr_remote_address(wrs.front()),
                            sges.front().length, 0, started, true);
-            impl->failed = true;
+            fail_connection(impl);
             return false;
         }
         std::this_thread::yield();
@@ -403,6 +422,9 @@ bool valid_atomic_target(std::uint64_t remote_address) {
 }
 
 }  // namespace
+
+RdmaListener::RdmaListener(std::uint16_t port) : fd_(make_listen_socket(port)) {}
+RdmaListener::~RdmaListener() { if (fd_ >= 0) ::close(fd_); }
 
 RdmaConnection::RdmaConnection() : impl_(new Impl) {}
 RdmaConnection::~RdmaConnection() { delete impl_; }
@@ -430,11 +452,13 @@ bool RdmaConnection::connect_client(const std::string& host, std::uint16_t tcp_p
 }
 
 bool RdmaConnection::accept_server(std::uint16_t tcp_port, void* region, std::size_t region_length) {
-    if (!create_resources(impl_, region, region_length, false)) return false;
-    const int listen_fd = make_listen_socket(tcp_port);
-    if (listen_fd < 0) return false;
-    const int fd = ::accept(listen_fd, nullptr, nullptr);
-    ::close(listen_fd);
+    RdmaListener listener(tcp_port);
+    return accept_server(listener, region, region_length);
+}
+
+bool RdmaConnection::accept_server(RdmaListener& listener, void* region, std::size_t region_length) {
+    if (!listener.valid() || !create_resources(impl_, region, region_length, false)) return false;
+    const int fd = ::accept(listener.fd_, nullptr, nullptr);
     if (fd < 0) return false;
     impl_->socket_fd = fd;
     enable_keepalive(fd);
@@ -450,6 +474,14 @@ bool RdmaConnection::accept_server(std::uint16_t tcp_port, void* region, std::si
     remote_memory_ = {remote.address, remote.rkey, remote.length};
     connected_ = true;
     return true;
+}
+
+bool RdmaConnection::connected() const {
+    return connected_ && !impl_->failed.load(std::memory_order_acquire);
+}
+
+RdmaOpTag RdmaConnection::peer_failure_tag() const {
+    return impl_->peer_failure_tag;
 }
 
 std::uint64_t RdmaConnection::peer_owner_token() const {
@@ -556,7 +588,8 @@ bool RdmaConnection::read_batch(const std::vector<RdmaReadRequest>& requests) {
     if (!connected_ || impl_->failed || requests.size() > 128) return false;
     std::size_t total = 0;
     for (const auto& request : requests) {
-        if (!valid_transfer(request.destination, request.length, impl_->scratch.size()) ||
+        if (request.remote_address == 0 ||
+            !valid_transfer(request.destination, request.length, impl_->scratch.size()) ||
             total > impl_->scratch.size() - request.length)
             return false;
         total += request.length;
@@ -592,7 +625,8 @@ bool RdmaConnection::write_batch(const std::vector<RdmaWriteRequest>& requests) 
     if (!connected_ || impl_->failed || requests.size() > 128) return false;
     std::size_t total = 0;
     for (const auto& request : requests) {
-        if (!valid_transfer(request.source, request.length, impl_->scratch.size()) ||
+        if (request.remote_address == 0 ||
+            !valid_transfer(request.source, request.length, impl_->scratch.size()) ||
             total > impl_->scratch.size() - request.length)
             return false;
         total += request.length;
@@ -625,7 +659,7 @@ bool RdmaConnection::compare_swap_batch(const std::vector<RdmaCompareSwapRequest
     const std::size_t bytes = requests.size() * sizeof(std::uint64_t);
     if (bytes > impl_->scratch.size()) return false;
     for (const auto& request : requests)
-        if (!request.previous) return false;
+        if (!request.previous || !valid_atomic_target(request.remote_address)) return false;
     if (requests.size() == 1) {
         const auto& request = requests.front();
         return compare_swap(request.remote_address, request.remote_rkey,
@@ -651,8 +685,14 @@ bool RdmaConnection::compare_swap_batch(const std::vector<RdmaCompareSwapRequest
 
 bool RdmaConnection::wait_for_disconnect() {
     if (impl_->socket_fd < 0) return false;
-    char byte = 0;
-    return ::recv(impl_->socket_fd, &byte, 1, 0) <= 0;
+    std::uint8_t byte = 0;
+    ssize_t received = 0;
+    do {
+        received = ::recv(impl_->socket_fd, &byte, 1, 0);
+    } while (received < 0 && errno == EINTR);
+    if (received == 1 && (byte & 0x80u) && (byte & 0x7fu) <= 5)
+        impl_->peer_failure_tag = static_cast<RdmaOpTag>(byte & 0x7fu);
+    return received >= 0;
 }
 
 }  // namespace rrl

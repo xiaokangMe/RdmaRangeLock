@@ -12,15 +12,20 @@ using namespace rrl;
 
 // Exercise real verbs completions as well as validation before any WR is posted.
 // The last shard's inactive slots are scratch space; active_slots stays zero.
+bool transport_failure(int line) {
+    std::cerr << "transport validation failed at line " << line << "\n";
+    return false;
+}
+
 bool check_batch_transport(const std::string& host, std::uint16_t port) {
     RdmaConnection connection;
-    if (!connection.connect_client(host, port)) return false;
+    if (!connection.connect_client(host, port)) return transport_failure(__LINE__);
     const auto remote = connection.remote_memory();
-    if (remote.length < sizeof(RemoteLockRegion)) return false;
+    if (remote.length < sizeof(RemoteLockRegion)) return transport_failure(__LINE__);
     const auto base = remote.address + offsetof(RemoteLockRegion, shards) +
                       (kRemoteLockShards - 1) * sizeof(RemoteLockShard) +
                       offsetof(RemoteLockShard, slots);
-    std::vector<std::uint64_t> values(64), results(64), previous(64);
+    std::vector<std::uint64_t> values(128), results(128), previous(128);
     std::vector<RdmaWriteRequest> writes;
     std::vector<RdmaReadRequest> reads;
     std::vector<RdmaCompareSwapRequest> swaps;
@@ -34,34 +39,48 @@ bool check_batch_transport(const std::string& host, std::uint16_t port) {
                          values[i] + 100, &previous[i]});
     }
     if (!connection.read_batch({}) || !connection.write_batch({}) ||
-        !connection.compare_swap_batch({})) return false;
+        !connection.compare_swap_batch({})) return transport_failure(__LINE__);
     if (!connection.write_batch(writes) || !connection.read_batch(reads) ||
-        results != values) return false;
-    const auto operations = connection.operation_count();
+        results != values) return transport_failure(__LINE__);
+
     const auto huge = std::numeric_limits<std::size_t>::max();
     if (connection.read_batch({{base, remote.rkey, &results[0], huge}}) ||
         connection.write_batch({writes[0], {base, remote.rkey, &values[0], huge}}) ||
         connection.read_batch({{base, remote.rkey, nullptr, 8}}) ||
         connection.write_batch({{base, remote.rkey, nullptr, 8}}) ||
-        connection.compare_swap_batch({{base, remote.rkey, 0, 1, nullptr}})) return false;
+        connection.compare_swap_batch({{base, remote.rkey, 0, 1, nullptr}}) ||
+        connection.read_batch({reads[0], {0, remote.rkey, &results[0], 8}}) ||
+        connection.write_batch({writes[0], {0, remote.rkey, &values[0], 8}}) ||
+        connection.compare_swap_batch({swaps[0], {base + 1, remote.rkey, 0, 1, &previous[0]}})) return transport_failure(__LINE__);
+    std::vector<std::uint8_t> scratch((1u << 20) + 1);
+    if (!connection.read(remote.address, remote.rkey, scratch.data(), 1u << 20)) return transport_failure(__LINE__);
+    const auto after_read = connection.operation_count();
+    if (connection.read(remote.address, remote.rkey, scratch.data(), scratch.size()) ||
+        connection.write(remote.address, remote.rkey, scratch.data(), scratch.size()) ||
+        connection.read_batch({{base, remote.rkey, scratch.data(), 1u << 19},
+                               {base, remote.rkey, scratch.data(), (1u << 19) + 1}}) ||
+        connection.operation_count() != after_read) return transport_failure(__LINE__);
     writes.push_back(writes.front());
     reads.push_back(reads.front());
     swaps.push_back(swaps.front());
     if (connection.write_batch(writes) || connection.read_batch(reads) ||
         connection.compare_swap_batch(swaps) ||
-        connection.operation_count() != operations) return false;
+        connection.operation_count() != after_read) return transport_failure(__LINE__);
     swaps.pop_back();
     reads.pop_back();
     if (!connection.compare_swap_batch(swaps) || previous != values ||
-        !connection.read_batch(reads)) return false;
+        !connection.read_batch(reads)) return transport_failure(__LINE__);
     for (std::size_t i = 0; i < values.size(); ++i)
-        if (results[i] != values[i] + (i % 2 ? 0 : 100)) return false;
+        if (results[i] != values[i] + (i % 2 ? 0 : 100)) return transport_failure(__LINE__);
     return connection.timeout_count() == 0 && connection.completion_error_count() == 0;
 }
 
 int main(int argc, char** argv) {
-    const std::string host = argc > 1 ? argv[1] : "127.0.0.1";
-    const std::uint16_t port = argc > 2 ? static_cast<std::uint16_t>(std::stoul(argv[2])) : 19876;
+    const char* env_host = std::getenv("RRL_TEST_RDMA_HOST");
+    const char* env_port = std::getenv("RRL_TEST_RDMA_PORT");
+    if (argc == 1 && (!env_host || !env_port)) return 77;
+    const std::string host = argc > 1 ? argv[1] : env_host;
+    const std::uint16_t port = static_cast<std::uint16_t>(std::stoul(argc > 2 ? argv[2] : env_port ? env_port : "19876"));
     if (!check_batch_transport(host, port)) {
         std::cerr << "RDMA batch transport validation failed\n";
         return 8;
@@ -88,10 +107,17 @@ int main(int argc, char** argv) {
         const auto busy = shards + (kRemoteLockShards / 2) * sizeof(RemoteLockShard) +
                           offsetof(RemoteLockShard, gate);
         std::uint64_t token = 1;
-        if (!probe.write(busy, remote.rkey, &token, sizeof(token))) return 10;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        for (;;) {
+            std::uint64_t previous = 0;
+            if (!probe.compare_swap(busy, remote.rkey, 0, token, previous)) return 10;
+            if (previous == 0) break;
+            if (std::chrono::steady_clock::now() >= deadline) return 10;
+            std::this_thread::yield();
+        }
         const auto rc = locks.lock(9, LockMode::S, KeyRangeEnt::unbounded());
-        token = 0;
-        if (!probe.write(busy, remote.rkey, &token, sizeof(token))) return 11;
+        std::uint64_t previous = 0;
+        if (!probe.compare_swap(busy, remote.rkey, token, 0, previous) || previous != token) return 11;
         if (rc != AbortGate) return 12;
         for (std::size_t shard = 0; shard < kRemoteLockShards; ++shard) {
             std::uint64_t gate = 1;

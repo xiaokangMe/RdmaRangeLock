@@ -40,8 +40,8 @@ int main() {
     RemoteLockManager locks;
     locks.set_connection_count(4);
     if (!locks.connect(host, static_cast<std::uint16_t>(std::stoul(port_text)))) {
-        std::cout << "skip: cannot reach the lock server\n";
-        return 77;
+        std::cerr << "FAIL: configured lock server is unreachable\n";
+        return 1;
     }
 
     const KeyRangeEnt point = KeyRangeEnt::point(1000);

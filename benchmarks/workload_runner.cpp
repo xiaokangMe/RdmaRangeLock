@@ -197,7 +197,7 @@ int main(int argc, char** argv) {
                   << "rdma_gate_attempts,rdma_gate_retries,rdma_gate_aborts,rdma_batches,"
                   << "rdma_failure_op,rdma_failure_shard,rdma_failure_wr,rdma_failure_us,rdma_failure_qp,"
                   << "rdma_gate_transport_errors,rdma_connections,"
-                  << "hierarchy_bucket_width\n";
+                  << "hierarchy_bucket_width,lock_errors,index_errors,lock_release_failures,failed_transactions\n";
         std::cout << WorkloadTrace::name(config.kind) << ',' << index_name << ',' << cc << ',' << config.threads << ','
                   << stats.transactions << ',' << stats.committed << ',' << stats.aborted << ',' << stats.operations << ','
                   << stats.reads << ',' << stats.updates << ',' << stats.inserts << ',' << stats.deletes << ','
@@ -208,7 +208,8 @@ int main(int argc, char** argv) {
                   << rdma_failure.opcode << ',' << rdma_failure_shard << ',' << rdma_failure.wr_index << ',' << rdma_failure.elapsed_us << ',' << rdma_failure.qp_num << ','
                   << rdma_diag.gate_transport_errors << ','
                   << active_connections << ','
-                  << config.hierarchy_bucket_width << '\n';
+                  << config.hierarchy_bucket_width << ',' << stats.lock_errors << ',' << stats.index_errors << ','
+                  << stats.lock_release_failures << ',' << stats.failed_transactions << '\n';
     } else {
         std::cout << "workload=" << WorkloadTrace::name(config.kind)
                   << ",index=" << index_name << ",cc=" << cc
@@ -245,7 +246,14 @@ int main(int argc, char** argv) {
                   << ",rdma_failure_us=" << rdma_failure.elapsed_us
                   << ",rdma_connections=" << active_connections
                   << ",rdma_failure_qp=" << rdma_failure.qp_num
-                  << ",hierarchy_bucket_width=" << config.hierarchy_bucket_width << "\n";
+                  << ",hierarchy_bucket_width=" << config.hierarchy_bucket_width
+                  << ",lock_errors=" << stats.lock_errors << ",index_errors=" << stats.index_errors
+                  << ",lock_release_failures=" << stats.lock_release_failures
+                  << ",failed_transactions=" << stats.failed_transactions << "\n";
+    }
+    if (stats.failed() || stats.rdma_timeouts || stats.rdma_completion_errors) {
+        std::cerr << "workload failed; measurement is invalid\n";
+        return 3;
     }
     return 0;
 }

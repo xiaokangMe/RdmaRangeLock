@@ -1,0 +1,13 @@
+{
+  "workload": "ycsb-e",
+  "index": "v2",
+  "cc": "next-key",
+  "key_count": 128,
+  "transaction_count": 100,
+  "operations_per_transaction": 4,
+  "range_length": 16,
+  "threads": 4,
+  "seed": 7,
+  "zipf_theta": 0.99,
+  "duration_seconds": 0
+}

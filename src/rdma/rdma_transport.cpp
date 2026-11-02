@@ -120,6 +120,9 @@ struct RdmaConnection::Impl {
     ibv_mr* local_mr{nullptr};
     ibv_mr* region_mr{nullptr};
     std::vector<std::uint8_t> scratch;
+    // Reused by the single owner of this QP. Reserve before any gate exists.
+    std::vector<ibv_send_wr> wrs;
+    std::vector<ibv_sge> sges;
     int socket_fd{-1};
     std::uint32_t psn{0};
     std::uint64_t peer_owner_token{0};
@@ -137,6 +140,8 @@ struct RdmaConnection::Impl {
     bool rejected_handshake{false};
 
     Impl() {
+        wrs.reserve(128);
+        sges.reserve(128);
         for (auto& counter : timeouts_by_tag) counter.store(0, std::memory_order_relaxed);
     }
 
@@ -519,6 +524,10 @@ bool RdmaConnection::accept_server(RdmaListener& listener, void* region, std::si
     return true;
 }
 
+void RdmaConnection::disconnect() noexcept {
+    if (!impl_->failed.load(std::memory_order_acquire)) fail_connection(impl_);
+}
+
 bool RdmaConnection::connected() const {
     return connected_ && !impl_->failed.load(std::memory_order_acquire);
 }
@@ -642,9 +651,13 @@ bool RdmaConnection::read_batch(const std::vector<RdmaReadRequest>& requests) {
         return read(request.remote_address, request.remote_rkey,
                     request.destination, request.length);
     }
-    std::vector<ibv_send_wr> wrs(requests.size());
-    std::vector<ibv_sge> sges(requests.size());
-    std::vector<std::size_t> offsets(requests.size());
+    auto& wrs = impl_->wrs;
+    auto& sges = impl_->sges;
+    wrs.resize(requests.size());
+    sges.resize(requests.size());
+    std::fill(wrs.begin(), wrs.end(), ibv_send_wr{});
+    std::fill(sges.begin(), sges.end(), ibv_sge{});
+    std::array<std::size_t, 128> offsets{};
     std::size_t offset = 0;
     for (std::size_t i = 0; i < requests.size(); ++i) {
         const auto& request = requests[i];
@@ -679,8 +692,12 @@ bool RdmaConnection::write_batch(const std::vector<RdmaWriteRequest>& requests) 
         return write(request.remote_address, request.remote_rkey,
                      request.source, request.length);
     }
-    std::vector<ibv_send_wr> wrs(requests.size());
-    std::vector<ibv_sge> sges(requests.size());
+    auto& wrs = impl_->wrs;
+    auto& sges = impl_->sges;
+    wrs.resize(requests.size());
+    sges.resize(requests.size());
+    std::fill(wrs.begin(), wrs.end(), ibv_send_wr{});
+    std::fill(sges.begin(), sges.end(), ibv_sge{});
     std::size_t offset = 0;
     for (std::size_t i = 0; i < requests.size(); ++i) {
         const auto& request = requests[i];
@@ -708,8 +725,12 @@ bool RdmaConnection::compare_swap_batch(const std::vector<RdmaCompareSwapRequest
         return compare_swap(request.remote_address, request.remote_rkey,
                             request.compare, request.swap, *request.previous);
     }
-    std::vector<ibv_send_wr> wrs(requests.size());
-    std::vector<ibv_sge> sges(requests.size());
+    auto& wrs = impl_->wrs;
+    auto& sges = impl_->sges;
+    wrs.resize(requests.size());
+    sges.resize(requests.size());
+    std::fill(wrs.begin(), wrs.end(), ibv_send_wr{});
+    std::fill(sges.begin(), sges.end(), ibv_sge{});
     for (std::size_t i = 0; i < requests.size(); ++i) {
         sges[i].addr = reinterpret_cast<std::uintptr_t>(impl_->scratch.data() + i * sizeof(std::uint64_t));
         sges[i].length = sizeof(std::uint64_t);

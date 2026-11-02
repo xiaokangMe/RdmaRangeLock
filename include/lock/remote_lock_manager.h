@@ -46,6 +46,7 @@ public:
         // this monotonic counter did not change during the observation.
         std::uint64_t count_errors{0};
         RC last_count_error{RCOK};
+        std::uint64_t local_errors{0};
     };
 
     bool connect(const std::string& host, std::uint16_t port);
@@ -78,13 +79,25 @@ private:
     // can only serve one thread at a time. When fewer connections than threads
     // are requested, callers queue here instead of corrupting each other's
     // buffers; with one connection per thread the mutex is uncontended.
+    struct Workspace;
     struct ConnectionSlot {
+        ConnectionSlot();
+        ~ConnectionSlot();
         std::unique_ptr<RdmaConnection> connection;
+        std::unique_ptr<Workspace> workspace;
         std::uint64_t owner_token{0};
         mutable std::mutex io_mutex;
     };
     struct LoadedShard;
     class LocalGateGuard;
+    class RemoteGateGuard;
+    RC lock_impl(txnid_t, LockMode, const KeyRangeEnt&, LockKind, std::vector<txnid_t>*);
+    RC release_impl(txnid_t, const KeyRangeEnt*, LockKind);
+    std::size_t count_impl(txnid_t) const;
+    void invalidate(ConnectionSlot* slot) const noexcept;
+    // Used only by the friend regression test, never configured at runtime.
+    void (*after_gates_test_hook_)() = nullptr;
+    void (*gate_state_test_hook_)(bool) = nullptr;
 
     // A gate that is busy and a gate whose CAS did not complete are different
     // failures: the first is contention the caller may retry, the second means
@@ -141,6 +154,8 @@ private:
     mutable std::atomic<std::uint64_t> gate_transport_errors_{0};
     mutable std::atomic<std::uint64_t> count_errors_{0};
     mutable std::atomic<RC> last_count_error_{RCOK};
+    mutable std::atomic<std::uint64_t> local_errors_{0};
+    mutable std::atomic<bool> invalid_{false};
     // Local gate serialisation. The remote CAS gate is already the correctness
     // boundary, so this is purely a performance knob: waiting on an in-process
     // mutex is far cheaper than losing a CAS round trip and retrying. It is on

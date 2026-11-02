@@ -122,6 +122,8 @@ public:
     std::uint64_t failure_count() const;
     const RdmaRemoteMemory& remote_memory() const { return remote_memory_; }
     bool connected() const;
+    // Stop data operations immediately; peer recovery owns any remote cleanup.
+    void disconnect() noexcept;
     // Valid only after wait_for_disconnect(): None means an unannounced close.
     RdmaOpTag peer_failure_tag() const;
     std::uint64_t peer_owner_token() const;

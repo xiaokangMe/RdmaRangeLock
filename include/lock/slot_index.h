@@ -24,6 +24,11 @@ class SlotIndex {
 public:
     static constexpr std::uint64_t kMaxKey = std::numeric_limits<std::uint64_t>::max();
 
+    void reserve(std::size_t capacity) {
+        intervals_.reserve(capacity); starts_.reserve(capacity);
+        max_end_.reserve(capacity); unbounded_.reserve(capacity);
+    }
+
     void build(const std::vector<RemoteLockSlot>& slots) {
         intervals_.clear();
         starts_.clear();

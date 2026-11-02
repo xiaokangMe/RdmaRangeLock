@@ -1,6 +1,6 @@
 # 正式性能实验矩阵
 
-本文档描述 `scripts/run_formal_matrix.sh` 的实验计划。脚本只在显式传入 `--mode` 后运行；本次编写阶段没有启动任何实验。
+本文档描述 `scripts/run_formal_matrix.sh` 的实验计划。脚本只在显式传入 `--mode` 后运行；正式运行须显式设置测量窗口并保留配置、源码与原始数据。
 
 ## 实验目标
 
@@ -22,7 +22,8 @@ v1 单线程树和 v2 latch coupling 的结构基线由已有测试和 `scripts/
 |---|---|
 | workload | `ycsb-a`, `ycsb-e`, `tpcc-payment`, `tpcc-new-order` |
 | key 数 | 10000 |
-| transaction 数 | 5000 |
+| trace transaction 数 | 5000（循环执行，实际尝试数由窗口决定） |
+| 测量窗口 | 每个 case 至少 10 秒 |
 | 每事务操作数 | 10 |
 | YCSB-E range length | 8, 32, 128 |
 | YCSB-A/TPCC range length | 0（不产生范围读） |
@@ -130,3 +131,12 @@ runner 字段包括 committed/aborted、attempted/committed throughput、lock co
 ## 配置文件复现
 
 `rrl_workload_runner` 支持 `--config experiments/configs/v5_next_key.json`，配置文件中的 workload、index、cc、规模、线程、范围、bucket、Zipf 和 seed 会先加载，再由命令行参数覆盖。这样配置文件与矩阵脚本使用同一套 runner 解析路径。
+
+
+## 2026-11-02 验证运行入口
+
+python3 scripts/run_verified_matrices.py 使用 experiments/configs/formal_both_10s_20261102.json，
+先做硬件正确性检查与 16 点跨主机容量预检，再顺序执行 756 本地 + 432 跨主机 case。
+固定 profile=0、linear、local gate=1、retry=64、GID=3、QP=auto；远端源码使用独立 /tmp 快照。
+每行验证 elapsed_ns >= 10e9、事务守恒、硬错误为零，严格检查完整 case 数。
+原 run_formal_matrix.sh 的 duration 默认现为 10；固定事务检查可显式 RRL_DURATION=0，但不得当正式窗口报告。

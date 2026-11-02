@@ -14,7 +14,7 @@ PORT="${RRL_RDMA_PORT:-19930}"
 GID_INDEX="${RRL_RDMA_GID_INDEX:-3}"
 KEYS="${RRL_KEYS:-10000}"
 TRANSACTIONS="${RRL_TRANSACTIONS:-5000}"
-DURATION="${RRL_DURATION:-0}"
+DURATION="${RRL_DURATION:-10}"
 # RDMA connection count. "auto" lets the runner apply its documented policy
 # (min(threads, 2), measured in docs/notes/rdma-connection-policy-2026-11-01.md);
 # a number forces that value. One connection per thread is never the default any
@@ -27,6 +27,10 @@ RUNS="${RRL_RUNS:-3}"
 TIMEOUT_SECONDS="${RRL_TIMEOUT_SECONDS:-900}"
 SYNC_REMOTE="${RRL_SYNC_REMOTE:-1}"
 BUILD_JOBS="${RRL_BUILD_JOBS:-2}"
+PROFILE="${RRL_RDMA_PROFILE:-0}"
+LOOKUP="${RRL_SLOT_LOOKUP:-linear}"
+LOCAL_GATE="${RRL_LOCAL_GATE:-1}"
+GATE_RETRY="${RRL_GATE_RETRY:-64}"
 
 IFS=',' read -r -a THREADS <<< "${RRL_THREADS:-1,2,4,8,16,32}"
 IFS=',' read -r -a WORKLOADS <<< "${RRL_WORKLOADS:-ycsb-a,ycsb-e,tpcc-payment,tpcc-new-order}"
@@ -116,8 +120,17 @@ FAILED_FILE="$LOG_DIR/failed-cases.txt"
     echo "mode=$MODE"
     echo "transport=$([[ "$MODE" == local ]] && echo loopback || echo rdma)"
     echo "build_dir=$BUILD_DIR"
-    echo "git_head=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    echo "git_head=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
     echo "duration_s=$DURATION"
+    echo "keys=$KEYS"
+    echo "operations=$OPERATIONS"
+    echo "zipf=$ZIPF"
+    echo "tpcc_items=$TPCC_ITEMS"
+    echo "profile=$PROFILE"
+    echo "slot_lookup=$LOOKUP"
+    echo "local_gate=$LOCAL_GATE"
+    echo "gate_retry=$GATE_RETRY"
+    echo "gid_index=$GID_INDEX"
     echo "transactions=$TRANSACTIONS"
     echo "runs=$RUNS"
     echo "threads=$(IFS=,; echo "${THREADS[*]}")"
@@ -168,7 +181,7 @@ run_case() {
                 --txns "$TRANSACTIONS" --ops "$OPERATIONS" --range "$range_length"
                 --threads "$threads" --seed "$seed" --zipf "$ZIPF"
                 --items "$TPCC_ITEMS" --duration "$DURATION" --format csv)
-    local output line quoted command
+    local output line quoted command header
     if [[ "$bucket" != "0" ]]; then args+=(--bucket "$bucket"); fi
     if [[ "$cc" == rdma-* ]]; then
         args+=(--rdma-host "$RDMA_HOST" --rdma-port "$PORT")
@@ -178,20 +191,28 @@ run_case() {
     fi
 
     if [[ "$MODE" == "cross-host" ]]; then
-        command="timeout $(printf '%q' "$TIMEOUT_SECONDS") env RRL_RDMA_GID_INDEX=$(printf '%q' "$GID_INDEX") $(printf '%q' "$RUNNER_REMOTE")"
+        command="timeout $(printf '%q' "$TIMEOUT_SECONDS") env RRL_RDMA_PROFILE=$(printf '%q' "$PROFILE") RRL_SLOT_LOOKUP=$(printf '%q' "$LOOKUP") RRL_LOCAL_GATE=$(printf '%q' "$LOCAL_GATE") RRL_GATE_RETRY=$(printf '%q' "$GATE_RETRY") RRL_RDMA_GID_INDEX=$(printf '%q' "$GID_INDEX") $(printf '%q' "$RUNNER_REMOTE")"
         for arg in "${args[@]}"; do
             printf -v quoted '%q' "$arg"
             command+=" $quoted"
         done
         if ! output="$(remote_ssh "$command" 2>"$case_log")"; then
+            printf '%s\n' "$output" >"$case_log.stdout"
             echo "failed: $case_id; see $case_log" >&2
             return 1
         fi
     else
-        if ! output="$(timeout "$TIMEOUT_SECONDS" env RRL_RDMA_GID_INDEX="$server_gid" "$RUNNER_LOCAL" "${args[@]}" 2>"$case_log")"; then
+        if ! output="$(timeout "$TIMEOUT_SECONDS" env RRL_RDMA_PROFILE="$PROFILE" RRL_SLOT_LOOKUP="$LOOKUP" RRL_LOCAL_GATE="$LOCAL_GATE" RRL_GATE_RETRY="$GATE_RETRY" RRL_RDMA_GID_INDEX="$server_gid" "$RUNNER_LOCAL" "${args[@]}" 2>"$case_log")"; then
+            printf '%s\n' "$output" >"$case_log.stdout"
             echo "failed: $case_id; see $case_log" >&2
             return 1
         fi
+    fi
+    printf '%s\n' "$output" >"$case_log.stdout"
+    header="$(printf '%s\n' "$output" | head -n 1)"
+    if [[ -n "$RESULT_HEADER" && "$header" != "$RESULT_HEADER" ]]; then
+        echo "changed CSV header for $case_id" >&2
+        return 1
     fi
     line="$(printf '%s\n' "$output" | tail -n 1)"
     case "$line" in

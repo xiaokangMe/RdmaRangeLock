@@ -26,6 +26,19 @@ void operator delete[](void* ptr) noexcept { std::free(ptr); }
 void operator delete(void* ptr, std::size_t) noexcept { std::free(ptr); }
 void operator delete[](void* ptr, std::size_t) noexcept { std::free(ptr); }
 
+void* operator new(std::size_t size, std::align_val_t alignment) {
+    if (in_gate) ++gate_allocations;
+    void* result = nullptr;
+    if (posix_memalign(&result, static_cast<std::size_t>(alignment), size ? size : 1) == 0)
+        return result;
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t size, std::align_val_t alignment) { return ::operator new(size, alignment); }
+void operator delete(void* ptr, std::align_val_t) noexcept { std::free(ptr); }
+void operator delete[](void* ptr, std::align_val_t) noexcept { std::free(ptr); }
+void operator delete(void* ptr, std::size_t, std::align_val_t) noexcept { std::free(ptr); }
+void operator delete[](void* ptr, std::size_t, std::align_val_t) noexcept { std::free(ptr); }
+
 namespace rrl {
 struct RemoteLockManagerTestPeer {
     static void observe(RemoteLockManager& m) { m.gate_state_test_hook_ = gate_state; }

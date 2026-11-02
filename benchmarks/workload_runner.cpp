@@ -239,7 +239,7 @@ int run(int argc, char** argv) {
                   << "rdma_gate_attempts,rdma_gate_retries,rdma_gate_aborts,rdma_batches,"
                   << "rdma_failure_op,rdma_failure_shard,rdma_failure_wr,rdma_failure_us,rdma_failure_qp,"
                   << "rdma_gate_transport_errors,rdma_connections,"
-                  << "hierarchy_bucket_width,lock_errors,index_errors,lock_release_failures,failed_transactions,rdma_failure_status,rdma_failure_tag,rdma_failure_address,rdma_failure_length,rdma_failure_sequence,rdma_count_errors,rdma_last_count_error,index_order\n";
+                  << "hierarchy_bucket_width,lock_errors,index_errors,lock_release_failures,failed_transactions,rdma_failure_status,rdma_failure_tag,rdma_failure_address,rdma_failure_length,rdma_failure_sequence,rdma_count_errors,rdma_last_count_error,index_order,rdma_local_errors,rdma_profile_enabled,rdma_slot_lookup_linear,rdma_lock_calls,rdma_cache_hits,rdma_io_wait_ns,rdma_local_gate_wait_ns,rdma_gate_hold_ns,rdma_index_build_ns,rdma_lookup_ns,rdma_slot_checks,rdma_sync_calls,rdma_sync_ns,rdma_read_bytes,rdma_write_bytes,rdma_none_calls,rdma_none_ns,rdma_gate_calls,rdma_gate_ns,rdma_counts_calls,rdma_counts_ns,rdma_slots_calls,rdma_slots_ns,rdma_store_calls,rdma_store_ns,rdma_release_calls,rdma_release_ns\n";
         std::cout << WorkloadTrace::name(config.kind) << ',' << index_name << ',' << cc << ',' << config.threads << ','
                   << stats.transactions << ',' << stats.committed << ',' << stats.aborted << ',' << stats.operations << ','
                   << stats.reads << ',' << stats.updates << ',' << stats.inserts << ',' << stats.deletes << ','
@@ -254,7 +254,25 @@ int run(int argc, char** argv) {
                   << stats.lock_release_failures << ',' << stats.failed_transactions << ','
                   << rdma_failure.status << ',' << static_cast<unsigned>(rdma_failure.tag) << ','
                   << rdma_failure.remote_address << ',' << rdma_failure.length << ',' << rdma_failure.sequence << ','
-                  << rdma_diag.count_errors << ',' << rdma_diag.last_count_error << ',' << order << '\n';
+                  << rdma_diag.count_errors << ',' << rdma_diag.last_count_error << ',' << order
+                  << ',' << rdma_diag.local_errors
+                  << ',' << rdma_diag.profile_enabled
+                  << ',' << rdma_diag.slot_lookup_linear
+                  << ',' << rdma_diag.lock_calls
+                  << ',' << rdma_diag.cache_hits
+                  << ',' << rdma_diag.io_wait_ns
+                  << ',' << rdma_diag.local_gate_wait_ns
+                  << ',' << rdma_diag.gate_hold_ns
+                  << ',' << rdma_diag.index_build_ns
+                  << ',' << rdma_diag.lookup_ns
+                  << ',' << rdma_diag.slot_checks
+                  << ',' << rdma_diag.sync_calls
+                  << ',' << rdma_diag.sync_ns
+                  << ',' << rdma_diag.read_bytes
+                  << ',' << rdma_diag.write_bytes;
+        for (std::size_t i = 0; i < rdma_diag.phase_calls.size(); ++i)
+            std::cout << ',' << rdma_diag.phase_calls[i] << ',' << rdma_diag.phase_ns[i];
+        std::cout << '\n';
     } else {
         std::cout << "workload=" << WorkloadTrace::name(config.kind)
                   << ",index=" << index_name << ",cc=" << cc
@@ -302,9 +320,27 @@ int run(int argc, char** argv) {
                   << ",rdma_failure_sequence=" << rdma_failure.sequence
                   << ",rdma_count_errors=" << rdma_diag.count_errors
                   << ",rdma_last_count_error=" << rdma_diag.last_count_error
-                  << ",index_order=" << order << "\n";
+                  << ",index_order=" << order
+                  << ",rdma_local_errors=" << rdma_diag.local_errors
+                  << ",rdma_profile_enabled=" << rdma_diag.profile_enabled
+                  << ",rdma_slot_lookup_linear=" << rdma_diag.slot_lookup_linear
+                  << ",rdma_lock_calls=" << rdma_diag.lock_calls
+                  << ",rdma_cache_hits=" << rdma_diag.cache_hits
+                  << ",rdma_io_wait_ns=" << rdma_diag.io_wait_ns
+                  << ",rdma_local_gate_wait_ns=" << rdma_diag.local_gate_wait_ns
+                  << ",rdma_gate_hold_ns=" << rdma_diag.gate_hold_ns
+                  << ",rdma_index_build_ns=" << rdma_diag.index_build_ns
+                  << ",rdma_lookup_ns=" << rdma_diag.lookup_ns
+                  << ",rdma_slot_checks=" << rdma_diag.slot_checks
+                  << ",rdma_sync_calls=" << rdma_diag.sync_calls
+                  << ",rdma_sync_ns=" << rdma_diag.sync_ns
+                  << ",rdma_read_bytes=" << rdma_diag.read_bytes
+                  << ",rdma_write_bytes=" << rdma_diag.write_bytes << "\n";
+        for (std::size_t i = 0; i < rdma_diag.phase_calls.size(); ++i)
+            std::cout << "rdma_phase=" << i << ",calls=" << rdma_diag.phase_calls[i]
+                      << ",ns=" << rdma_diag.phase_ns[i] << "\n";
     }
-    if (stats.failed() || stats.rdma_timeouts || stats.rdma_completion_errors || rdma_diag.count_errors) {
+    if (stats.failed() || stats.rdma_timeouts || stats.rdma_completion_errors || rdma_diag.count_errors || rdma_diag.local_errors) {
         std::cerr << "workload failed; measurement is invalid\n";
         return 3;
     }

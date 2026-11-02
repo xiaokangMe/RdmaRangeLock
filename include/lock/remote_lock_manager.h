@@ -47,6 +47,13 @@ public:
         std::uint64_t count_errors{0};
         RC last_count_error{RCOK};
         std::uint64_t local_errors{0};
+        bool profile_enabled{false};
+        bool slot_lookup_linear{false};
+        std::uint64_t lock_calls{0}, cache_hits{0};
+        std::uint64_t io_wait_ns{0}, local_gate_wait_ns{0}, gate_hold_ns{0};
+        std::uint64_t index_build_ns{0}, lookup_ns{0}, slot_checks{0};
+        std::uint64_t sync_calls{0}, sync_ns{0}, read_bytes{0}, write_bytes{0};
+        std::array<std::uint64_t, 6> phase_calls{}, phase_ns{};
     };
 
     bool connect(const std::string& host, std::uint16_t port);
@@ -147,6 +154,11 @@ private:
     std::uint64_t namespace_token_{0};
     std::size_t gate_retries_{64};
     bool local_gate_enabled_{true};
+    bool profile_enabled_{false};
+    bool slot_lookup_linear_{false};
+    mutable std::atomic<std::uint64_t> lock_calls_{0}, cache_hits_{0};
+    mutable std::atomic<std::uint64_t> io_wait_ns_{0}, local_gate_wait_ns_{0}, gate_hold_ns_{0};
+    mutable std::atomic<std::uint64_t> index_build_ns_{0}, lookup_ns_{0}, slot_checks_{0};
     mutable std::atomic<std::uint64_t> gate_attempts_{0};
     mutable std::atomic<std::uint64_t> gate_retry_count_{0};
     mutable std::atomic<std::uint64_t> gate_abort_count_{0};

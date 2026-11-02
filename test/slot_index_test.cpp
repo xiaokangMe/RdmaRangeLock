@@ -46,13 +46,11 @@ RangeLock random_lock(std::mt19937_64& random, uint64_t span) {
 // Exactly the scan the lock manager performs on a loaded shard.
 bool indexed_conflict(const SlotIndex& index, const std::vector<RemoteLockSlot>& slots,
                       const RangeLock& request) {
-    const auto bounds = index.window(SlotIndex::query_start(request.range),
-                                     SlotIndex::query_end(request.range));
-    for (std::size_t i = bounds.first; i < bounds.second; ++i)
-        if (request.conflicts(decode_remote_slot(slots[index.intervals()[i]]))) return true;
-    for (const std::size_t slot : index.unbounded())
-        if (request.conflicts(decode_remote_slot(slots[slot]))) return true;
-    return false;
+    bool result = false;
+    index.for_each_candidate(slots, request.range, [&](const RemoteLockSlot& slot) {
+        if (request.conflicts(decode_remote_slot(slot))) result = true;
+    });
+    return result;
 }
 
 bool brute_force_conflict(const std::vector<RemoteLockSlot>& slots, const RangeLock& request) {
@@ -77,11 +75,15 @@ int main() {
         }
         SlotIndex index;
         index.build(slots);
+        SlotIndex linear;
+        linear.build(slots, true);
         for (int query = 0; query < 200; ++query) {
-            const RangeLock request = random_lock(random, kSpan);
+            const RangeLock request = query % 4 == 0
+                ? decode_remote_slot(slots[static_cast<std::size_t>(query) % slots.size()])
+                : random_lock(random, kSpan);
             const bool expected = brute_force_conflict(slots, request);
             const bool actual = indexed_conflict(index, slots, request);
-            if (expected != actual) {
+            if (expected != actual || expected != indexed_conflict(linear, slots, request)) {
                 std::cerr << "FAIL: conflict mismatch round=" << round << " query=" << query
                           << " expected=" << expected << " actual=" << actual
                           << " range=" << request.range.to_string() << "\n";
@@ -105,7 +107,11 @@ int main() {
             std::size_t actual_slot = 0;
             const bool found = index.find_owned(slots, request.txn_id, request.kind, request.range,
                                                 actual_slot);
-            if (found != (expected_slot != slots.size())) {
+            std::size_t linear_slot = 0;
+            const bool linear_found = linear.find_owned(slots, request.txn_id, request.kind,
+                                                         request.range, linear_slot);
+            if (found != (expected_slot != slots.size()) || found != linear_found ||
+                (linear_found && linear_slot != expected_slot)) {
                 std::cerr << "FAIL: find_owned presence mismatch round=" << round << "\n";
                 return 1;
             }

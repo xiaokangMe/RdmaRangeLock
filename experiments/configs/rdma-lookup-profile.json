@@ -1,0 +1,15 @@
+{
+  "workload": "ycsb-e",
+  "index": "v2",
+  "cc": "rdma-next-key",
+  "key_count": 256,
+  "transaction_count": 1000,
+  "operations_per_transaction": 4,
+  "range_length": 16,
+  "threads": 4,
+  "seed": 7,
+  "zipf_theta": 0.99,
+  "duration_seconds": 0,
+  "hierarchy_bucket_width": 64,
+  "rdma_connections": 2
+}

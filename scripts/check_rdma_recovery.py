@@ -39,7 +39,7 @@ def check_workload_smoke(root, build, env, port):
             raise RuntimeError("invalid workload CSV: " + result.stdout)
         row = rows[0]
         if any(int(row[key]) for key in ("lock_errors", "index_errors", "lock_release_failures",
-                                         "failed_transactions", "rdma_timeouts", "rdma_completion_errors")):
+                                         "failed_transactions", "rdma_timeouts", "rdma_completion_errors", "rdma_count_errors", "rdma_local_errors")):
             raise RuntimeError("hard workload error: " + result.stdout)
         if int(row["transactions"]) != 100 or int(row["committed"]) + int(row["aborted"]) != 100:
             raise RuntimeError("invalid transaction accounting: " + result.stdout)

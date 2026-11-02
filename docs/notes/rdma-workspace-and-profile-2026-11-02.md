@@ -31,3 +31,19 @@ RRL_RDMA_PROFILE=1 启用计时/流量统计，默认关闭。区分 WR 数与 p
 新增真实 QP 回归用例：覆盖全 shard→单 shard→不同单 shard 缓冲复用、140 条锁的分块 compaction 与其他事务锁保留，以及 lock/release/count 三条路径在 gate 后抛 bad_alloc。全路径通过替换 C++ new/new[] 计数，持 gate 区间为零次（不据此推断 verbs 库内部 malloc）。异常后所有 gate 为零，manager 不可继续使用。
 
 验证命令：cmake --build build-correctness-fix -j4；RRL_RDMA_GID_INDEX=3 python3 scripts/check_rdma_recovery.py --build build-correctness-fix。CTest 23/23 无跳过；8 个短负载、握手 deadline、恢复总预算及不确定修改 fail-closed 全通过。未跑完整矩阵或 1 小时压力。
+
+## 7–8 工具与验收
+
+RRL_SLOT_LOOKUP=index|linear（此提交默认 index）；两路径共用 for_each_candidate、RangeLock::conflicts 与 find_owned 的精确匹配。随机差分包含 40,000 查询及主动 owned 命中。RRL_RDMA_PROFILE=0|1 默认 0，关闭时新增计时器不读时钟，新增计数保持 0；原超时检测仍照常读时钟。
+
+CSV 追加 rdma_local_errors、profile 开关、linear 标志、逻辑请求/cache 命中、QP I/O 互斥等待、本地 gate 等待、远端 gate 持有时间、索引构建时间、冲突及 owned 查询时间、冲突候选检查量、同步提交次数及耗时、读写字节，以及 None/Gate/LoadCounts/LoadSlots/StoreSlot/ReleaseGate 六阶段调用/耗时。gate_hold 从全部 gate 成功取得后计至释放完成，不包含获取阶段，也不包含缓存记账；io_wait 包括 mutex 调用开销，不是 NIC send queue 深度。sync_calls 是实际 post_send 尝试次数（失败测量拒绝），sync_ns 从 post 前到 completion/失败处理结束；bytes 只计成功提交的 READ/WRITE 载荷，不含 CAS、协议包头。各项是累计总量，不是延迟分位数；并发累计等待不能除墙钟时间当作单线程占比。
+
+真实 QP 计数回归：新锁、cache 命中、冲突、释放共 13 次同步提交 / 14 个 WR；六阶段 0/3/3/2/2/3 次，READ=152B、WRITE=80B；另验 profile 关闭仍可运行且新增统计为零。runner 把 local_errors 视为失败，硬件验收脚本同步拒绝该错误。
+
+复现：
+- python3 scripts/run_slot_lookup_bench.py --output experiments/results/slot-lookup-2026-11-02.csv
+- RRL_RDMA_GID_INDEX=3 python3 scripts/run_rdma_profile.py --host SERVER_ROCE_IP --port ISOLATED_PORT --output experiments/results/rdma-lookup-profile-2026-11-02.csv
+
+两个脚本要求源码/config/script 已提交、工作区干净，记录真实源码提交并构建对应目标，三次重复、交替策略顺序、拒绝覆盖已有文件。原始数据保持忽略，不进 Git。微基准使用 experiments/configs/slot-lookup-bench.json（8 种容量×5 种分布，完整 build+conflict+owned 成本）；next-key 用 experiments/configs/rdma-lookup-profile.json（固定 1,000 事务的小型诊断，不是正式性能矩阵）。后者只支持 YCSB-E/next-key，依赖独占且空的服务端；以全部 key 域作保守活跃槽界，4×4×(256+2)=4,128 < 8,192/shard，脚本拒绝超界。默认不启动服务，不扩大到跨机完整矩阵。
+
+验证：默认 index/profile off 与 linear/profile on 各跑硬件 CTest 24/24 无跳过、8 个短负载及故障检查通过。尚未在此提交生成性能结论，先提交代码，再记录对应源码版本的数据。

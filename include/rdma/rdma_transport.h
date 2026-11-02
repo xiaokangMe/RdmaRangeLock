@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <chrono>
 #include <cstdint>
@@ -37,6 +38,12 @@ struct RdmaFailureInfo {
     std::uint64_t sequence{0};
     std::uint8_t tag{0};
     std::uint8_t reserved[7]{};
+};
+
+// Optional post/poll profiling. Calls are synchronous submissions, not wire RTTs.
+struct RdmaProfile {
+    std::uint64_t sync_calls{0}, sync_ns{0}, read_bytes{0}, write_bytes{0};
+    std::array<std::uint64_t, 6> phase_calls{}, phase_ns{};
 };
 
 struct RdmaRemoteMemory {
@@ -114,6 +121,7 @@ public:
     std::uint64_t timeout_count(RdmaOpTag tag) const;
     std::uint64_t completion_error_count() const;
     std::uint64_t operation_count() const;
+    RdmaProfile profile() const;
     // Tagging is per connection and therefore per owning thread; it lets the
     // manager record which protocol step issued the request that stalled.
     void set_operation_tag(RdmaOpTag tag);

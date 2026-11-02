@@ -131,6 +131,9 @@ struct RdmaConnection::Impl {
     std::atomic<std::uint64_t> operations{0};
     std::atomic<std::uint64_t> failures{0};
     std::atomic<std::uint64_t> timeouts_by_tag[8];
+    bool profile_enabled{false};
+    std::atomic<std::uint64_t> sync_calls{0}, sync_ns{0}, read_bytes{0}, write_bytes{0};
+    std::array<std::atomic<std::uint64_t>, 6> phase_calls{}, phase_ns{};
     std::uint8_t op_tag{0};
     RdmaFailureInfo last_failure{};
     mutable std::mutex failure_mutex;
@@ -140,6 +143,10 @@ struct RdmaConnection::Impl {
     bool rejected_handshake{false};
 
     Impl() {
+        const char* value = std::getenv("RRL_RDMA_PROFILE");
+        profile_enabled = value && std::strcmp(value, "1") == 0;
+        for (auto& counter : phase_calls) counter.store(0, std::memory_order_relaxed);
+        for (auto& counter : phase_ns) counter.store(0, std::memory_order_relaxed);
         wrs.reserve(128);
         sges.reserve(128);
         for (auto& counter : timeouts_by_tag) counter.store(0, std::memory_order_relaxed);
@@ -318,6 +325,34 @@ void fail_connection(RdmaConnection::Impl* impl) {
     }
 }
 
+class PostProfile {
+public:
+    PostProfile(RdmaConnection::Impl* impl, Clock::time_point start)
+        : impl_(impl), start_(start), tag_(std::min<std::size_t>(impl->op_tag, 5)) {
+        if (!impl_->profile_enabled) return;
+        impl_->sync_calls.fetch_add(1, std::memory_order_relaxed);
+        impl_->phase_calls[tag_].fetch_add(1, std::memory_order_relaxed);
+    }
+    void submitted(const ibv_send_wr& wr, const ibv_sge& sge) {
+        if (!impl_->profile_enabled) return;
+        if (wr.opcode == IBV_WR_RDMA_READ)
+            impl_->read_bytes.fetch_add(sge.length, std::memory_order_relaxed);
+        else if (wr.opcode == IBV_WR_RDMA_WRITE)
+            impl_->write_bytes.fetch_add(sge.length, std::memory_order_relaxed);
+    }
+    ~PostProfile() {
+        if (!impl_->profile_enabled) return;
+        const auto ns = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start_).count());
+        impl_->sync_ns.fetch_add(ns, std::memory_order_relaxed);
+        impl_->phase_ns[tag_].fetch_add(ns, std::memory_order_relaxed);
+    }
+private:
+    RdmaConnection::Impl* impl_;
+    Clock::time_point start_;
+    std::size_t tag_;
+};
+
 bool post_and_poll(RdmaConnection::Impl* impl, ibv_send_wr& wr, ibv_sge& sge) {
     wr.wr_id = 1;
     wr.sg_list = &sge;
@@ -329,11 +364,13 @@ bool post_and_poll(RdmaConnection::Impl* impl, ibv_send_wr& wr, ibv_sge& sge) {
         record_failure(impl, 0xfffffffdu, wr.opcode, wr_remote_address(wr), sge.length, 0, started, true);
         fail_connection(impl); return false;
     }
+    PostProfile profile(impl, started);
     if (ibv_post_send(impl->qp, &wr, &bad) != 0) {
         record_failure(impl, 0xffffffffu, wr.opcode, wr_remote_address(wr), sge.length, 0, started, false);
         fail_connection(impl);
         return false;
     }
+    profile.submitted(wr, sge);
     impl->operations.fetch_add(1, std::memory_order_relaxed);
     ibv_wc wc{};
     const auto deadline = std::min(impl->deadline, started + std::chrono::seconds(1));
@@ -392,16 +429,19 @@ bool post_batch_and_poll(RdmaConnection::Impl* impl,
         record_batch_failure(impl, 0xfffffffdu, wrs, sges, kRdmaUnknownWr, started, true);
         fail_connection(impl); return false;
     }
+    PostProfile profile(impl, started);
     if (ibv_post_send(impl->qp, &wrs.front(), &bad) != 0) {
         // A prefix may already be in flight without a signaled completion.
         // Never reuse its registered buffer on this QP after partial posting.
         std::size_t posted = 0;
         while (posted < wrs.size() && &wrs[posted] != bad) ++posted;
+        for (std::size_t i = 0; i < posted; ++i) profile.submitted(wrs[i], sges[i]);
         impl->operations.fetch_add(posted, std::memory_order_relaxed);
         record_batch_failure(impl, 0xffffffffu, wrs, sges, posted, started, false);
         fail_connection(impl);
         return false;
     }
+    for (std::size_t i = 0; i < wrs.size(); ++i) profile.submitted(wrs[i], sges[i]);
     impl->operations.fetch_add(wrs.size(), std::memory_order_relaxed);
     ibv_wc wc{};
     const auto deadline = std::min(impl->deadline, started + std::chrono::seconds(1));
@@ -550,6 +590,20 @@ std::uint64_t RdmaConnection::completion_error_count() const {
 
 std::uint64_t RdmaConnection::operation_count() const {
     return impl_ ? impl_->operations.load(std::memory_order_relaxed) : 0;
+}
+
+RdmaProfile RdmaConnection::profile() const {
+    RdmaProfile result;
+    if (!impl_) return result;
+    result.sync_calls = impl_->sync_calls.load(std::memory_order_relaxed);
+    result.sync_ns = impl_->sync_ns.load(std::memory_order_relaxed);
+    result.read_bytes = impl_->read_bytes.load(std::memory_order_relaxed);
+    result.write_bytes = impl_->write_bytes.load(std::memory_order_relaxed);
+    for (std::size_t i = 0; i < result.phase_calls.size(); ++i) {
+        result.phase_calls[i] = impl_->phase_calls[i].load(std::memory_order_relaxed);
+        result.phase_ns[i] = impl_->phase_ns[i].load(std::memory_order_relaxed);
+    }
+    return result;
 }
 
 std::uint64_t RdmaConnection::timeout_count(RdmaOpTag tag) const {

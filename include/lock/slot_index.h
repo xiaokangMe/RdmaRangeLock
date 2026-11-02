@@ -29,11 +29,13 @@ public:
         max_end_.reserve(capacity); unbounded_.reserve(capacity);
     }
 
-    void build(const std::vector<RemoteLockSlot>& slots) {
+    void build(const std::vector<RemoteLockSlot>& slots, bool linear = false) {
+        linear_ = linear;
         intervals_.clear();
         starts_.clear();
         max_end_.clear();
         unbounded_.clear();
+        if (linear_) return;
         intervals_.reserve(slots.size());
         for (std::size_t i = 0; i < slots.size(); ++i) {
             if (slots[i].has_start) intervals_.push_back(i);
@@ -62,9 +64,28 @@ public:
         return {std::min(first, last), last};
     }
 
+    // Both policies feed the exact same compatibility predicate at the caller.
+    template<class Visitor>
+    void for_each_candidate(const std::vector<RemoteLockSlot>& slots,
+                            const KeyRangeEnt& range, Visitor&& visit) const {
+        if (linear_) {
+            for (const auto& slot : slots) visit(slot);
+            return;
+        }
+        const auto bounds = window(query_start(range), query_end(range));
+        for (std::size_t i = bounds.first; i < bounds.second; ++i)
+            visit(slots[intervals_[i]]);
+        for (const auto index : unbounded_) visit(slots[index]);
+    }
+
     // Finds the slot this transaction already published for exactly this range.
     bool find_owned(const std::vector<RemoteLockSlot>& slots, txnid_t txn, LockKind kind,
                     const KeyRangeEnt& range, std::size_t& out) const {
+        if (linear_) {
+            for (std::size_t i = 0; i < slots.size(); ++i)
+                if (matches(slots[i], txn, kind, range)) { out = i; return true; }
+            return false;
+        }
         const auto bounds = window(query_start(range), query_end(range));
         for (std::size_t i = bounds.first; i < bounds.second; ++i) {
             if (matches(slots[intervals_[i]], txn, kind, range)) { out = intervals_[i]; return true; }
@@ -97,6 +118,7 @@ private:
                held.start_bound == range.start_bound && held.end_bound == range.end_bound;
     }
 
+    bool linear_{false};
     std::vector<std::size_t> intervals_;
     std::vector<std::uint64_t> starts_;
     std::vector<std::uint64_t> max_end_;

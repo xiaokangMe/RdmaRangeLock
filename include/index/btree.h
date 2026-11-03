@@ -25,6 +25,34 @@ struct KeyValue {
     void* value{nullptr};
 };
 
+// Values are copied by a remote backend; pointers never cross address spaces.
+struct IndexMutation {
+    idx_key_t key{0};
+    const std::uint64_t* value{nullptr};
+    bool remove{false};
+};
+
+// Common offset representation for every RDMA protocol. The host BTreePage
+// below contains C++ process pointers and cannot itself be registered as a
+// portable remote page. Keys use the same unsigned ordering in both formats.
+struct OffsetBTreeHeader {
+    std::uint64_t latch{0}, poison{0};
+    std::uint64_t magic{0}, format{1}, bytes{0}, order{0}, page_bytes{0};
+    std::uint64_t page_capacity{0}, record_capacity{0}, record_base{0};
+    std::uint64_t root{0}, pages_used{0}, records_used{0}, live_records{0}, height{1};
+    std::uint64_t seed_fingerprint{0};
+};
+struct OffsetBTreePage {
+    std::uint64_t leaf{1}, count{0}, next{0}, prev{0};
+    // Followed by order keys and order+1 child/record offsets.
+};
+struct OffsetBTreeRecord {
+    std::uint64_t key{0}, value{0}, valid{0};
+};
+static_assert(sizeof(OffsetBTreeHeader) == 128, "stable RDMA header");
+static_assert(sizeof(OffsetBTreePage) == 32, "stable RDMA page prefix");
+static_assert(sizeof(OffsetBTreeRecord) == 24, "stable RDMA record");
+
 // Common page layout for v1 and v2. v1 leaves latch unused; v2 uses it for
 // parent-to-child latch coupling.
 struct BTreePage {
@@ -47,6 +75,22 @@ public:
     virtual bool lookup(idx_key_t key, void*& value) const = 0;
     virtual std::vector<KeyValue> scan_range(const KeyRangeEnt& range) const = 0;
     virtual std::size_t size() const = 0;
+    // Backend lifecycle hooks run before Begin/after End, outside txn locks.
+    virtual bool preloaded() const { return false; }
+    virtual void prepare_thread(std::size_t, std::size_t) {}
+    virtual void finish_thread() noexcept {}
+    virtual bool healthy() const { return true; }
+    virtual void scan_range_into(const KeyRangeEnt& range, std::vector<KeyValue>& out) const {
+        out = scan_range(range);
+    }
+    virtual RC apply_batch(const std::vector<IndexMutation>& changes) {
+        for (const auto& change : changes) {
+            const auto rc = change.remove ? erase(change.key) :
+                insert(change.key, const_cast<std::uint64_t*>(change.value));
+            if (rc != RCOK && !(change.remove && rc == Abort)) return rc;
+        }
+        return RCOK;
+    }
 };
 
 class BTreeSingle final : public BTreeIndex {

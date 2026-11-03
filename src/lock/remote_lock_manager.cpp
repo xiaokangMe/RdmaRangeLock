@@ -125,18 +125,18 @@ private:
 // can never wait on each other in opposite directions.
 class RemoteLockManager::LocalGateGuard {
 public:
-    LocalGateGuard(std::array<std::mutex, kRemoteLockShards>& gates,
+    LocalGateGuard(std::array<FifoMutex, kRemoteLockShards>& gates,
                    const std::vector<std::size_t>& ids, bool enabled) {
         if (!enabled) return;
         std::size_t i = 0;
-        for (const std::size_t shard : ids) locks_[i++] = std::unique_lock<std::mutex>(gates[shard]);
+        for (const std::size_t shard : ids) locks_[i++] = std::unique_lock<FifoMutex>(gates[shard]);
     }
     void release() {
         for (auto& lock : locks_) if (lock.owns_lock()) lock.unlock();
     }
 
 private:
-    std::array<std::unique_lock<std::mutex>, kRemoteLockShards> locks_;
+    std::array<std::unique_lock<FifoMutex>, kRemoteLockShards> locks_;
 };
 
 RemoteLockManager::RemoteLockManager() {
@@ -584,11 +584,11 @@ RC RemoteLockManager::lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& ran
     try {
         if (!connected()) return ERROR;
         const auto txn_queued = profile_start(profile_enabled_);
-        std::unique_lock<std::mutex> operation(txn_operation_mutexes_[txn_id % kRemoteTxnCacheShards]);
+        std::unique_lock<FifoMutex> operation(txn_operation_mutexes_[txn_id % kRemoteTxnCacheShards]);
         profile_add(profile_enabled_, txn_queued, txn_wait_ns_);
         auto& slot = current_slot();
         const auto queued = profile_start(profile_enabled_);
-        std::unique_lock<std::mutex> io(slot.io_mutex);
+        std::unique_lock<FifoMutex> io(slot.io_mutex);
         profile_add(profile_enabled_, queued, io_wait_ns_);
         try { return lock_impl(txn_id, mode, range, kind, conflicts); }
         catch (...) { invalidate(&slot); return ERROR; }
@@ -599,11 +599,11 @@ RC RemoteLockManager::release(txnid_t txn_id, const KeyRangeEnt* range, LockKind
     try {
         if (!connected()) return ERROR;
         const auto txn_queued = profile_start(profile_enabled_);
-        std::unique_lock<std::mutex> operation(txn_operation_mutexes_[txn_id % kRemoteTxnCacheShards]);
+        std::unique_lock<FifoMutex> operation(txn_operation_mutexes_[txn_id % kRemoteTxnCacheShards]);
         profile_add(profile_enabled_, txn_queued, txn_wait_ns_);
         auto& slot = current_slot();
         const auto queued = profile_start(profile_enabled_);
-        std::unique_lock<std::mutex> io(slot.io_mutex);
+        std::unique_lock<FifoMutex> io(slot.io_mutex);
         profile_add(profile_enabled_, queued, io_wait_ns_);
         try { return release_impl(txn_id, range, kind); }
         catch (...) { invalidate(&slot); return ERROR; }
@@ -614,11 +614,11 @@ std::size_t RemoteLockManager::get_lock_count(txnid_t txn_id) const {
     try {
         if (!connected()) { record_count_error(ERROR); return 0; }
         const auto txn_queued = profile_start(profile_enabled_);
-        std::unique_lock<std::mutex> operation(txn_operation_mutexes_[txn_id % kRemoteTxnCacheShards]);
+        std::unique_lock<FifoMutex> operation(txn_operation_mutexes_[txn_id % kRemoteTxnCacheShards]);
         profile_add(profile_enabled_, txn_queued, txn_wait_ns_);
         auto& slot = current_slot();
         const auto queued = profile_start(profile_enabled_);
-        std::unique_lock<std::mutex> io(slot.io_mutex);
+        std::unique_lock<FifoMutex> io(slot.io_mutex);
         profile_add(profile_enabled_, queued, io_wait_ns_);
         try { return count_impl(txn_id); }
         catch (...) { invalidate(&slot); record_count_error(ERROR); return 0; }
@@ -657,7 +657,7 @@ RC RemoteLockManager::lock_impl(txnid_t txn_id, LockMode mode, const KeyRangeEnt
     const auto owner = current_owner_token();
     const auto rkey = current_shards_rkey();
     const txnid_t id = wire_txn(txn_id);
-    const RangeLock request{id, mode, kind, range};
+    RangeLock request{id, mode, kind, range};
 
     // Time the complete rebuild, not just the subsequent binary searches.
     const auto build_start = profile_start(profile_enabled_);
@@ -665,6 +665,17 @@ RC RemoteLockManager::lock_impl(txnid_t txn_id, LockMode mode, const KeyRangeEnt
         tables[n].index.build(tables[n].slots, slot_lookup_linear_);
     profile_add(profile_enabled_, build_start, index_build_ns_);
     const auto lookup_start = profile_start(profile_enabled_);
+    auto& owned_slot = workspace.owned;
+    owned_slot.fill(kNoSlot);
+    for (std::size_t n = 0; n < ids.size(); ++n) {
+        auto& table = tables[n];
+        std::size_t found = kNoSlot;
+        if (table.index.find_owned(table.slots, id, kind, range, found)) {
+            owned_slot[n] = found;
+            request.mode = lock_mode_join(request.mode, static_cast<LockMode>(table.slots[found].mode));
+        }
+    }
+    mode = request.mode;
     std::uint64_t checks = 0;
     bool conflict = false;
     workspace.conflicts.clear();
@@ -690,14 +701,8 @@ RC RemoteLockManager::lock_impl(txnid_t txn_id, LockMode mode, const KeyRangeEnt
 
     // Capacity preflight: check every target shard before publishing any copy,
     // otherwise a later full shard would leave earlier copies behind.
-    auto& owned_slot = workspace.owned;
-    owned_slot.fill(kNoSlot);
     for (std::size_t n = 0; n < ids.size(); ++n) {
-        std::size_t found = kNoSlot;
-        if (tables[n].index.find_owned(tables[n].slots, id, kind, range, found)) {
-            owned_slot[n] = found;
-            continue;
-        }
+        if (owned_slot[n] != kNoSlot) continue;
         if (tables[n].slots.size() >= kRemoteLockSlotsPerShard) {
             profile_add(profile_enabled_, lookup_start, lookup_ns_);
             return gate.release() ? AbortCapacity : ERROR;

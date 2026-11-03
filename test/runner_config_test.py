@@ -31,7 +31,7 @@ for args in (["--index", "typo"], ["--cc", "typo"], ["--workload", "typo"],
              ["--threads", "18446744073709551616"], ["--zipf", "nan"], ["--zipf", "inf"],
              ["--zipf", "0.5x"], ["--zipf", "-1"], ["--format", "typo"], ["--bogus", "1"],
              ["--order", "2"], ["--rdma-host", "typo"], ["--threads"],
-             ["--bucket", "0"], ["--duration", "18446744073709551615"]):
+             ["--hierarchy-diagnostics", "2"], ["--bucket", "0"], ["--duration", "18446744073709551615"]):
     reject(base + args)
 with tempfile.TemporaryDirectory() as tmp:
     path = Path(tmp) / "config.json"
@@ -40,7 +40,7 @@ with tempfile.TemporaryDirectory() as tmp:
                  '{"workload":"typo"}', '{"lock_server_port":65536}', '{"threads":01}',
                  '{"threads":1} garbage', '{"threads":1,}', '{"threads":1,"threads":2}',
                  '{"key_count":8,"keys":9}', '{"threadz":2}', '{"threads":[1,2]}',
-                 '{"zipf_theta":1e999}', '{"zipf_theta":NaN}'):
+                 '{"hierarchy_diagnostics":2}', '{"hierarchy_diagnostics":"1"}', '{"zipf_theta":1e999}', '{"zipf_theta":NaN}'):
         path.write_text(text)
         reject([runner, "--config", str(path)])
     config = {"workload": "e", "index": "btree_latch_coupling", "cc": "next-key",
@@ -53,3 +53,27 @@ with tempfile.TemporaryDirectory() as tmp:
     if row["index"] != "v2" or row["cc"] != "next-key" or int(row["transactions"]) != 1:
         raise RuntimeError("valid aliases/config lost")
 print("runner configuration rejection: OK")
+
+# Diagnostic records have their own channel and conserve worker counters.
+args = [runner, "--cc", "hierarchical", "--keys", "128", "--txns", "200",
+        "--ops", "4", "--threads", "4", "--bucket", "64", "--format", "csv"]
+plain = subprocess.run(args, capture_output=True, text=True, check=True, timeout=10)
+if plain.stderr:
+    raise RuntimeError("diagnostics must be disabled by default")
+with tempfile.TemporaryDirectory() as tmp:
+    cfg = Path(tmp) / "diagnostic.json"
+    cfg.write_text(json.dumps({"hierarchy_diagnostics": 1}))
+    enabled = subprocess.run(args + ["--config", str(cfg)], capture_output=True,
+                             text=True, check=True, timeout=10)
+    row = list(csv.DictReader(io.StringIO(enabled.stdout)))[0]
+    workers = [json.loads(line) for line in enabled.stderr.splitlines()]
+    if len(workers) != 4 or any(w["kind"] != "hierarchy-progress" or w["upgrade_requests"] for w in workers):
+        raise RuntimeError("missing worker diagnostics or in-flight upgrades")
+    for field in ("committed", "aborted"):
+        if sum(w[field] for w in workers) != int(row[field]):
+            raise RuntimeError("worker diagnostics do not conserve " + field)
+    if sum(w["attempts"] for w in workers) != int(row["transactions"]):
+        raise RuntimeError("worker attempt counts lost")
+    if any(w["root_conflicts"] + w["bucket_conflicts"] for w in workers):
+        raise RuntimeError("pure point workload should conflict only on records")
+print("hierarchy diagnostic channel and counters: OK")

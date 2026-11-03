@@ -55,7 +55,11 @@ v3 → v5 → v4 → v6。
 
 ## v6 当前实现
 
-`run_hierarchical_lock()` 使用逻辑根节点和可配置 key bucket 表示多粒度锁。范围读采用 Root IS + bucket S，写操作采用 Root IX + bucket X；`--bucket` 控制桶宽。`test/v6_hierarchical_lock_test.cpp` 验证意向锁兼容、同桶冲突和模式升级。
+`run_hierarchical_lock()` 使用根、逻辑 key bucket、记录三层资源。点读采用 Root IS + bucket IS + record S，点写采用 Root IX + bucket IX + record X；范围读锁住覆盖桶 S。同桶同时含扫描和写时，预先选桶 X（当前没有 SIX），不再取得被桶 S/X 覆盖的记录锁。访问集来自已生成 trace，在测量窗口前排序、去重并确定最终模式；按根、升序桶、升序记录申请，执行阶段不升级。所有锁仍在提交/中止决定后统一释放，冲突策略保持 NO_WAIT。详见 `docs/notes/rdma-hierarchy-correctness-2026-11-03.md`。
+
+`test/hierarchy_plan_test.cpp`、`test/rdma_hierarchy_test.cpp` 验证同桶不同记录并发、同记录互斥、空结果范围的插入保护、边界与失败清理。`--hierarchy-diagnostics 1` 或配置 `hierarchy_diagnostics: 1` 开启每 worker 的 JSONL 诊断，写入 stderr；默认关闭且正式 CSV 不变。阶段 0/1/2 分别是根/桶/记录，mode 0/1/2/3 是 IS/IX/S/X。统计最长无提交时间、最长连续中止数、最后冲突请求及单次申请/释放的最大耗时，统一在运行结束后输出。
+
+远端事务操作条带、共享 QP 和本地 gate 使用条件变量 FIFO 准入。该队列只调度本地执行资源，不把事务锁变成等待锁。NO_WAIT 下冲突事务仍可能中止；不能将 FIFO 解释为所有热点事务都获得无饥饿保证。
 
 ## RDMA 接入
 

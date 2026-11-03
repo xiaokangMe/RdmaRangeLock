@@ -107,6 +107,14 @@ struct RangeLock {
             (other.mode == LockMode::IS || other.mode == LockMode::IX);
         if (this_parent_intention && !other.range.is_unbounded()) return false;
         if (other_parent_intention && !range.is_unbounded()) return false;
+        // A bucket intention announces descendant access; it does not lock
+        // every record in that bucket. Bucket S/X versus record locks still
+        // conflicts, as do bucket S versus bucket IX and record S versus X.
+        const auto bucket_intention = [](const RangeLock& a, const RangeLock& b) {
+            return a.kind == LockKind::Node && b.kind == LockKind::Record &&
+                (a.mode == LockMode::IS || a.mode == LockMode::IX);
+        };
+        if (bucket_intention(*this, other) || bucket_intention(other, *this)) return false;
         return true;
     }
 };

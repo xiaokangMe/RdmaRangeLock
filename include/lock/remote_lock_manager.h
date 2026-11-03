@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "common/range.h"
+#include "common/fifo_mutex.h"
 #include "lock/lock_manager.h"
 #include "lock/remote_lock_slot.h"
 #include "lock/txn_lock_cache.h"
@@ -94,7 +95,7 @@ private:
         std::unique_ptr<RdmaConnection> connection;
         std::unique_ptr<Workspace> workspace;
         std::uint64_t owner_token{0};
-        mutable std::mutex io_mutex;
+        mutable FifoMutex io_mutex;
     };
     struct LoadedShard;
     class LocalGateGuard;
@@ -163,7 +164,7 @@ private:
     // Keep remote publication and post-gate cache bookkeeping in transaction
     // order, including when one transaction is served by different QPs.
     // Lock order: transaction stripe -> QP io -> local gates -> remote gates.
-    mutable std::array<std::mutex, kRemoteTxnCacheShards> txn_operation_mutexes_;
+    mutable std::array<FifoMutex, kRemoteTxnCacheShards> txn_operation_mutexes_;
     mutable std::atomic<std::uint64_t> txn_wait_ns_{0};
     mutable std::atomic<std::uint64_t> lock_calls_{0}, cache_hits_{0};
     mutable std::atomic<std::uint64_t> io_wait_ns_{0}, local_gate_wait_ns_{0}, gate_hold_ns_{0};
@@ -181,7 +182,7 @@ private:
     // boundary, so this is purely a performance knob: waiting on an in-process
     // mutex is far cheaper than losing a CAS round trip and retrying. It is on
     // by default and can be disabled with RRL_LOCAL_GATE=0 for A/B runs.
-    mutable std::array<std::mutex, kRemoteLockShards> gate_mutexes_;
+    mutable std::array<FifoMutex, kRemoteLockShards> gate_mutexes_;
     mutable TxnLockCache txn_cache_;
 };
 

@@ -1,4 +1,6 @@
 #include "txn/workload.h"
+#include "hierarchical_plan.h"
+#include <iostream>
 
 #include <algorithm>
 #include <atomic>
@@ -253,13 +255,16 @@ bool apply_write(BTreeIndex& index, const Operation& op, LocalAcc& acc,
 
 void finish_transaction(BTreeIndex& index, IRangeLockManager& locks, txnid_t tid,
                         const std::vector<const Operation*>& writes, bool ok,
-                        LocalAcc& acc, std::atomic<bool>& stopped) {
+                        LocalAcc& acc, std::atomic<bool>& stopped,
+                        std::uint64_t* release_ns = nullptr) {
     if (ok) for (const auto* op : writes)
         if (!apply_write(index, *op, acc, stopped)) { ok = false; break; }
     // The commit/abort decision precedes strict-2PL release. A release failure
     // invalidates measurement even when the writes were already committed.
     if (acc.held || acc.lock_errors) {
+        const auto release_start = release_ns ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         const RC rc = locks.unlock_all(tid);
+        if (release_ns) *release_ns = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - release_start).count());
         if (rc != RCOK && !(acc.held == 0 && rc == Abort)) {
             ++acc.release_errors;
             stopped.store(true, std::memory_order_relaxed);
@@ -586,37 +591,51 @@ RunStats run_next_key_lock(BTreeIndex& index, IRangeLockManager& locks,
     return merge_parts(parts, begin);
 }
 
+namespace {
+struct HierarchyProgress {
+    std::uint64_t max_no_commit_ns{0}, last_commit_ns{0}, abort_streak{0}, max_abort_streak{0};
+    std::uint64_t max_acquire_ns{0}, max_release_ns{0};
+    std::array<std::uint64_t, 3> conflicts{};
+    detail::HierarchyRequest last_conflict{LockMode::IS, KeyRangeEnt::unbounded(), LockKind::Node, 0};
+    bool has_conflict{false};
+};
+}
+
 RunStats run_hierarchical_lock(BTreeIndex& index, IRangeLockManager& locks,
                                const WorkloadTrace& trace, size_t threads) {
     if (!threads) threads = 1;
     SeedValues seed;
     if (!seed_index(index, trace, seed)) { RunStats failed; failed.index_errors = 1; return failed; }
     if (trace.transactions().empty()) return {};
+    // Planning, sorting, deduplication and storage allocation precede all locks
+    // and the timed window. Both local and RDMA use this exact plan.
+    std::vector<std::vector<detail::HierarchyRequest>> plans;
+    plans.reserve(trace.transactions().size());
+    size_t max_ops = 0;
+    for (const auto& txn : trace.transactions()) {
+        plans.push_back(detail::hierarchy_plan(txn, trace.config().hierarchy_bucket_width));
+        max_ops = std::max(max_ops, txn.operations.size());
+    }
     std::atomic<bool> stopped{false};
-    const size_t worker_count = std::min(threads, std::max<size_t>(1, trace.transactions().size()));
+    const size_t worker_count = std::min(threads, trace.transactions().size());
     std::vector<LocalAcc> parts(worker_count);
+    const bool diagnose = trace.config().hierarchy_diagnostics;
+    std::vector<HierarchyProgress> progress(diagnose ? worker_count : 0);
     const auto begin = std::chrono::steady_clock::now();
-    const size_t width = std::max<size_t>(1, trace.config().hierarchy_bucket_width);
     const size_t total_txns = trace.transactions().size();
     const bool timed = trace.config().duration_seconds != 0;
-    const auto deadline = timed ? std::chrono::steady_clock::now() +
-        std::chrono::seconds(trace.config().duration_seconds)
-        : std::chrono::steady_clock::time_point::max();
+    const auto deadline = timed ? begin + std::chrono::seconds(trace.config().duration_seconds)
+                               : std::chrono::steady_clock::time_point::max();
+    auto elapsed = [&] {
+        return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - begin).count());
+    };
     std::vector<std::thread> workers;
     for (size_t worker = 0; worker < worker_count; ++worker) {
         workers.emplace_back([&, worker] {
             LocalAcc& a = parts[worker];
-            auto bucket = [&](idx_key_t key) {
-                const idx_key_t base = (key / width) * width;
-                const idx_key_t end = base > std::numeric_limits<idx_key_t>::max() - (width - 1)
-                    ? std::numeric_limits<idx_key_t>::max() : base + width - 1;
-                return KeyRangeEnt::closed(base, end);
-            };
-            auto acquire = [&](txnid_t txn, LockMode mode, const KeyRangeEnt& range, LockKind kind) {
-                ++a.acquires;
-                if (!record_lock_result(a, stopped, locks.lock(txn, mode, range, kind))) return false;
-                return true;
-            };
+            std::vector<const Operation*> writes;
+            writes.reserve(max_ops);
             for (size_t i = worker, rounds = 0;; i += worker_count, ++rounds) {
                 if (stopped.load(std::memory_order_relaxed)) break;
                 a.held = 0;
@@ -625,54 +644,87 @@ RunStats run_hierarchical_lock(BTreeIndex& index, IRangeLockManager& locks,
                 const auto& txn = trace.transactions()[i % total_txns];
                 const txnid_t tid = txn.txn_id +
                     static_cast<txnid_t>(i / total_txns) * static_cast<txnid_t>(total_txns);
-                bool ok = true;
-                bool stop_after_txn = false;
-                std::vector<const Operation*> writes;
-                for (const Operation& op : txn.operations) {
+                bool ok = true, stop_after_txn = false;
+                writes.clear();
+                for (const auto& request : plans[i % total_txns]) {
+                    if (timed && std::chrono::steady_clock::now() >= deadline) { stop_after_txn = true; ok = false; break; }
+                    ++a.acquires;
+                    const auto started = diagnose ? elapsed() : 0;
+                    const auto rc = locks.lock(tid, request.mode, request.range, request.kind);
+                    if (diagnose) {
+                        auto& d = progress[worker];
+                        d.max_acquire_ns = std::max(d.max_acquire_ns, elapsed() - started);
+                        if (rc == AbortConflict) {
+                            ++d.conflicts[request.phase]; d.last_conflict = request; d.has_conflict = true;
+                        }
+                    }
+                    if (!record_lock_result(a, stopped, rc)) { ok = false; break; }
+                }
+                if (ok) for (const Operation& op : txn.operations) {
                     if (timed && std::chrono::steady_clock::now() >= deadline) { stop_after_txn = true; ok = false; break; }
                     ++a.ops;
                     if (op.kind == OperationKind::RangeRead) {
                         ++a.ranges;
-                        if (!acquire(tid, LockMode::IS, KeyRangeEnt::unbounded(), LockKind::Node)) { ok = false; break; }
-                        const idx_key_t last = op.end_key > op.key ? op.end_key - 1 : op.key;
-                        idx_key_t first_bucket = (op.key / width) * width;
-                        const idx_key_t last_bucket = (last / width) * width;
-                        for (idx_key_t base = first_bucket;;) {
-                            if (!acquire(tid, LockMode::S, bucket(base), LockKind::Node)) { ok = false; break; }
-                            if (base == last_bucket || base > std::numeric_limits<idx_key_t>::max() - width) break;
-                            base += width;
-                        }
-                        if (!ok) break;
                         const auto rows = index.scan_range(KeyRangeEnt::half_open(op.key, op.end_key));
-                        a.scanned += rows.size();
-                        a.found += rows.size();
+                        a.scanned += rows.size(); a.found += rows.size();
                         for (const auto& row : rows) {
                             if (timed && std::chrono::steady_clock::now() >= deadline) { stop_after_txn = true; ok = false; break; }
                             a.checksum += row.key ^ *static_cast<uint64_t*>(row.value);
                         }
+                    } else if (op.kind == OperationKind::Read) {
+                        ++a.reads;
+                        void* value = nullptr;
+                        if (index.lookup(op.key, value)) { ++a.found; a.checksum += op.key ^ *static_cast<uint64_t*>(value); }
                     } else {
-                        const bool read = op.kind == OperationKind::Read;
-                        const LockMode root_mode = read ? LockMode::IS : LockMode::IX;
-                        const LockMode bucket_mode = read ? LockMode::S : LockMode::X;
-                        if (!acquire(tid, root_mode, KeyRangeEnt::unbounded(), LockKind::Node) ||
-                            !acquire(tid, bucket_mode, bucket(op.key), LockKind::Node)) { ok = false; break; }
-                        if (read) {
-                            ++a.reads;
-                            void* value = nullptr;
-                            if (index.lookup(op.key, value)) { ++a.found; a.checksum += op.key ^ *static_cast<uint64_t*>(value); }
-                        } else if (op.kind == OperationKind::Update) { ++a.updates; writes.push_back(&op); }
-                        else if (op.kind == OperationKind::Insert) { ++a.inserts; writes.push_back(&op); }
-                        else if (op.kind == OperationKind::Delete) { ++a.deletes; writes.push_back(&op); }
+                        if (op.kind == OperationKind::Update) ++a.updates;
+                        else if (op.kind == OperationKind::Insert) ++a.inserts;
+                        else ++a.deletes;
+                        writes.push_back(&op);
                     }
                     if (!ok) break;
                 }
-                finish_transaction(index, locks, tid, writes, ok, a, stopped);
+                const auto committed_before = a.committed;
+                const auto aborted_before = a.aborted;
+                std::uint64_t release_ns = 0;
+                finish_transaction(index, locks, tid, writes, ok, a, stopped, diagnose ? &release_ns : nullptr);
+                if (diagnose) {
+                    auto& d = progress[worker];
+                    const auto now = elapsed();
+                    d.max_no_commit_ns = std::max(d.max_no_commit_ns, now - d.last_commit_ns);
+                    d.max_release_ns = std::max(d.max_release_ns, release_ns);
+                    if (a.committed != committed_before) { d.last_commit_ns = now; d.abort_streak = 0; }
+                    else if (a.aborted != aborted_before) {
+                        ++d.abort_streak; d.max_abort_streak = std::max(d.max_abort_streak, d.abort_streak);
+                    }
+                }
                 if (stop_after_txn) break;
+            }
+            if (diagnose) {
+                auto& d = progress[worker];
+                d.max_no_commit_ns = std::max(d.max_no_commit_ns, elapsed() - d.last_commit_ns);
             }
         });
     }
     for (auto& worker : workers) worker.join();
-    return merge_parts(parts, begin);
+    const auto result = merge_parts(parts, begin);
+    // Emit only after all transactions ended. JSONL stays off the CSV channel.
+    if (diagnose) for (size_t worker = 0; worker < worker_count; ++worker) {
+        const auto& a = parts[worker]; const auto& d = progress[worker];
+        std::cerr << "{\"kind\":\"hierarchy-progress\",\"worker\":" << worker
+            << ",\"attempts\":" << a.tx << ",\"committed\":" << a.committed
+            << ",\"aborted\":" << a.aborted << ",\"failed_transactions\":" << a.failed_tx
+            << ",\"max_no_commit_ns\":" << d.max_no_commit_ns
+            << ",\"max_abort_streak\":" << d.max_abort_streak << ",\"upgrade_requests\":0"
+            << ",\"root_conflicts\":" << d.conflicts[0] << ",\"bucket_conflicts\":" << d.conflicts[1]
+            << ",\"record_conflicts\":" << d.conflicts[2] << ",\"max_acquire_ns\":" << d.max_acquire_ns
+            << ",\"max_release_ns\":" << d.max_release_ns << ",\"last_conflict\":";
+        if (!d.has_conflict) std::cerr << "null";
+        else std::cerr << "{\"phase\":" << d.last_conflict.phase
+            << ",\"mode\":" << static_cast<unsigned>(d.last_conflict.mode)
+            << ",\"range\":\"" << d.last_conflict.range.to_string() << "\"}";
+        std::cerr << "}\n";
+    }
+    return result;
 }
 
 }  // namespace rrl

@@ -81,6 +81,11 @@ void load_config(const std::string& path, WorkloadConfig& config,
                 value.kind == ConfigScalar::String && value.text == "auto") { bucket_auto = true; continue; }
             if (value.kind != ConfigScalar::Number) throw std::invalid_argument(key + ": expected number");
             *number->second = parse_unsigned(value.text, key);
+        } else if (key == "hierarchy_diagnostics") {
+            if (value.kind != ConfigScalar::Number) throw std::invalid_argument("hierarchy_diagnostics: expected 0 or 1");
+            const auto enabled = parse_unsigned(value.text, key);
+            if (enabled > 1) throw std::invalid_argument("hierarchy_diagnostics must be 0 or 1");
+            config.hierarchy_diagnostics = enabled != 0;
         } else if (key == "zipf" || key == "zipf_theta") {
             if (zipf_seen || value.kind != ConfigScalar::Number) throw std::invalid_argument("invalid/duplicate zipf");
             zipf_seen = true; config.zipf_theta = parse_real(value.text, key);
@@ -147,6 +152,11 @@ int run(int argc, char** argv) {
         }
         else if (option == "--threads") config.threads = parse_unsigned(value, option);
         else if (option == "--rdma-connections") rdma_connections = parse_unsigned(value, option);
+        else if (option == "--hierarchy-diagnostics") {
+            const auto enabled = parse_unsigned(value, option);
+            if (enabled > 1) throw std::invalid_argument("hierarchy-diagnostics must be 0 or 1");
+            config.hierarchy_diagnostics = enabled != 0;
+        }
         else if (option == "--duration") config.duration_seconds = parse_unsigned(value, option);
         else if (option == "--seed") config.seed = parse_unsigned(value, option);
         else if (option == "--zipf") config.zipf_theta = parse_real(value, option);

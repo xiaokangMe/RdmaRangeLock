@@ -26,6 +26,7 @@ struct WorkloadConfig {
     // measurement window is a duration rather than a transaction count.
     size_t duration_seconds{0};
     size_t hierarchy_bucket_width{64};
+    bool hierarchy_diagnostics{false};
     size_t tpcc_items_per_order{5};
     double zipf_theta{0.99};
     uint64_t seed{7};

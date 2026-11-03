@@ -106,6 +106,18 @@ RC LockManager::lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& range,
     for (const auto id : ids) guards.emplace_back(shards_[id].mutex);
 
     RangeLock request{txn_id, mode, kind, range};
+    for (const auto id : ids) {
+        const auto& shard = shards_[id];
+        auto combine = [&](const RangeLock& held) {
+            if (held.txn_id == txn_id && held.kind == kind && same_range(held.range, range))
+                request.mode = lock_mode_join(request.mode, held.mode);
+        };
+        if (is_point_range(range)) {
+            const auto it = shard.point_locks.find(range.StartKey);
+            if (it != shard.point_locks.end()) for (const auto& held : it->second) combine(held);
+        } else for (const auto& held : shard.range_locks) combine(held);
+    }
+    mode = request.mode;
     std::vector<txnid_t> found;
     auto inspect = [&](const RangeLock& held) {
         if (!request.conflicts(held)) return;

@@ -1,0 +1,8 @@
+{
+  "name": "hierarchy-directed-diagnostic-not-formal-matrix",
+  "index": "v2", "cc": "rdma-hierarchical", "workload": "ycsb-a",
+  "keys": 10000, "transactions": 5000, "operations": 10,
+  "threads": 4, "bucket": 256, "zipf": 0.99, "seed": 10,
+  "duration": 2, "rdma_connections": 2, "hierarchy_diagnostics": 1,
+  "rdma_host": "127.0.0.1", "rdma_port": 19893
+}

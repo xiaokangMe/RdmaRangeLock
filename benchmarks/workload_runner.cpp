@@ -52,7 +52,7 @@ std::size_t resolve_connection_count(std::size_t threads, std::size_t requested)
 void load_config(const std::string& path, WorkloadConfig& config,
                  std::string& index_name, std::string& cc, std::size_t& order,
                  std::string& host, std::uint16_t& port, std::size_t& connections,
-                 bool& bucket_auto) {
+                 bool& bucket_auto, PolicyRunConfig& policy, bool& measured) {
     std::ifstream input(path);
     if (!input) throw std::invalid_argument("failed to read config: " + path);
     const std::string text((std::istreambuf_iterator<char>(input)), {});
@@ -81,6 +81,23 @@ void load_config(const std::string& path, WorkloadConfig& config,
                 value.kind == ConfigScalar::String && value.text == "auto") { bucket_auto = true; continue; }
             if (value.kind != ConfigScalar::Number) throw std::invalid_argument(key + ": expected number");
             *number->second = parse_unsigned(value.text, key);
+        } else if (key == "latency_histogram") {
+            if (value.kind != ConfigScalar::String || value.text.empty()) throw std::invalid_argument("latency_histogram: expected nonempty path");
+            policy.histogram_path = value.text; measured = true;
+        } else if (key == "wait_policy") {
+            if (value.kind != ConfigScalar::String) throw std::invalid_argument("wait_policy: expected string");
+            policy.wait_policy = parse_wait_policy(value.text); measured = true;
+        } else if (key == "max_attempts" || key == "wait_timeout_ms" || key == "coordinator_port" || key == "latency" || key == "lock_budget") {
+            if (value.kind != ConfigScalar::Number) throw std::invalid_argument(key + ": expected unsigned number");
+            const auto n = parse_unsigned(value.text,key);
+            if (key == "max_attempts") policy.max_attempts = n;
+            else if (key == "lock_budget") policy.lock_budget = n;
+            else if (key == "wait_timeout_ms") policy.wait_timeout_ms = n;
+            else if (key == "coordinator_port") {
+                if (!n || n > 65535) throw std::invalid_argument("coordinator_port must be 1..65535");
+                policy.coordinator_port = static_cast<std::uint16_t>(n);
+            } else if (n > 1) throw std::invalid_argument("latency must be 0 or 1");
+            if (key != "latency" || n) measured = true;
         } else if (key == "hierarchy_diagnostics") {
             if (value.kind != ConfigScalar::Number) throw std::invalid_argument("hierarchy_diagnostics: expected 0 or 1");
             const auto enabled = parse_unsigned(value.text, key);
@@ -109,6 +126,8 @@ void load_config(const std::string& path, WorkloadConfig& config,
 
 int run(int argc, char** argv) {
     WorkloadConfig config;
+    PolicyRunConfig policy;
+    bool measured = false;
     std::size_t order = 128;
     std::string index_name = "v2";
     std::string cc = "none";
@@ -126,7 +145,7 @@ int run(int argc, char** argv) {
             config_path = argv[i + 1];
         }
     if (!config_path.empty()) load_config(config_path, config, index_name, cc, order,
-                                         rdma_host, rdma_port, rdma_connections, bucket_auto);
+                                         rdma_host, rdma_port, rdma_connections, bucket_auto, policy, measured);
     std::set<std::string> options;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string option = argv[i];
@@ -136,6 +155,24 @@ int run(int argc, char** argv) {
         if (option == "--workload") config.kind = WorkloadTrace::parse_kind(value);
         else if (option == "--index") index_name = value;
         else if (option == "--cc") cc = value;
+        else if (option == "--latency-histogram") {
+            if (value.empty()) throw std::invalid_argument("latency-histogram: expected nonempty path");
+            policy.histogram_path = value; measured = true;
+        }
+        else if (option == "--wait-policy") { policy.wait_policy = parse_wait_policy(value); measured = true; }
+        else if (option == "--lock-budget") { policy.lock_budget = parse_unsigned(value,option); measured = true; }
+        else if (option == "--max-attempts") { policy.max_attempts = parse_unsigned(value,option); measured = true; }
+        else if (option == "--wait-timeout-ms") { policy.wait_timeout_ms = parse_unsigned(value,option); measured = true; }
+        else if (option == "--coordinator-port") {
+            const auto n = parse_unsigned(value,option);
+            if (!n || n > 65535) throw std::invalid_argument("coordinator-port must be 1..65535");
+            policy.coordinator_port = static_cast<std::uint16_t>(n); measured = true;
+        }
+        else if (option == "--latency") {
+            const auto n = parse_unsigned(value,option);
+            if (n > 1) throw std::invalid_argument("latency must be 0 or 1");
+            if (n) measured = true;
+        }
         else if (option == "--keys") config.key_count = parse_unsigned(value, option);
         else if (option == "--txns") config.transaction_count = parse_unsigned(value, option);
         else if (option == "--ops") config.operations_per_transaction = parse_unsigned(value, option);
@@ -171,9 +208,18 @@ int run(int argc, char** argv) {
     if (index_name == "btree_latch_coupling") index_name = "v2";
     if (index_name == "btree_single") index_name = "v1";
     if (cc == "record-level-strict-2pl") cc = "record-2pl";
-    const std::set<std::string> protocols{"none", "record-2pl", "gap-lock", "next-key", "hierarchical", "rdma-next-key", "rdma-hierarchical"};
+    const std::set<std::string> protocols{"none", "record-2pl", "gap-lock", "next-key", "hierarchical", "rdma-next-key", "rdma-hierarchical", "predicate", "rdma-predicate"};
     if (index_name != "v1" && index_name != "v2") throw std::invalid_argument("unknown index: " + index_name);
     if (!protocols.count(cc)) throw std::invalid_argument("unknown cc: " + cc);
+    if (cc == "predicate" || cc == "rdma-predicate") measured = true;
+    if (!policy.max_attempts || !policy.wait_timeout_ms || policy.wait_timeout_ms > 600000 || !policy.lock_budget || policy.lock_budget > 1048576)
+        throw std::invalid_argument("invalid max-attempts, wait-timeout-ms (1..600000) or lock-budget (1..1048576)");
+    if (measured && cc == "none") throw std::invalid_argument("wait-policy/latency requires a lock protocol");
+    if (measured && config.hierarchy_diagnostics) throw std::invalid_argument("legacy hierarchy diagnostics are separate from latency mode");
+    if (measured && cc.rfind("rdma-",0) == 0) {
+        if (!policy.coordinator_port) throw std::invalid_argument("coordinated RDMA requires --coordinator-port and a dedicated rrl_wait_coordinator");
+        policy.coordinator_host = rdma_host;
+    }
     if (bucket_auto) config.hierarchy_bucket_width = auto_bucket_width(config.kind);
     if (!config.key_count || !config.transaction_count || !config.operations_per_transaction ||
         !config.threads || (config.kind == WorkloadKind::YcsbE && !config.range_length) || !config.hierarchy_bucket_width ||
@@ -213,7 +259,26 @@ int run(int argc, char** argv) {
     std::size_t active_connections = 0;
     RdmaFailureInfo rdma_failure{};
     std::int64_t rdma_failure_shard = -1;
-    if (cc == "record-2pl") {
+    if (measured) {
+        const auto plain = cc.rfind("rdma-",0) == 0 ? cc.substr(5) : cc;
+        policy.protocol = plain == "record-2pl" ? PolicyProtocol::Record : plain == "gap-lock" ? PolicyProtocol::Gap :
+            plain == "next-key" ? PolicyProtocol::NextKey : plain == "predicate" ? PolicyProtocol::Predicate : PolicyProtocol::Hierarchy;
+        if (cc.rfind("rdma-",0) == 0) {
+            RemoteLockManager locks;
+            locks.use_coordinator_transaction_ids();
+            active_connections = resolve_connection_count(config.threads,rdma_connections);
+            locks.set_connection_count(active_connections);
+            locks.set_bucket_width(config.hierarchy_bucket_width);
+            if (!locks.connect(rdma_host,rdma_port)) throw std::runtime_error("RDMA connect failed");
+            stats = run_policy_workload(*index,locks,trace,policy);
+            stats.rdma_timeouts=locks.rdma_timeouts(); stats.rdma_completion_errors=locks.rdma_completion_errors();
+            stats.rdma_operations=locks.rdma_operations(); rdma_diag=locks.diagnostics();
+            rdma_failure=locks.last_failure(); rdma_failure_shard=locks.last_failure_shard();
+        } else {
+            LockManager locks; locks.set_bucket_width(config.hierarchy_bucket_width);
+            stats = run_policy_workload(*index,locks,trace,policy);
+        }
+    } else if (cc == "record-2pl") {
         LockManager locks; stats = run_record_2pl(*index, locks, trace, config.threads);
     } else if (cc == "gap-lock") {
         LockManager locks; stats = run_gap_lock(*index, locks, trace, config.threads);
@@ -244,12 +309,27 @@ int run(int argc, char** argv) {
         stats = run_workload(*index, trace, config.threads);
     }
 
+    // Quiescent structure validation is outside the recorded workload window.
+    if (measured && !(index_name == "v1" ? v1.validate() : v2.validate())) ++stats.index_errors;
+
+    if (measured && !csv) {
+        const auto& m=stats.policy;
+        std::cout << "wait_policy=" << wait_policy_name(policy.wait_policy) << ",logical_started=" << m.logical_started
+            << ",logical_unfinished=" << m.unfinished << ",retries=" << m.retries
+            << ",successful_attempt_p99_ns=" << m.successful_attempt.p99_ns
+            << ",logical_completion_p99_ns=" << m.logical_completion.p99_ns
+            << ",lock_wait_ns=" << m.lock_wait.total_ns << "\n";
+    }
     if (csv) {
         std::cout << "workload,index,cc,threads,transactions,committed,aborted,operations,reads,updates,inserts,deletes,range_reads,rows_found,rows_scanned,rows_rechecked,lock_acquires,lock_conflicts,lock_capacity_aborts,lock_gate_aborts,elapsed_ns,rdma_timeouts,rdma_completion_errors,rdma_operations,throughput_committed_txn_s,throughput_attempt_txn_s,checksum,"
                   << "rdma_gate_attempts,rdma_gate_retries,rdma_gate_aborts,rdma_batches,"
                   << "rdma_failure_op,rdma_failure_shard,rdma_failure_wr,rdma_failure_us,rdma_failure_qp,"
                   << "rdma_gate_transport_errors,rdma_connections,"
-                  << "hierarchy_bucket_width,lock_errors,index_errors,lock_release_failures,failed_transactions,rdma_failure_status,rdma_failure_tag,rdma_failure_address,rdma_failure_length,rdma_failure_sequence,rdma_count_errors,rdma_last_count_error,index_order,rdma_local_errors,rdma_profile_enabled,rdma_slot_lookup_linear,rdma_lock_calls,rdma_cache_hits,rdma_io_wait_ns,rdma_local_gate_wait_ns,rdma_gate_hold_ns,rdma_index_build_ns,rdma_lookup_ns,rdma_slot_checks,rdma_sync_calls,rdma_sync_ns,rdma_read_bytes,rdma_write_bytes,rdma_none_calls,rdma_none_ns,rdma_gate_calls,rdma_gate_ns,rdma_counts_calls,rdma_counts_ns,rdma_slots_calls,rdma_slots_ns,rdma_store_calls,rdma_store_ns,rdma_release_calls,rdma_release_ns,rdma_txn_wait_ns\n";
+                  << "hierarchy_bucket_width,lock_errors,index_errors,lock_release_failures,failed_transactions,rdma_failure_status,rdma_failure_tag,rdma_failure_address,rdma_failure_length,rdma_failure_sequence,rdma_count_errors,rdma_last_count_error,index_order,rdma_local_errors,rdma_profile_enabled,rdma_slot_lookup_linear,rdma_lock_calls,rdma_cache_hits,rdma_io_wait_ns,rdma_local_gate_wait_ns,rdma_gate_hold_ns,rdma_index_build_ns,rdma_lookup_ns,rdma_slot_checks,rdma_sync_calls,rdma_sync_ns,rdma_read_bytes,rdma_write_bytes,rdma_none_calls,rdma_none_ns,rdma_gate_calls,rdma_gate_ns,rdma_counts_calls,rdma_counts_ns,rdma_slots_calls,rdma_slots_ns,rdma_store_calls,rdma_store_ns,rdma_release_calls,rdma_release_ns,rdma_txn_wait_ns";
+        if (measured) std::cout << ",metrics_schema,wait_policy,coordination,logical_started,logical_unfinished,logical_failed,retries,max_retries,wound_aborts,deadline_aborts,retry_exhausted,completed_retries,unfinished_retries";
+        if (measured) for (const char* name : {"successful_attempt","logical_completion","lock_wait","lock_call","release"})
+            for (const char* field : {"count","total_ns","p50_ns","p95_ns","p99_ns","p999_ns","max_ns"}) std::cout << "," << name << "_" << field;
+        std::cout << "\n";
         std::cout << WorkloadTrace::name(config.kind) << ',' << index_name << ',' << cc << ',' << config.threads << ','
                   << stats.transactions << ',' << stats.committed << ',' << stats.aborted << ',' << stats.operations << ','
                   << stats.reads << ',' << stats.updates << ',' << stats.inserts << ',' << stats.deletes << ','
@@ -282,7 +362,16 @@ int run(int argc, char** argv) {
                   << ',' << rdma_diag.write_bytes;
         for (std::size_t i = 0; i < rdma_diag.phase_calls.size(); ++i)
             std::cout << ',' << rdma_diag.phase_calls[i] << ',' << rdma_diag.phase_ns[i];
-        std::cout << ',' << rdma_diag.txn_wait_ns << '\n';
+        std::cout << ',' << rdma_diag.txn_wait_ns;
+        if (measured) {
+            const auto& m=stats.policy;
+            std::cout << ",2," << wait_policy_name(policy.wait_policy) << ',' << (policy.coordinator_host.empty()?"local":"tcp-control+rdma-slots")
+                << ',' << m.logical_started << ',' << m.unfinished << ',' << m.logical_failed << ',' << m.retries << ',' << m.max_retries
+                << ',' << m.wound_aborts << ',' << m.deadline_aborts << ',' << m.retry_exhausted << ',' << m.completed_retries << ',' << m.unfinished_retries;
+            for (const auto* q : {&m.successful_attempt,&m.logical_completion,&m.lock_wait,&m.lock_call,&m.release})
+                std::cout << ',' << q->count << ',' << q->total_ns << ',' << q->p50_ns << ',' << q->p95_ns << ',' << q->p99_ns << ',' << q->p999_ns << ',' << q->max_ns;
+        }
+        std::cout << '\n';
     } else {
         std::cout << "workload=" << WorkloadTrace::name(config.kind)
                   << ",index=" << index_name << ",cc=" << cc

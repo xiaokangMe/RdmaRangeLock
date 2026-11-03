@@ -1,0 +1,8 @@
+{
+  "name": "timestamp-policy-one-hour-correctness-endurance-not-performance",
+  "index": "v2", "cc": "hierarchical", "workload": "ycsb-e",
+  "keys": 128, "transactions": 200, "operations": 4, "threads": 4,
+  "bucket": 64, "range": 8, "seed": 8, "duration": 3600,
+  "wait_policy": "wait-die", "latency": 1,
+  "max_attempts": 1000, "wait_timeout_ms": 5000, "lock_budget": 16384
+}

@@ -569,7 +569,13 @@ void RemoteLockManager::encode(RemoteLockSlot& slot, std::uint64_t owner,
     encode_remote_slot(slot, owner, txn_id, mode, kind, range);
 }
 
+void RemoteLockManager::use_coordinator_transaction_ids() {
+    if (!connections_.empty()) throw std::invalid_argument("configure coordinator IDs before connect");
+    coordinator_txn_ids_ = true;
+}
+
 txnid_t RemoteLockManager::wire_txn(txnid_t txn_id) const {
+    if (coordinator_txn_ids_) return txn_id;
     return (current_namespace_token() << 16) ^ (txn_id & 0x0000ffffffffffffULL);
 }
 

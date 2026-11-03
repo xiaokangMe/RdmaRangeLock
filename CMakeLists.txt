@@ -165,3 +165,32 @@ target_link_libraries(rrl_rdma_hierarchy_test PRIVATE rrl_txn)
 target_compile_options(rrl_rdma_hierarchy_test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME rrl_rdma_hierarchy_test COMMAND rrl_rdma_hierarchy_test)
 set_tests_properties(rrl_rdma_hierarchy_test PROPERTIES SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 60)
+
+# Timestamp policies and their explicit distributed coordination plane.
+target_sources(rrl_lock PRIVATE src/lock/wait_policy.cpp src/lock/wait_control.cpp)
+add_executable(rrl_wait_coordinator benchmarks/wait_coordinator.cpp)
+target_link_libraries(rrl_wait_coordinator PRIVATE rrl_lock)
+
+target_sources(rrl_txn PRIVATE src/txn/policy_workload.cpp)
+
+add_executable(rrl_wait_policy_test test/wait_policy_test.cpp)
+target_link_libraries(rrl_wait_policy_test PRIVATE rrl_txn)
+target_compile_options(rrl_wait_policy_test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME rrl_wait_policy_test COMMAND rrl_wait_policy_test)
+set_tests_properties(rrl_wait_policy_test PROPERTIES TIMEOUT 30)
+
+add_executable(rrl_rdma_wait_policy_test test/rdma_wait_policy_test.cpp)
+target_link_libraries(rrl_rdma_wait_policy_test PRIVATE rrl_txn)
+target_compile_options(rrl_rdma_wait_policy_test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME rrl_rdma_wait_policy_test COMMAND rrl_rdma_wait_policy_test)
+set_tests_properties(rrl_rdma_wait_policy_test PROPERTIES SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 45)
+
+if(RRL_PYTHON3)
+add_test(NAME rrl_wait_control_failure_test COMMAND ${RRL_PYTHON3} ${CMAKE_SOURCE_DIR}/test/wait_control_failure_test.py $<TARGET_FILE:rrl_wait_coordinator>)
+set_tests_properties(rrl_wait_control_failure_test PROPERTIES TIMEOUT 20)
+endif()
+
+if(RRL_PYTHON3)
+add_test(NAME rrl_policy_runner_test COMMAND ${RRL_PYTHON3} ${CMAKE_SOURCE_DIR}/test/policy_runner_test.py $<TARGET_FILE:rrl_workload_runner>)
+set_tests_properties(rrl_policy_runner_test PROPERTIES TIMEOUT 30)
+endif()

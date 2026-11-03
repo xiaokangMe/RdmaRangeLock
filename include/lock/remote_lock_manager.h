@@ -58,6 +58,10 @@ public:
         std::array<std::uint64_t, 6> phase_calls{}, phase_ns{};
     };
 
+    // A dedicated coordinator issues unique attempt IDs across its cohort.
+    // Configure before connect; never mix separate coordinators/legacy clients
+    // in that cohort's physical RDMA server.
+    void use_coordinator_transaction_ids();
     bool connect(const std::string& host, std::uint16_t port);
     void set_bucket_width(std::uint64_t width);
     void set_connection_count(std::size_t count);
@@ -155,6 +159,7 @@ private:
     std::uint64_t shards_address_{0};
     std::uint64_t bucket_width_{64};
     std::uint64_t namespace_token_{0};
+    bool coordinator_txn_ids_{false};
     std::size_t gate_retries_{64};
     bool local_gate_enabled_{true};
     bool profile_enabled_{false};

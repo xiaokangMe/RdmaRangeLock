@@ -43,11 +43,13 @@ v3 → v5 → v4 → v6。
 - v6 的加锁顺序必须自顶向下；读取子树应使用祖先 IS 加目标节点 S，修改子树应使用祖先 IX 加目标节点 X。
 ## v3 当前实现
 
-un_record_2pl() 位于 src/txn/workload.cpp，锁对象和冲突判定仍由 LockManager 统一提供。该版本只传入 KeyRangeEnt::point(key) 与 LockKind::Record，因此没有 gap/predicate 保护；写集合延迟到提交阶段应用，严格释放发生在 commit/abort 之后。
+
+un_record_2pl() 位于 src/txn/workload.cpp，锁对象和冲突判定仍由 LockManager 统一提供。该版本只传入 KeyRangeEnt::point(key) 与 LockKind::Record，因此没有 gap/predicate 保护；写集合延迟到提交阶段应用，严格释放发生在 commit/abort 之后。
 
 ## v4 当前实现
 
-un_gap_lock() 在 v3 的记录锁外增加开区间 Gap S 锁和边界 Gap S 锁；插入使用目标 key 的 Gap X 锁。对应的范围交集和冲突仍由 LockManager 完成，正确性证据在 	est/v4_gap_lock_test.cpp。
+
+un_gap_lock() 在 v3 的记录锁外增加开区间 Gap S 锁和边界 Gap S 锁；插入使用目标 key 的 Gap X 锁。对应的范围交集和冲突仍由 LockManager 完成，正确性证据在 	est/v4_gap_lock_test.cpp。
 
 ## v5 当前实现
 
@@ -64,3 +66,12 @@ v3 → v5 → v4 → v6。
 ## RDMA 接入
 
 `RemoteLockManager` 实现同一 `IRangeLockManager` 接口，远程锁表放在 `RemoteLockRegion` 注册内存中。`rrl_rdma_lock_server` 提供 RC QP 服务，`rrl_workload_runner --cc rdma-next-key` 和 `--cc rdma-hierarchical` 分别接入 v5/v6。当前版本使用一个 RDMA CAS gate 串行化槽表扫描与更新，作为正确性基线；后续再按 bucket 分片优化。
+
+
+## 可切换等待策略与 Predicate（2026-11-03）
+
+`--wait-policy no-wait|wait-die|wound-wait` 显式进入新统一事务驱动 `src/txn/policy_workload.cpp`。`TransactionCoordinator` 负责逻辑年龄、等待、wound 与提交许可；`IRangeLockManager` 仍负责物理锁。默认旧命令维持 NO_WAIT。新模式三策略都须走同一协调路径比较；不能将旧 NO_WAIT 数据作为其直接对照。
+
+本地使用进程内 CV；RDMA 使用 `rrl_wait_coordinator` TCP 控制面 + 原 RDMA 物理槽表，每轮专用服务器、单一协调器，不允许混入旧客户端。活跃 holder 断线会 poison 协调器并拒绝后续授权，需要结束失败 run 并重启本轮独立服务。
+
+`--cc predicate|rdma-predicate` 在扫描前获取完整半开区间 S，点写/插入/删除取 Predicate X，保护空结果区间。这是单键区间谓词。两套延迟、重试、超时和使用命令详见 [实现记录](../../docs/notes/wait-policies-and-latency-2026-11-03.md)。

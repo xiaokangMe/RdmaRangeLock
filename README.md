@@ -111,3 +111,16 @@ build-rdma/rrl_workload_runner --index v2 --cc rdma-hierarchical \
 ```
 
 当前 RDMA 锁表已经按逻辑 bucket 使用 16 个分片 CAS gate；跨 bucket 区间按 shard ID 升序获取 gate，并在每个涉及 shard 保存副本。工作负载 runner 会按线程数建立 per-thread QP/连接池，每个连接使用独立 owner token。`.66` 与 `.67` 已使用 RoCE IPv4 GID index 3 完成跨主机 v5/v6、8 QP 和 crash cleanup 验证；正式性能实验仍待执行。RDMA smoke 脚本会自动配置 `build-rdma`、启动服务端并生成规范 CSV。详见 `docs/notes/rdma-cross-host-2026-10-30.md`。
+
+
+## 等待策略与延迟测量（2026-11-03）
+
+新驱动支持 `--wait-policy no-wait|wait-die|wound-wait`，提供成功 attempt 和含重试逻辑事务的 p50/p95/p99/p999、等待、重试及未完成事务计数。示例：
+
+```sh
+cmake -S . -B build-wait-policy -DCMAKE_BUILD_TYPE=Release
+cmake --build build-wait-policy -j4
+build-wait-policy/rrl_workload_runner --config experiments/configs/wait_policy_smoke.json --wait-policy wait-die --latency-histogram /tmp/wait-die-hist.json --format csv
+```
+
+本地支持 record/gap/next-key/hierarchy/predicate；RDMA 支持 next-key/hierarchy/predicate，必须启动专用的 TCP 协调器及物理锁服务器。默认旧命令和旧 CSV 不变，新模式 CSV 标记 `metrics_schema=2`。比较三策略时都须显式传 `--wait-policy`，统一控制路径。完整命令、故障处理、正确性验收与实验边界见 [实现记录](docs/notes/wait-policies-and-latency-2026-11-03.md)。

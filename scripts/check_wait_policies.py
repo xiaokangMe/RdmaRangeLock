@@ -48,7 +48,7 @@ def main():
     root = Path(__file__).resolve().parent.parent
     build = (root / args.build).resolve()
     logs = root / 'experiments/logs' / ('wait-policy-' + datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))
-    logs.mkdir()
+    logs.mkdir(parents=True)
     env = {k: v for k, v in os.environ.items() if not k.startswith('RRL_')}
     env['RRL_RDMA_GID_INDEX'] = '3'
     def port():
@@ -68,9 +68,11 @@ def main():
     info = {'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip(),
             'kind': 'correctness-and-directed-smoke-not-formal', 'log_dir': str(logs)}
     try:
-        rdma_port, control_port = port(), port()
-        for binary, listen_port in [('rrl_rdma_lock_server', rdma_port), ('rrl_wait_coordinator', control_port)]:
-            proc = subprocess.Popen([str(build / binary), str(listen_port)], env=env,
+        rdma_port, control_port, data_port = port(), port(), port()
+        for binary, listen_port in [('rrl_rdma_lock_server', rdma_port), ('rrl_wait_coordinator', control_port), ('rrl_rdma_data_server',data_port)]:
+            argv = [str(build / binary), str(listen_port)]
+            if binary == "rrl_rdma_data_server": argv = [str(build / binary), "--config", str(root / "experiments/configs/rdma_shared_smoke.json"), "--port", str(listen_port)]
+            proc = subprocess.Popen(argv, env=env,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             processes.append(proc)
             if not select.select([proc.stdout], [], [], 15)[0]:
@@ -80,7 +82,7 @@ def main():
             if 'listening' not in line:
                 raise RuntimeError(binary + ': ' + line)
         testenv = dict(env, RRL_TEST_RDMA_HOST='127.0.0.1', RRL_TEST_RDMA_PORT=str(rdma_port),
-                       RRL_TEST_COORDINATOR_PORT=str(control_port))
+                       RRL_TEST_COORDINATOR_PORT=str(control_port), RRL_TEST_DATA_PORT=str(data_port))
         r = run(['ctest', '--test-dir', str(build), '--output-on-failure'], 'ctest', env=testenv)
         assert 'Skipped' not in r.stdout and '100% tests passed' in r.stdout
         info['ctest'] = 'all passed, no skips'
@@ -113,7 +115,7 @@ def main():
                 for cc in ('rdma-next-key', 'rdma-hierarchical', 'rdma-predicate'):
                     for workload in ('ycsb-a', 'ycsb-e'):
                         name = '-'.join(('cross', cc, workload, policy))
-                        cmd = [remote + '/rrl_workload_runner', '--cc', cc, '--workload', workload,
+                        cmd = [remote + '/rrl_workload_runner', '--rdma-lock-only', '1', '--cc', cc, '--workload', workload,
                                '--keys', '128', '--txns', '200', '--ops', '4', '--threads', '4', '--range', '8',
                                '--bucket', '64', '--wait-policy', policy, '--format', 'csv', '--duration', '1',
                                '--rdma-host', '10.0.0.3', '--rdma-port', str(rdma_port),

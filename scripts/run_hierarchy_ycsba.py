@@ -104,7 +104,7 @@ def main():
                 assert server.poll() is None,'server stopped unexpectedly'
                 state['current_case']=dict(bucket=b,threads=t,seed=seed)
                 publish('capacity-preflight' if state['completed_cases']<len(firstpoints) else 'measuring')
-                argv=[remote+'/rrl_workload_runner','--index',c['index'],'--cc',c['cc'],'--workload',c['workload'],
+                argv=[remote+'/rrl_workload_runner','--rdma-lock-only','1','--index',c['index'],'--cc',c['cc'],'--workload',c['workload'],
                       '--keys',str(c['keys']),'--txns',str(c['transactions']),'--ops',str(c['operations']),
                       '--range',str(c['range']),'--threads',str(t),'--seed',str(seed),'--zipf',str(c['zipf']),
                       '--items',str(c['tpcc_items']),'--duration',str(c['duration_seconds']),'--bucket',str(b),

@@ -14,7 +14,8 @@ base = [runner, '--cc', 'hierarchical', '--keys', '16', '--txns', '40', '--ops',
         '--threads', '2', '--format', 'csv']
 for flags in (['--wait-policy', 'typo'], ['--max-attempts', '0'], ['--wait-timeout-ms', '0'],
               ['--wait-timeout-ms', '600001'], ['--coordinator-port', '65536'], ['--lock-budget', '0'],
-              ['--latency', '2'], ['--cc', 'none', '--wait-policy', 'wait-die'],
+              ['--latency', '2'], ['--index', 'rdma'], ['--data-port', '12345'],
+              ['--rdma-lock-only', '2'], ['--rdma-lock-only', '1'], ['--cc', 'none', '--wait-policy', 'wait-die'],
               ['--cc', 'rdma-hierarchical', '--wait-policy', 'wait-die']):
     command = base[:]
     if '--cc' in flags:

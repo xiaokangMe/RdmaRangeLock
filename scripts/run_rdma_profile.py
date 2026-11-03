@@ -48,7 +48,7 @@ def main():
                 env["RRL_RDMA_PROFILE"] = "1"
                 env["RRL_SLOT_LOOKUP"] = policy
                 result = subprocess.run([
-                    str(build / "rrl_workload_runner"), "--config", str(root / args.config),
+                    str(build / "rrl_workload_runner"), "--rdma-lock-only", "1", "--config", str(root / args.config),
                     "--rdma-host", args.host, "--rdma-port", str(args.port), "--format", "csv"],
                     env=env, check=True, capture_output=True, text=True, timeout=120)
                 rows = list(csv.DictReader(io.StringIO(result.stdout)))

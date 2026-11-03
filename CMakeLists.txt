@@ -194,3 +194,30 @@ if(RRL_PYTHON3)
 add_test(NAME rrl_policy_runner_test COMMAND ${RRL_PYTHON3} ${CMAKE_SOURCE_DIR}/test/policy_runner_test.py $<TARGET_FILE:rrl_workload_runner>)
 set_tests_properties(rrl_policy_runner_test PROPERTIES TIMEOUT 30)
 endif()
+
+# Shared offset B+ tree and records, accessed through one-sided verbs.
+add_library(rrl_index_rdma STATIC src/index/rdma_btree.cpp)
+target_include_directories(rrl_index_rdma PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_compile_options(rrl_index_rdma PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(rrl_index_rdma PUBLIC rrl_rdma)
+target_sources(rrl_txn PRIVATE src/txn/shared_dataset.cpp)
+target_link_libraries(rrl_txn PUBLIC rrl_index rrl_index_rdma)
+add_executable(rrl_rdma_data_server benchmarks/rdma_data_server.cpp)
+target_link_libraries(rrl_rdma_data_server PRIVATE rrl_txn)
+
+add_executable(rrl_rdma_btree_core_test test/rdma_btree_core_test.cpp)
+target_link_libraries(rrl_rdma_btree_core_test PRIVATE rrl_index_rdma)
+add_test(NAME rrl_rdma_btree_core_test COMMAND rrl_rdma_btree_core_test)
+
+add_executable(rrl_rdma_shared_tree_test test/rdma_shared_tree_test.cpp)
+target_link_libraries(rrl_rdma_shared_tree_test PRIVATE rrl_txn)
+add_test(NAME rrl_rdma_shared_tree_test COMMAND rrl_rdma_shared_tree_test)
+set_tests_properties(rrl_rdma_shared_tree_test PROPERTIES SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 60)
+
+add_executable(rrl_policy_own_write_test test/policy_own_write_test.cpp)
+target_link_libraries(rrl_policy_own_write_test PRIVATE rrl_txn)
+add_test(NAME rrl_policy_own_write_test COMMAND rrl_policy_own_write_test)
+
+if(RRL_PYTHON3)
+  add_test(NAME rrl_shared_matrix_gate_test COMMAND ${RRL_PYTHON3} ${CMAKE_SOURCE_DIR}/test/shared_matrix_gate_test.py $<TARGET_FILE:rrl_workload_runner>)
+endif()

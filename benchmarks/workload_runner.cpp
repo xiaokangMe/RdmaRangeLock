@@ -1,6 +1,7 @@
 #include "txn/workload.h"
 #include "lock/remote_lock_manager.h"
 #include "common/config_parse.h"
+#include "txn/shared_dataset.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -52,13 +53,14 @@ std::size_t resolve_connection_count(std::size_t threads, std::size_t requested)
 void load_config(const std::string& path, WorkloadConfig& config,
                  std::string& index_name, std::string& cc, std::size_t& order,
                  std::string& host, std::uint16_t& port, std::size_t& connections,
-                 bool& bucket_auto, PolicyRunConfig& policy, bool& measured) {
+                 bool& bucket_auto, PolicyRunConfig& policy, bool& measured,
+                 std::uint16_t& data_port, std::size_t& tree_timeout) {
     std::ifstream input(path);
     if (!input) throw std::invalid_argument("failed to read config: " + path);
     const std::string text((std::istreambuf_iterator<char>(input)), {});
     const auto values = FlatConfigParser(text).parse();
     const std::set<std::string> metadata{"version", "lock_kind", "range_reads", "transport",
-        "key_type", "duplicate_keys", "range_semantics", "record_lock", "gap_lock", "name"};
+        "key_type", "duplicate_keys", "range_semantics", "record_lock", "gap_lock", "name", "tree_pages", "tree_records"};
     const std::map<std::string, std::size_t*> integers{
         {"key_count", &config.key_count}, {"keys", &config.key_count},
         {"transaction_count", &config.transaction_count}, {"transactions", &config.transaction_count},
@@ -67,7 +69,7 @@ void load_config(const std::string& path, WorkloadConfig& config,
         {"threads", &config.threads}, {"duration", &config.duration_seconds}, {"duration_seconds", &config.duration_seconds},
         {"hierarchy_bucket_width", &config.hierarchy_bucket_width}, {"bucket", &config.hierarchy_bucket_width},
         {"tpcc_items_per_order", &config.tpcc_items_per_order}, {"items", &config.tpcc_items_per_order},
-        {"seed", &config.seed}, {"order", &order}, {"rdma_connections", &connections}};
+        {"tree_latch_timeout_ms", &tree_timeout}, {"seed", &config.seed}, {"order", &order}, {"rdma_connections", &connections}};
     std::set<std::size_t*> assigned;
     bool zipf_seen = false, port_seen = false;
     for (const auto& entry : values) {
@@ -81,6 +83,11 @@ void load_config(const std::string& path, WorkloadConfig& config,
                 value.kind == ConfigScalar::String && value.text == "auto") { bucket_auto = true; continue; }
             if (value.kind != ConfigScalar::Number) throw std::invalid_argument(key + ": expected number");
             *number->second = parse_unsigned(value.text, key);
+        } else if (key == "data_port") {
+            if(value.kind!=ConfigScalar::Number)throw std::invalid_argument("data_port expected number");
+            const auto n=parse_unsigned(value.text,key);
+            if(!n || n>65535)throw std::invalid_argument("data_port bounds");
+            data_port=static_cast<std::uint16_t>(n);
         } else if (key == "latency_histogram") {
             if (value.kind != ConfigScalar::String || value.text.empty()) throw std::invalid_argument("latency_histogram: expected nonempty path");
             policy.histogram_path = value.text; measured = true;
@@ -128,11 +135,13 @@ int run(int argc, char** argv) {
     WorkloadConfig config;
     PolicyRunConfig policy;
     bool measured = false;
+    bool lock_only = false;
     std::size_t order = 128;
     std::string index_name = "v2";
     std::string cc = "none";
     std::string rdma_host = "127.0.0.1";
-    std::uint16_t rdma_port = 19876;
+    std::uint16_t rdma_port = 19876, data_port = 0;
+    std::size_t tree_timeout = 10000;
     // 0 selects the documented default (min(threads, 2)); a value forces it.
     std::size_t rdma_connections = 0;
     bool csv = false;
@@ -145,7 +154,7 @@ int run(int argc, char** argv) {
             config_path = argv[i + 1];
         }
     if (!config_path.empty()) load_config(config_path, config, index_name, cc, order,
-                                         rdma_host, rdma_port, rdma_connections, bucket_auto, policy, measured);
+                                         rdma_host, rdma_port, rdma_connections, bucket_auto, policy, measured, data_port, tree_timeout);
     std::set<std::string> options;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string option = argv[i];
@@ -181,6 +190,15 @@ int run(int argc, char** argv) {
             if (value == "auto") bucket_auto = true;
             else { config.hierarchy_bucket_width = parse_unsigned(value, option); bucket_auto = false; }
         }
+        else if (option == "--rdma-lock-only") {
+            auto n=parse_unsigned(value,option);if(n>1)throw std::invalid_argument("rdma-lock-only must be 0 or 1");
+            lock_only=n!=0;
+        }
+        else if (option == "--data-port") {
+            auto n=parse_unsigned(value,option);if(!n || n>65535)throw std::invalid_argument("data-port bounds");
+            data_port=static_cast<std::uint16_t>(n);
+        }
+        else if (option == "--tree-latch-timeout-ms") tree_timeout=parse_unsigned(value,option);
         else if (option == "--rdma-host") rdma_host = value;
         else if (option == "--rdma-port") {
             const auto parsed = parse_unsigned(value, option);
@@ -208,10 +226,19 @@ int run(int argc, char** argv) {
     if (index_name == "btree_latch_coupling") index_name = "v2";
     if (index_name == "btree_single") index_name = "v1";
     if (cc == "record-level-strict-2pl") cc = "record-2pl";
-    const std::set<std::string> protocols{"none", "record-2pl", "gap-lock", "next-key", "hierarchical", "rdma-next-key", "rdma-hierarchical", "predicate", "rdma-predicate"};
-    if (index_name != "v1" && index_name != "v2") throw std::invalid_argument("unknown index: " + index_name);
+    const std::set<std::string> protocols{"none", "record-2pl", "gap-lock", "next-key", "hierarchical", "rdma-next-key", "rdma-hierarchical", "predicate", "rdma-predicate", "rdma-record-2pl", "rdma-gap-lock"};
+    if (index_name != "v1" && index_name != "v2" && index_name != "rdma") throw std::invalid_argument("unknown index: " + index_name);
     if (!protocols.count(cc)) throw std::invalid_argument("unknown cc: " + cc);
     if (cc == "predicate" || cc == "rdma-predicate") measured = true;
+    if(cc.rfind("rdma-",0)==0 && index_name!="rdma" && !lock_only)
+        throw std::invalid_argument("RDMA experiments require --index rdma and shared data; historical lock-service microbenchmarks require explicit --rdma-lock-only 1");
+    if(lock_only && (index_name=="rdma" || cc.rfind("rdma-",0)!=0))
+        throw std::invalid_argument("rdma-lock-only is only for local-index/remote-lock microbenchmarks");
+    if(index_name=="rdma") {
+        if(cc.rfind("rdma-",0)!=0 || !data_port || !policy.coordinator_port || !tree_timeout || tree_timeout>600000)
+            throw std::invalid_argument("shared RDMA index requires rdma protocol, data-port, coordinator-port and bounded tree timeout");
+        measured=true;
+    } else if(data_port)throw std::invalid_argument("data-port requires --index rdma");
     if (!policy.max_attempts || !policy.wait_timeout_ms || policy.wait_timeout_ms > 600000 || !policy.lock_budget || policy.lock_budget > 1048576)
         throw std::invalid_argument("invalid max-attempts, wait-timeout-ms (1..600000) or lock-budget (1..1048576)");
     if (measured && cc == "none") throw std::invalid_argument("wait-policy/latency requires a lock protocol");
@@ -244,15 +271,24 @@ int run(int argc, char** argv) {
     const auto trace = WorkloadTrace::generate(config);
     BTreeSingle v1;
     BTreeLatch v2;
+    BTreeRdma remote_index;
     BTreeIndex* index = nullptr;
     if (index_name == "v1") {
         if (v1.init(order) != RCOK) throw std::invalid_argument("v1 init failed");
         index = &v1;
+    } else if(index_name=="rdma") {
+        const auto seed=make_shared_seed(trace);
+        if(!remote_index.connect(rdma_host,data_port,config.threads,tree_seed_fingerprint(seed),tree_timeout) ||
+           remote_index.init(order)!=RCOK)throw std::runtime_error("shared RDMA data connect/configuration mismatch");
+        index=&remote_index;
     } else {
         if (v2.init(order) != RCOK) throw std::invalid_argument("v2 init failed");
         index = &v2;
     }
 
+    const auto data_ops_start=remote_index.rdma_operations();
+    const auto data_reads_start=remote_index.read_bytes(),data_writes_start=remote_index.write_bytes();
+    const auto data_wait_start=remote_index.latch_wait_ns();
     RunStats stats;
     RemoteLockManager::Diagnostics rdma_diag{};
     // 0 on every non-RDMA protocol: no connection was opened for this run.
@@ -310,7 +346,11 @@ int run(int argc, char** argv) {
     }
 
     // Quiescent structure validation is outside the recorded workload window.
-    if (measured && !(index_name == "v1" ? v1.validate() : v2.validate())) ++stats.index_errors;
+    const auto data_ops=remote_index.rdma_operations()-data_ops_start;
+    const auto data_reads=remote_index.read_bytes()-data_reads_start,data_writes=remote_index.write_bytes()-data_writes_start;
+    const auto data_wait=remote_index.latch_wait_ns()-data_wait_start;
+    if (measured && !(index_name=="rdma" ? remote_index.healthy() && remote_index.validate() :
+                     index_name=="v1" ? v1.validate() : v2.validate())) ++stats.index_errors;
 
     if (measured && !csv) {
         const auto& m=stats.policy;
@@ -329,7 +369,7 @@ int run(int argc, char** argv) {
         if (measured) std::cout << ",metrics_schema,wait_policy,coordination,logical_started,logical_unfinished,logical_failed,retries,max_retries,wound_aborts,deadline_aborts,retry_exhausted,completed_retries,unfinished_retries";
         if (measured) for (const char* name : {"successful_attempt","logical_completion","lock_wait","lock_call","release"})
             for (const char* field : {"count","total_ns","p50_ns","p95_ns","p99_ns","p999_ns","max_ns"}) std::cout << "," << name << "_" << field;
-        std::cout << "\n";
+        std::cout << ",data_backend,data_rdma_operations,data_read_bytes,data_write_bytes,data_latch_wait_ns\n";
         std::cout << WorkloadTrace::name(config.kind) << ',' << index_name << ',' << cc << ',' << config.threads << ','
                   << stats.transactions << ',' << stats.committed << ',' << stats.aborted << ',' << stats.operations << ','
                   << stats.reads << ',' << stats.updates << ',' << stats.inserts << ',' << stats.deletes << ','
@@ -371,8 +411,12 @@ int run(int argc, char** argv) {
             for (const auto* q : {&m.successful_attempt,&m.logical_completion,&m.lock_wait,&m.lock_call,&m.release})
                 std::cout << ',' << q->count << ',' << q->total_ns << ',' << q->p50_ns << ',' << q->p95_ns << ',' << q->p99_ns << ',' << q->p999_ns << ',' << q->max_ns;
         }
-        std::cout << '\n';
+        std::cout << ',' << (index_name=="rdma"?"shared-rdma":"local") << ',' << data_ops << ',' << data_reads
+                  << ',' << data_writes << ',' << data_wait << '\n';
     } else {
+        std::cout << "data_backend=" << (index_name=="rdma"?"shared-rdma":"local")
+                  << ",data_rdma_operations=" << data_ops << ",data_read_bytes=" << data_reads
+                  << ",data_write_bytes=" << data_writes << ",data_latch_wait_ns=" << data_wait << "\n";
         std::cout << "workload=" << WorkloadTrace::name(config.kind)
                   << ",index=" << index_name << ",cc=" << cc
                   << ",threads=" << config.threads

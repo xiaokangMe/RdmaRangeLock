@@ -8,6 +8,7 @@
 #include <limits>
 #include <fstream>
 #include <stdexcept>
+#include <condition_variable>
 
 namespace rrl {
 bool seed_index(BTreeIndex&,const WorkloadTrace&,std::unordered_map<idx_key_t,std::uint64_t>&);
@@ -25,7 +26,7 @@ KeyRangeEnt right_closed(idx_key_t a,idx_key_t b) {
 RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const WorkloadTrace& trace,const PolicyRunConfig& cfg) {
     if(!cfg.max_attempts || !cfg.wait_timeout_ms || cfg.wait_timeout_ms>600000)throw std::invalid_argument("invalid retry/wait bound");
     std::unordered_map<idx_key_t,std::uint64_t> seed;
-    if(!seed_index(index,trace,seed)){RunStats s;s.index_errors=1;return s;}
+    if(!index.preloaded() && !seed_index(index,trace,seed)){RunStats s;s.index_errors=1;return s;}
     const auto total=trace.transactions().size();
     if(!total)return {};
     const auto count=std::min(trace.config().threads,total);
@@ -39,17 +40,29 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
         if(cfg.coordinator_host.empty())clients.emplace_back(new PolicyClient(local,w+1));
         else clients.emplace_back(new PolicyClient(cfg.coordinator_host,cfg.coordinator_port,cfg.wait_timeout_ms+5000));
     }
-    std::vector<std::vector<const Operation*>> writes(count);
+    std::vector<std::vector<IndexMutation>> writes(count);
+    std::vector<std::vector<KeyValue>> scans(count),rechecks(count);
+    const auto scan_capacity=trace.config().range_length;
+    for(auto& v:scans)v.reserve(scan_capacity);
+    for(auto& v:rechecks)v.reserve(scan_capacity);
     std::size_t maxops=0;for(const auto& t:trace.transactions())maxops=std::max(maxops,t.operations.size());
     for(auto& v:writes)v.reserve(maxops);
     std::atomic<bool> stopped{false};
-    const auto start=Clock::now();
+    Clock::time_point start,deadline;
     const bool timed=trace.config().duration_seconds!=0;
-    const auto deadline=timed ? start+std::chrono::seconds(trace.config().duration_seconds) : Clock::time_point::max();
+    std::mutex start_mutex;std::condition_variable start_cv;
+    std::size_t ready=0;bool launched=false;
     std::vector<std::thread> threads;
     for(std::size_t worker=0;worker<count;++worker)threads.emplace_back([&,worker] {
         auto& p=parts[worker];auto& s=p.stats;auto& m=s.policy;auto& client=*clients[worker];
         auto& pending=writes[worker];
+        bool active_attempt=false,arrived=false;
+        try {
+        index.prepare_thread(worker,scan_capacity);
+        {
+            std::unique_lock<std::mutex> guard(start_mutex);++ready;arrived=true;start_cv.notify_all();
+            start_cv.wait(guard,[&]{return launched;});
+        }
         for(std::size_t i=worker;!stopped && (timed || i<total);i+=count) {
             if(Clock::now()>=deadline)break;
             ++m.logical_started;
@@ -66,10 +79,26 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                 if(timed)budget=std::min<std::uint64_t>(budget,ns(deadline-attempt_start));
                 const auto begun=client.begin(cfg.wait_policy,age,budget);
                 if(begun.result!=TxnResult::Ok){++s.lock_errors;++s.failed_transactions;hard=true;stopped=true;break;}
-                const auto id=begun.id;age=begun.age;
+                const auto id=begun.id;age=begun.age;active_attempt=true;
                 TxnResult outcome=TxnResult::Ok;
                 bool touched=false;
                 pending.clear();
+                const auto own_write=[&](idx_key_t key)->const IndexMutation* {
+                    for(auto it=pending.rbegin();it!=pending.rend();++it)if(it->key==key)return &*it;
+                    return nullptr;
+                };
+                const auto account_value=[&](idx_key_t key,const std::uint64_t* fallback) {
+                    if(const auto* own=own_write(key)) {
+                        if(!own->remove){++s.rows_found;s.checksum+=key^*own->value;}
+                    } else if(fallback){++s.rows_found;s.checksum+=key^*fallback;}
+                };
+                const auto account_inserted=[&](const KeyRangeEnt& range,const std::vector<KeyValue>& rows) {
+                    for(const auto& own:pending) {
+                        if(own.remove || own_write(own.key)!=&own || !range.contains(own.key))continue;
+                        const auto found=std::lower_bound(rows.begin(),rows.end(),own.key,[](const KeyValue& r,idx_key_t k){return r.key<k;});
+                        if(found==rows.end() || found->key!=own.key)account_value(own.key,nullptr);
+                    }
+                };
                 auto acquire=[&](LockMode mode,const KeyRangeEnt& range,LockKind kind) {
                     if(Clock::now()>=deadline){outcome=TxnResult::Deadline;return false;}
                     ++s.lock_acquires;
@@ -107,7 +136,7 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                                !acquire(LockMode::S,KeyRangeEnt::point(op.key),LockKind::Gap) ||
                                !acquire(LockMode::S,KeyRangeEnt::point(op.end_key),LockKind::Gap))break;
                         }
-                        const auto rows=index.scan_range(range);s.rows_scanned+=rows.size();
+                        auto& rows=scans[worker];index.scan_range_into(range,rows);s.rows_scanned+=rows.size();
                         if(cfg.protocol==PolicyProtocol::NextKey) {
                             if(!acquire(LockMode::S,KeyRangeEnt::point(op.key),LockKind::NextKey))break;
                             auto previous=op.key;
@@ -116,19 +145,24 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                                 previous=row.key;
                             }
                             if(outcome!=TxnResult::Ok || !acquire(LockMode::S,right_closed(previous,op.end_key),LockKind::NextKey))break;
-                            const auto verified=index.scan_range(range);s.rows_rechecked+=verified.size();
+                            auto& verified=rechecks[worker];index.scan_range_into(range,verified);s.rows_rechecked+=verified.size();
                             if(verified.size()!=rows.size()){outcome=TxnResult::Conflict;break;}
                             for(std::size_t n=0;n<rows.size();++n)if(rows[n].key!=verified[n].key)outcome=TxnResult::Conflict;
                             if(outcome!=TxnResult::Ok)break;
-                            for(const auto& row:verified){++s.rows_found;s.checksum+=row.key^*static_cast<std::uint64_t*>(row.value);}
+                            for(const auto& row:verified)account_value(row.key,static_cast<const std::uint64_t*>(row.value));
+                            account_inserted(range,verified);
                         } else if(cfg.protocol==PolicyProtocol::Record || cfg.protocol==PolicyProtocol::Gap) {
                             for(const auto& row:rows) {
                                 if(!acquire(LockMode::S,KeyRangeEnt::point(row.key),LockKind::Record))break;
                                 void* value=nullptr;
                                 if(!index.lookup(row.key,value)){outcome=TxnResult::Conflict;break;}
-                                ++s.rows_found;s.checksum+=row.key^*static_cast<std::uint64_t*>(value);
+                                account_value(row.key,static_cast<const std::uint64_t*>(value));
                             }
-                        } else for(const auto& row:rows){++s.rows_found;s.checksum+=row.key^*static_cast<std::uint64_t*>(row.value);}
+                            if(outcome==TxnResult::Ok)account_inserted(range,rows);
+                        } else {
+                            for(const auto& row:rows)account_value(row.key,static_cast<const std::uint64_t*>(row.value));
+                            account_inserted(range,rows);
+                        }
                     } else {
                         const bool read=op.kind==OperationKind::Read;
                         const auto kind=cfg.protocol==PolicyProtocol::Predicate ? LockKind::Predicate :
@@ -137,24 +171,31 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                         if(cfg.protocol!=PolicyProtocol::Hierarchy && !acquire(read?LockMode::S:LockMode::X,KeyRangeEnt::point(op.key),kind))break;
                         if(read) {
                             ++s.reads;void* value=nullptr;
-                            if(index.lookup(op.key,value)){++s.rows_found;s.checksum+=op.key^*static_cast<std::uint64_t*>(value);}
+                            if(own_write(op.key))account_value(op.key,nullptr);
+                            else if(index.lookup(op.key,value))account_value(op.key,static_cast<const std::uint64_t*>(value));
                         } else {
                             if(op.kind==OperationKind::Update)++s.updates;
                             else if(op.kind==OperationKind::Insert)++s.inserts;
                             else ++s.deletes;
-                            pending.push_back(&op);
+                            pending.push_back({op.key,&op.value,op.kind==OperationKind::Delete});
                         }
                     }
                 }
+                if(!index.healthy())throw std::runtime_error("data backend failed; retain active transaction");
                 if(outcome==TxnResult::Ok)outcome=client.prepare_commit(id).result;
-                if(outcome==TxnResult::Ok)for(const auto* op:pending) {
-                    const auto rc=op->kind==OperationKind::Delete ? index.erase(op->key) : index.insert(op->key,const_cast<std::uint64_t*>(&op->value));
-                    if(rc!=RCOK && !(op->kind==OperationKind::Delete && rc==Abort)){++s.index_errors;outcome=TxnResult::Error;break;}
+                if(outcome==TxnResult::Ok) {
+                    const auto rc=index.apply_batch(pending);
+                    if(rc==AbortCapacity){++s.lock_capacity_aborts;outcome=TxnResult::Conflict;}
+                    else if(rc!=RCOK){++s.index_errors;outcome=TxnResult::Error;}
                 }
+                // A failed/uncertain data mutation keeps its transaction active:
+                // disconnect poisons the cohort; never grant over partial data.
+                if(!index.healthy())throw std::runtime_error("uncertain shared write; retain locks");
                 const auto release_start=Clock::now();
                 if(touched && physical.unlock_all(id)!=RCOK){++s.lock_release_failures;outcome=TxnResult::Error;}
                 if(!s.lock_release_failures && client.end(id).result!=TxnResult::Ok){++s.lock_release_failures;outcome=TxnResult::Error;}
                 p.release.add(ns(Clock::now()-release_start));
+                active_attempt=false;
                 if(outcome==TxnResult::Error) {
                     if(!s.index_errors && !s.lock_release_failures)++s.lock_errors;
                     ++s.failed_transactions;hard=true;stopped=true;break;
@@ -176,7 +217,18 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
             if(hard)++m.logical_failed;
             else if(!completed)++m.unfinished;
         }
+        } catch(const std::exception&) {
+            ++s.index_errors;stopped=true;
+            if(!arrived){std::lock_guard<std::mutex> guard(start_mutex);++ready;start_cv.notify_all();}
+            if(active_attempt){++s.failed_transactions;++m.logical_failed;}
+        }
+        index.finish_thread();
     });
+    {
+        std::unique_lock<std::mutex> guard(start_mutex);start_cv.wait(guard,[&]{return ready==count;});
+        start=Clock::now();deadline=timed ? start+std::chrono::seconds(trace.config().duration_seconds) : Clock::time_point::max();
+        launched=true;start_cv.notify_all();
+    }
     for(auto& t:threads)t.join();
     RunStats result;auto& pm=result.policy;pm.enabled=true;
     LatencyHistogram attempt,logical,wait,call,release;
@@ -186,6 +238,7 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
         SUM(transactions);SUM(committed);SUM(aborted);SUM(operations);SUM(reads);SUM(updates);SUM(inserts);SUM(deletes);
         SUM(range_reads);SUM(rows_found);SUM(rows_scanned);SUM(rows_rechecked);SUM(lock_acquires);SUM(lock_conflicts);SUM(checksum);
         SUM(lock_errors);SUM(index_errors);SUM(lock_release_failures);SUM(failed_transactions);
+        SUM(lock_capacity_aborts);SUM(lock_gate_aborts);
 #undef SUM
         pm.logical_started+=m.logical_started;pm.unfinished+=m.unfinished;pm.logical_failed+=m.logical_failed;
         pm.retries+=m.retries;pm.max_retries=std::max(pm.max_retries,m.max_retries);

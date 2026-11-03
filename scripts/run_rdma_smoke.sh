@@ -20,8 +20,8 @@ env RRL_RDMA_GID_INDEX="$GID_INDEX" "$ROOT/build-rdma/rrl_rdma_lock_client" "$LO
 sleep 0.2
 RESULTS="$ROOT/experiments/results"
 mkdir -p "$RESULTS"
-env RRL_RDMA_GID_INDEX="$GID_INDEX" "$ROOT/build-rdma/rrl_workload_runner" --index v2 --cc rdma-next-key --rdma-host "$LOOPBACK_HOST" --rdma-port "$PORT" --workload ycsb-e --keys 1000 --txns 200 --ops 4 --range 16 --threads 4 --zipf 0.99 --format csv > "$RESULTS/rdma_v5_v6_smoke.csv"
-env RRL_RDMA_GID_INDEX="$GID_INDEX" "$ROOT/build-rdma/rrl_workload_runner" --index v2 --cc rdma-hierarchical --rdma-host "$LOOPBACK_HOST" --rdma-port "$PORT" --workload ycsb-e --keys 1000 --txns 200 --ops 4 --range 16 --bucket 64 --threads 4 --zipf 0.99 --format csv | tail -n 1 >> "$RESULTS/rdma_v5_v6_smoke.csv"
+env RRL_RDMA_GID_INDEX="$GID_INDEX" "$ROOT/build-rdma/rrl_workload_runner" --rdma-lock-only 1 --index v2 --cc rdma-next-key --rdma-host "$LOOPBACK_HOST" --rdma-port "$PORT" --workload ycsb-e --keys 1000 --txns 200 --ops 4 --range 16 --threads 4 --zipf 0.99 --format csv > "$RESULTS/rdma_v5_v6_smoke.csv"
+env RRL_RDMA_GID_INDEX="$GID_INDEX" "$ROOT/build-rdma/rrl_workload_runner" --rdma-lock-only 1 --index v2 --cc rdma-hierarchical --rdma-host "$LOOPBACK_HOST" --rdma-port "$PORT" --workload ycsb-e --keys 1000 --txns 200 --ops 4 --range 16 --bucket 64 --threads 4 --zipf 0.99 --format csv | tail -n 1 >> "$RESULTS/rdma_v5_v6_smoke.csv"
 python3 - "$RESULTS/rdma_v5_v6_smoke.csv" "$ROOT/scripts" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[2])

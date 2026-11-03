@@ -98,29 +98,29 @@ RdmaRangeLock/
 
 代码层面的硬约束见 [CONSTRAINTS.md](CONSTRAINTS.md)；违反其中任何一条，对应提交直接回退。
 
-## 六、RDMA 阶段状态
+## 六、共享数据 RDMA 基线（2026-11-04）
 
-RDMA 基线已经接入：`.66` 的 `mlx5_0` RoCE 端口通过 RC QP 提供远程注册锁表。`RemoteLockManager` 与本地锁管理器共享 `IRangeLockManager` 接口，因此 v5/v6 事务协议可以直接切换到远程锁表。
+单边 RDMA 数据路径按 Deneva 的根/子节点/叶链偏移寻址方式接入：`.66` 数据服务的注册内存保存权威 B+ 树和 uint64 记录；`.67` 事务进程逐层 RDMA READ 查树、读取记录，提交时 RDMA WRITE 写回。所有 RDMA 锁协议共用这一条路径，不在客户端保留独立数据库。
+
+`.66` 分别启动专用数据、物理锁表、时间戳协调器服务。协调面仍走 TCP，数据和物理锁槽走单边 RDMA，不称纯单边事务系统。结构采用共享/排他 latch，写批次串行；删除为 tombstone，容量固定且可配置。当前是可验证的共享数据基线，不能据此宣称已达到 Sherman 等索引的扩展性。
 
 ```bash
-build-rdma/rrl_rdma_lock_server 19890
-build-rdma/rrl_workload_runner --index v2 --cc rdma-next-key \
-  --rdma-host 127.0.0.1 --rdma-port 19890 --workload ycsb-e
-build-rdma/rrl_workload_runner --index v2 --cc rdma-hierarchical \
-  --rdma-host 127.0.0.1 --rdma-port 19890 --bucket 64 --workload ycsb-e
+cmake -S . -B build-shared -DCMAKE_BUILD_TYPE=Release
+cmake --build build-shared -j4
+# 全 CTest、独立进程/双机共享可见性与小窗口负载验证
+python3 scripts/check_shared_rdma.py --build build-shared --cross-host
+# 使用与正式矩阵完全相同的执行路径，缩小维度和时间做入口验证
+python3 scripts/run_verified_matrices.py --smoke --build build-shared
 ```
 
-当前 RDMA 锁表已经按逻辑 bucket 使用 16 个分片 CAS gate；跨 bucket 区间按 shard ID 升序获取 gate，并在每个涉及 shard 保存副本。工作负载 runner 会按线程数建立 per-thread QP/连接池，每个连接使用独立 owner token。`.66` 与 `.67` 已使用 RoCE IPv4 GID index 3 完成跨主机 v5/v6、8 QP 和 crash cleanup 验证；正式性能实验仍待执行。RDMA smoke 脚本会自动配置 `build-rdma`、启动服务端并生成规范 CSV。详见 `docs/notes/rdma-cross-host-2026-10-30.md`。
+本地正式矩阵使用 `BTreeLatch`，不使用 RDMA；跨主机正式矩阵使用 `BTreeRdma`。新入口每个远端 case 自动启动全新的数据/锁/协调服务，校验源码与二进制、初始数据指纹，先过容量预检，失败即停止。完整配置与运行方法见 [正式矩阵说明](docs/notes/formal-performance-matrix.md)。
 
+旧 RDMA 图表只有远端锁表、客户端各自持有本地索引和记录，保留为锁服务工程微基准；不能当成共享数据库主实验。旧路径须显式 `--rdma-lock-only 1` 才允许运行，CSV 的 `data_backend=local`。新主实验必须为 `index=rdma,data_backend=shared-rdma`。
 
-## 等待策略与延迟测量（2026-11-03）
+## 等待策略与延迟测量
 
-新驱动支持 `--wait-policy no-wait|wait-die|wound-wait`，提供成功 attempt 和含重试逻辑事务的 p50/p95/p99/p999、等待、重试及未完成事务计数。示例：
+本地和共享 RDMA 均支持 record/gap/next-key/hierarchy/predicate，冲突策略可选 `--wait-policy no-wait|wait-die|wound-wait`。同一个事务驱动负责锁计划、缓冲写入、读自己之前的写入、提交许可、批量应用与严格释放。事务 age 跨重试保持，attempt ID 每次更新。
 
-```sh
-cmake -S . -B build-wait-policy -DCMAKE_BUILD_TYPE=Release
-cmake --build build-wait-policy -j4
-build-wait-policy/rrl_workload_runner --config experiments/configs/wait_policy_smoke.json --wait-policy wait-die --latency-histogram /tmp/wait-die-hist.json --format csv
-```
+显式策略模式输出 `metrics_schema=2`：成功 attempt 与含重试逻辑事务各自的 p50/p95/p99/p999，等待时间、重试次数、未完成/失败计数。所有 CSV 增加 `data_backend,data_rdma_operations,data_read_bytes,data_write_bytes,data_latch_wait_ns`；后四项只统计测量期间的数据路径，不含连接和最终结构校验。原 `rdma_*` 仍为物理锁路径计数，不把两类操作混淆。
 
-本地支持 record/gap/next-key/hierarchy/predicate；RDMA 支持 next-key/hierarchy/predicate，必须启动专用的 TCP 协调器及物理锁服务器。默认旧命令和旧 CSV 不变，新模式 CSV 标记 `metrics_schema=2`。比较三策略时都须显式传 `--wait-policy`，统一控制路径。完整命令、故障处理、正确性验收与实验边界见 [实现记录](docs/notes/wait-policies-and-latency-2026-11-03.md)。
+具体边界、故障与正确性记录见 [迁移方案](docs/notes/deneva-shared-rdma-data-2026-11-03.md) 和 [共享数据验收记录](docs/notes/shared-rdma-acceptance-2026-11-04.md)。

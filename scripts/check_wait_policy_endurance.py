@@ -82,7 +82,7 @@ def main():
                 assert 'listening' in line,line
             name='cross-rdma-next-key-'+policy
             hist=remote+'/'+name+'.hist.json'
-            argv=['timeout',str(args.seconds+30),'env','RRL_RDMA_GID_INDEX=3',remote+'/rrl_workload_runner',
+            argv=['timeout',str(args.seconds+30),'env','RRL_RDMA_GID_INDEX=3',remote+'/rrl_workload_runner','--rdma-lock-only','1',
                   '--config',remote+'/wait_policy_endurance.json','--cc','rdma-next-key','--wait-policy',policy,
                   '--duration',str(args.seconds),'--latency-histogram',hist,'--format','csv',
                   '--rdma-host','10.0.0.3','--rdma-port',str(rdma),'--coordinator-port',str(control)]

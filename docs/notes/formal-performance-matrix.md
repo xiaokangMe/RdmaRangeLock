@@ -1,142 +1,78 @@
-# 正式性能实验矩阵
+# 本地与共享数据 RoCE 正式矩阵（2026-11-04）
 
-本文档描述 `scripts/run_formal_matrix.sh` 的实验计划。脚本只在显式传入 `--mode` 后运行；正式运行须显式设置测量窗口并保留配置、源码与原始数据。
+本说明替换旧的远端锁表矩阵运行方案。历史 CSV/报告保留，不覆盖、不混入新共享数据结果。本地与跨主机是两组独立实验：本地不使用 RDMA，跨主机的索引、记录和物理锁均为共享远端状态。不能把两组吞吐之差全部归因于锁算法。
 
-## 实验目标
+## 运行入口
 
-固定 v2 并发 B+树，把变量集中在范围并发控制和 RDMA 传输路径上，比较：
-
-- 本地无锁数据通路：`none`；
-- 本地记录级 Strict 2PL：`record-2pl`；
-- 本地 Gap Lock：`gap-lock`；
-- 本地 Next-Key Lock：`next-key`；
-- 本地层级锁：`hierarchical`；
-- RDMA Next-Key Lock：`rdma-next-key`；
-- RDMA 层级锁：`rdma-hierarchical`。
-
-v1 单线程树和 v2 latch coupling 的结构基线由已有测试和 `scripts/run_v2_stress.sh` 单独验证；本矩阵固定 `--index v2`，避免把索引结构变化混入锁协议对比。
-
-## 默认矩阵
-
-| 维度 | 默认值 |
-|---|---|
-| workload | `ycsb-a`, `ycsb-e`, `tpcc-payment`, `tpcc-new-order` |
-| key 数 | 10000 |
-| trace transaction 数 | 5000（循环执行，实际尝试数由窗口决定） |
-| 测量窗口 | 每个 case 至少 10 秒 |
-| 每事务操作数 | 10 |
-| YCSB-E range length | 8, 32, 128 |
-| YCSB-A/TPCC range length | 0（不产生范围读） |
-| YCSB Zipf | 0.99 |
-| TPCC items/order | 5 |
-| 线程数 | 1, 2, 4, 8, 16, 32 |
-| 重复次数 | 3 |
-| seed | 第 1/2/3 次为 8/9/10；同一 run 在各协议间保持一致 |
-| 层级锁 bucket | 16, 64, 256 |
-| 单 case 超时 | 900 秒 |
-
-默认规模为 756 个本地 case 和 432 个跨主机 RDMA case。正式运行前建议先用环境变量缩小矩阵做一轮连通性检查。矩阵维度和新代码基线记录在 `experiments/configs/formal_local_v2_matrix.json`；当前脚本仍通过 `RRL_*` 环境变量接收这些维度，正式运行时必须保留该配置文件、完整命令行和生成数据的 commit hash。
-
-## 运行位置和拓扑
-
-脚本应在 `.66` 的项目根目录执行：
+在 .66 项目目录执行，源码提交后再正式运行：
 
 ```bash
-cd /home/dell/RdmaRangeLock
-```
-
-`--mode local` 运行本地 `none/record-2pl/gap-lock/next-key/hierarchical`；不需要 RDMA 服务端。
-
-`--mode cross-host` 由 `.66` 启动锁服务端，并通过 SSH 在 `.67` 启动 workload runner。默认使用：
-
-- `.66` server：`10.0.0.3`；
-- `.67` client：`10.0.0.4`；
-- `RRL_RDMA_GID_INDEX=3`；
-- TCP/RDMA 服务端口：`19930`；
-- `.67` 源码目录：`/home/dell/RdmaRangeLock`；
-- `.67` 构建目录：`/tmp/rrl-formal-build`。
-
-跨主机模式默认先把 `.66` 当前源码同步到 `.67`，再分别构建两端。同步会排除 `.git`、构建目录、实验结果和日志；不会执行实验。
-
-## 使用方法
-
-先做一个小矩阵验证脚本和机器环境：
-
-```bash
-RRL_RUNS=1 \
-RRL_THREADS=1,2 \
-RRL_WORKLOADS=ycsb-e \
-RRL_RANGE_LENGTHS=32 \
-RRL_TRANSACTIONS=100 \
-scripts/run_formal_matrix.sh --mode local
-```
-
-跨主机小矩阵：
-
-```bash
-RRL_RUNS=1 \
-RRL_THREADS=1,4 \
-RRL_WORKLOADS=ycsb-e \
-RRL_RANGE_LENGTHS=32 \
-RRL_BUCKETS=64 \
-RRL_TRANSACTIONS=100 \
-scripts/run_formal_matrix.sh --mode cross-host
-```
-
-完整矩阵：
-
-```bash
+# 两套依次运行；默认 756 个本地 case，432 个跨主机 case
+python3 scripts/run_verified_matrices.py --config experiments/configs/formal_shared_10s.json
+# 单独选择一套
+python3 scripts/run_shared_matrices.py --mode local
+python3 scripts/run_shared_matrices.py --mode cross-host
+# 保留原 shell 入口和主要 RRL_* 维度变量
 scripts/run_formal_matrix.sh --mode local
 scripts/run_formal_matrix.sh --mode cross-host
 ```
 
-常用覆盖变量：
+三个入口最终调用同一个 `run_shared_matrices.py`，不存在另外一条未经验证的正式路径。默认 Release 构建、每 case 至少十秒、每配置至少三次、seed 8/9/10；正式模式不接受未提交源码或跳过构建。会自动把本机 runner 二进制复制到 .67 的独立临时目录，核对 SHA256；不覆盖 .67 既有项目、二进制或实验。
 
-- `RRL_KEYS`, `RRL_TRANSACTIONS`, `RRL_OPERATIONS`：负载规模；
-- `RRL_THREADS`, `RRL_WORKLOADS`, `RRL_RANGE_LENGTHS`, `RRL_BUCKETS`：矩阵维度，逗号分隔；
-- `RRL_RUNS`, `RRL_ZIPF`, `RRL_TPCC_ITEMS`：重复次数和 workload 参数；
-- `RRL_RDMA_PORT`, `RRL_RDMA_GID_INDEX`：跨主机 RDMA 参数；
-- `RRL_REMOTE_HOST`, `RRL_REMOTE_ROOT`, `RRL_REMOTE_BUILD_DIR`：`.67` 连接和目录；
-- `RRL_SYNC_REMOTE=0`：使用 `.67` 已有源码，不同步；
-- `RRL_RESULT_DIR`, `RRL_LOG_DIR`：结果和日志输出目录；
-- `RRL_TIMEOUT_SECONDS`, `RRL_BUILD_JOBS`：超时和构建并行度。
-
-## 输出格式
-
-结果写入 `experiments/results/formal-<mode>-<timestamp>.csv`，日志写入 `experiments/logs/formal-<mode>-<timestamp>/`。CSV 在 runner 原有字段前增加：
-
-```text
-transport,server_host,client_host,run,seed,range,bucket,zipf
+```bash
+# 同一路径的缩小入口检查，明确标为 smoke-not-formal
+python3 scripts/run_verified_matrices.py --smoke
+scripts/run_formal_matrix.sh --mode both --smoke
+# 保留 10000 key / 5000 trace / 10 ops / 32 threads / range 128 的边界配置，
+# 只缩短窗口与重复次数；它是定向检查，不是完整正式矩阵
+python3 scripts/run_shared_matrices.py --config experiments/configs/shared_matrix_boundary_check.json \
+  --smoke --keep-geometry --validation-seconds 10
+# 只做容量预检，不启动完整矩阵
+scripts/capacity_preflight.sh
 ```
 
-runner 字段包括 committed/aborted、attempted/committed throughput、lock conflicts、lock_capacity_aborts、lock_gate_aborts、rows rechecked 等。单点失败会写入 `failed-cases.txt` 后继续调度，脚本在矩阵结束时以非零状态汇总失败。结果目录已被 `.gitignore` 忽略，正式实验结果应另行归档并保留脚本版本、commit、机器信息和完整命令行。
+`--smoke` 默认改为一秒、一重复、128 key、200 trace、4 ops、1/4 线程、range 8、bucket 16；`--keep-geometry` 保留配置中的负载/并发维度；`--validation-seconds` 可在 smoke 下设置 1..600 秒，产物仍标为非正式。
 
-## 统计和公平性约定
+## 公平性和拓扑
 
-- 每个 case 都从新进程和新 trace 开始；RDMA 连接建立和索引预填充不计入 runner 的事务 elapsed time。
-- 以 `throughput_committed_txn_s` 作为成功事务吞吐，同时报告 `throughput_attempt_txn_s`、committed、aborted 和 lock conflicts。
-- 当前锁协议是 no-wait；`AbortConflict`、`AbortCapacity`、`AbortGate` 分别统计冲突、远程槽位不足和 gate 抢占失败，不能把它们解释成阻塞时间。
-- 本地与跨主机结果分开比较。跨主机模式还应记录 GID、网卡、链路状态、CPU 型号和 kernel/verbs 版本。
-- 正式报告至少保留 3 次重复的中位数和离散度；对吞吐、abort ratio、lock acquire cost、rows rechecked 和 range length 分别作图。
-- 结果出现异常时先查看对应 case 的 stderr 日志，再复现单 case；不要用 sleep 或重试掩盖连接、锁顺序或数据一致性错误。
+| 项目 | 本地矩阵 | 跨主机矩阵 |
+|---|---|---|
+| 索引/记录 | .66 单个进程的 BTreeLatch | .66 数据服务注册内存内的 BTreeRdma |
+| workload | .66 | .67，经 10.0.0.3 访问 .66 |
+| 事务锁 | 同进程 LockManager | .66 专用 RemoteLockManager 锁表 |
+| 策略协调 | 同进程 coordinator | .66 TCP coordinator |
+| CSV 标记 | local-no-rdma / data_backend=local | rdma-cross-host-shared / data_backend=shared-rdma |
 
-## 预期后续分析
+各组内部所有协议固定同一个索引实现、布局、order、初始化集合、负载和计时。跨主机数据 QP 为每 worker 独占；锁 QP 默认 min(threads,2)。不同协议配置只改变锁计划。结构写批次使用全局排他 latch，是公开的基线瓶颈。
 
-1. 本地 `record-2pl → gap-lock → next-key → hierarchical` 的锁数量、范围扫描成本和提交吞吐变化。
-2. `next-key` 与 `rdma-next-key` 的跨传输层开销。
-3. `hierarchical` 的 bucket=16/64/256 扫描和冲突变化。
-4. YCSB-E 与 TPCC New-Order 的范围/热点差异。
-5. 多线程扩展曲线和 no-wait abort ratio，单独标注 RDMA 单机与跨主机结果。
+每个跨主机 case 启动独立的新数据服务、新锁服务和新 coordinator，结束后仅清理该 case 自己创建的进程。数据服务先按共同 trace 生成初始集合；客户端只验证指纹，不重新灌数。传输使用 RoCE GID 3。端口自动分配，完整命令落日志。不要把不同 case、协议、coordinator 的客户端接到同一个表，也不要单独重启其中一个服务继续测量。
 
-## 配置文件复现
+默认维度：4 workload（YCSB-A/E、项目 Payment/New Order 子负载），10000 key，5000 条循环 trace，每事务 10 ops（New Order 实际操作数由 items 决定），Zipf 0.99，items 5，线程 1/2/4/8/16/32，YCSB-E range 8/32/128，hierarchy bucket 16/64/256，三次重复。它们不是完整 TPC-C。
 
-`rrl_workload_runner` 支持 `--config experiments/configs/v5_next_key.json`，配置文件中的 workload、index、cc、规模、线程、范围、bucket、Zipf 和 seed 会先加载，再由命令行参数覆盖。这样配置文件与矩阵脚本使用同一套 runner 解析路径。
+`wait_policies` 可设三策略的任意子集，所有协议统一 `max_attempts`。默认单个 no-wait，故默认 case 数仍为 756/432；策略维度扩大时实际 case 数自动计算，none 基线每个重复只执行一次。缓冲写入在 PrepareCommit 后应用，计时从所有 worker 缓冲准备完成后开始。
+
+## 容量与数据门禁
+
+跨主机测量前，按配置中最大的 range/线程/操作数，对每个 RDMA 协议、每个 hierarchy bucket、每个 seed 和策略运行预检；默认 12 点，每点十秒。数据页 8192、记录 262144、order 128，均可配置。物理表为 16 shard × 8192 slot；每 attempt metadata 上限 16384，不能把它当成物理容量。页/记录在写前对整个批次做保守容量检查，拒绝部分写入。
+
+硬错误、非零 capacity/gate 中止、错误 CSV、计数不守恒、窗口不足或跨主机 `data_backend` 错误，会使流程失败并停止，不跳过失败 case。no-wait 高冲突下可能在短窗口没有提交；保留真实的 0 提交与 `progress_status=no-commits`，状态记录 no_progress_cases。零样本延迟不代表零延迟，不允许据此宣称尾延迟改善。
+
+输出在 `experiments/results/<kind>-<mode>-<timestamp>.csv` 和同名 campaign JSON；每 case 的原始 stdout、stderr、配置、命令、服务日志，以及源码/二进制 SHA256 在 `experiments/logs/`。进度文件 `/tmp/rrl-shared-campaign-state.json` 不覆盖旧 campaign 的监控文件。源码、配置与实际 runner 二进制均被记录；禁止把 smoke、旧锁服务 CSV 与新正式数据拼接。
+
+## 环境变量兼容
+
+shell 入口保留 RRL_KEYS、TRANSACTIONS、OPERATIONS、ZIPF、TPCC_ITEMS、RUNS、THREADS、WORKLOADS、RANGE_LENGTHS、BUCKETS、LOCAL_CCS、RDMA_CCS；新增 RRL_WAIT_POLICIES、MAX_ATTEMPTS、TREE_ORDER、TREE_PAGES、TREE_RECORDS、SERVER_ROCE。保留 RRL_SSH_KEY、REMOTE_HOST、BUILD_DIR、RDMA_GID_INDEX。旧固定端口、覆盖远端源码目录和复用旧构建的参数已由独立临时目录、自动端口、二进制校验取代，推荐使用 JSON 配置。
+
+旧 `run_rdma_smoke.sh`、`run_rdma_profile.py`、`run_hierarchy_ycsba.py` 仍保留为历史锁服务专项工具，内部显式传 --rdma-lock-only 1，不能生成新的共享数据主实验结论。
 
 
-## 2026-11-02 验证运行入口
+## 新结果绘图
 
-python3 scripts/run_verified_matrices.py 使用 experiments/configs/formal_both_10s_20261102.json，
-先做硬件正确性检查与 16 点跨主机容量预检，再顺序执行 756 本地 + 432 跨主机 case。
-固定 profile=0、linear、local gate=1、retry=64、GID=3、QP=auto；远端源码使用独立 /tmp 快照。
-每行验证 elapsed_ns >= 10e9、事务守恒、硬错误为零，严格检查完整 case 数。
-原 run_formal_matrix.sh 的 duration 默认现为 10；固定事务检查可显式 RRL_DURATION=0，但不得当正式窗口报告。
+使用明确的 campaign 文件，不自动寻找“最近的 CSV”，以免选中旧锁服务数据：
+
+```bash
+python3 scripts/report_shared_matrices.py --campaign experiments/results/formal-shared-data-<timestamp>.json \
+  --out figures/shared-data-<timestamp>
+```
+
+报告逐项核对源码提交、结果类别、backend、case 维度、种子、计数守恒和错误字段，再输出 summary.csv、PNG 和 report.md。历史锁服务 campaign 会被拒绝；smoke 必须显式传 --allow-smoke，图上标记 NOT FORMAL PERFORMANCE。新旧报告工具各自保留，不修改历史图表。

@@ -19,7 +19,10 @@ struct WorkloadConfig {
     WorkloadKind kind{WorkloadKind::YcsbA};
     size_t key_count{10000};
     size_t transaction_count{10000};
+    // Deneva REQ_PER_QUERY: requests, independent of scan length/TPC-C steps.
     size_t operations_per_transaction{10};
+    // Disable only for repeated-key regression workloads / historical traces.
+    bool ycsb_unique_keys{true};
     size_t range_length{10};
     size_t threads{1};
     // When non-zero the run_* drivers keep executing transactions until the

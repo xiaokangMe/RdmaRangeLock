@@ -20,6 +20,9 @@ enum class LatchMode : std::uint8_t {
     Exclusive,
 };
 
+// Actual leaf page identity and its routing fence (including empty gaps).
+struct LeafSpan { std::uint64_t id{0}; KeyRangeEnt range; };
+
 struct KeyValue {
     idx_key_t key{0};
     void* value{nullptr};
@@ -56,6 +59,7 @@ static_assert(sizeof(OffsetBTreeRecord) == 32, "stable RDMA record");
 // Common page layout for v1 and v2. v1 leaves latch unused; v2 uses it for
 // parent-to-child latch coupling.
 struct BTreePage {
+    std::uint64_t identity{0};
     bool is_leaf{true};
     std::vector<idx_key_t> keys;
     std::vector<void*> values;
@@ -75,6 +79,8 @@ public:
     virtual bool lookup(idx_key_t key, void*& value) const = 0;
     virtual std::vector<KeyValue> scan_range(const KeyRangeEnt& range) const = 0;
     virtual std::size_t size() const = 0;
+    // Caller holds the lock-layer topology lease while using this snapshot.
+    virtual bool leaf_cover_into(const KeyRangeEnt&,std::vector<LeafSpan>&) const { return false; }
     // Backend lifecycle hooks run before Begin/after End, outside txn locks.
     virtual bool preloaded() const { return false; }
     virtual void prepare_thread(std::size_t, std::size_t) {}
@@ -104,6 +110,7 @@ public:
     bool lookup(idx_key_t key, void*& value) const override;
     std::vector<KeyValue> scan_range(const KeyRangeEnt& range) const override;
     std::size_t size() const override { return size_; }
+    bool leaf_cover_into(const KeyRangeEnt&,std::vector<LeafSpan>&) const override;
     bool validate() const;
     std::size_t height() const;
     std::size_t order() const { return order_; }
@@ -119,6 +126,7 @@ private:
     bool validate_page(const Page* page, const Page* expected_parent, idx_key_t* min_key,
                        idx_key_t* max_key, std::size_t* leaf_count) const;
     static bool range_ended(const KeyRangeEnt& range, idx_key_t key);
+    mutable std::atomic<std::uint64_t> next_page_identity_{2};
     std::size_t order_{0};
     std::size_t size_{0};
     std::unique_ptr<Page> root_;
@@ -137,6 +145,7 @@ public:
     bool lookup(idx_key_t key, void*& value) const override;
     std::vector<KeyValue> scan_range(const KeyRangeEnt& range) const override;
     std::size_t size() const override;
+    bool leaf_cover_into(const KeyRangeEnt&,std::vector<LeafSpan>&) const override;
     bool validate() const;
     std::size_t height() const;
     std::size_t order() const { return order_; }
@@ -158,6 +167,7 @@ private:
                        idx_key_t* min_key, idx_key_t* max_key, std::size_t* leaf_count,
                        std::size_t* leaf_depth) const;
 
+    mutable std::atomic<std::uint64_t> next_page_identity_{2};
     std::size_t order_{0};
     // Writers increment under different leaf latches, so the count must be
     // atomic; readers only need a relaxed load.

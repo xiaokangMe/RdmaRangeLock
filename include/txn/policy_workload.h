@@ -9,6 +9,7 @@ struct PolicyRunConfig {
     PolicyProtocol protocol{PolicyProtocol::Hierarchy};
     std::uint64_t max_attempts{1000}, wait_timeout_ms{5000};
     std::size_t lock_budget{16384};
+    bool leaf_hierarchy{false};
     std::string coordinator_host;
     std::string histogram_path;
     std::uint16_t coordinator_port{0};

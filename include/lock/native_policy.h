@@ -29,6 +29,7 @@ public:
     PolicyReply end(txnid_t);
     std::uint64_t rdma_operations() const;
     RC last_lock_result() const;
+    bool has_physical_locks() const;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

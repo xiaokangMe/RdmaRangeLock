@@ -49,6 +49,8 @@ public:
     std::uint64_t latch_wait_ns() const;
     std::size_t record_capacity() const;
 private:
+    friend struct BTreeRdmaTestPeer;
+    void (*before_value_store_test_hook_)() = nullptr;
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

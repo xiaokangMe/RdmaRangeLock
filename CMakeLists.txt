@@ -264,3 +264,8 @@ if(RRL_PYTHON3)
 add_test(NAME rrl_native_lock_failure_test COMMAND ${RRL_PYTHON3} ${CMAKE_SOURCE_DIR}/test/native_lock_failure_test.py $<TARGET_FILE:rrl_native_lock_failure_test>)
 set_tests_properties(rrl_native_lock_failure_test PROPERTIES SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 180)
 endif()
+
+add_executable(rrl_rdma_parallel_update_test test/rdma_parallel_update_test.cpp)
+target_link_libraries(rrl_rdma_parallel_update_test PRIVATE rrl_txn)
+add_test(NAME rrl_rdma_parallel_update_test COMMAND rrl_rdma_parallel_update_test)
+set_tests_properties(rrl_rdma_parallel_update_test PROPERTIES SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 30 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})

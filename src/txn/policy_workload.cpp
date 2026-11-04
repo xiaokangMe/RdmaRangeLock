@@ -97,7 +97,7 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
         auto& pending=writes[worker];
         bool active_attempt=false,arrived=false;
         try {
-        index.prepare_thread(worker,scan_capacity);
+        index.prepare_thread(worker,scan_capacity);index.prepare_write_capacity(maxops);
         arrived=true;arrive(1);
         std::size_t cursor=worker;
         auto run_phase=[&] {

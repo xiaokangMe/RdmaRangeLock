@@ -37,7 +37,7 @@ struct IndexMutation {
 // portable remote page. Keys use the same unsigned ordering in both formats.
 struct OffsetBTreeHeader {
     std::uint64_t latch{0}, poison{0};
-    std::uint64_t magic{0}, format{1}, bytes{0}, order{0}, page_bytes{0};
+    std::uint64_t magic{0}, format{2}, bytes{0}, order{0}, page_bytes{0};
     std::uint64_t page_capacity{0}, record_capacity{0}, record_base{0};
     std::uint64_t root{0}, pages_used{0}, records_used{0}, live_records{0}, height{1};
     std::uint64_t seed_fingerprint{0};

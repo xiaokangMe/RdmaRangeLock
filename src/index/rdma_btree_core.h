@@ -14,6 +14,8 @@ struct TreeIO {
     virtual ~TreeIO() = default;
     virtual bool read(std::uint64_t, void*, std::size_t) = 0;
     virtual bool write(std::uint64_t, const void*, std::size_t) = 0;
+    virtual void record_enter(std::uint64_t, bool) {}
+    virtual void record_leave(std::uint64_t, bool) {}
 };
 struct TreeFault : std::runtime_error { explicit TreeFault(const char* s):std::runtime_error(s){} };
 struct TreeCapacity : std::runtime_error { TreeCapacity():std::runtime_error("shared tree capacity"){} };
@@ -33,7 +35,7 @@ inline OffsetBTreeHeader make_header(const RdmaTreeConfig& c) {
     h.root=sizeof(h);h.pages_used=1;return h;
 }
 inline bool valid_header(const OffsetBTreeHeader& h,std::uint64_t length) {
-    if(h.magic!=tree_magic || h.format!=1 || h.order<3 || h.order>4096 ||
+    if(h.magic!=tree_magic || h.format!=2 || h.order<3 || h.order>4096 ||
        h.page_bytes!=page_bytes(h.order) || !h.page_capacity || !h.record_capacity)return false;
     try {
         const auto expected=make_header(RdmaTreeConfig{static_cast<std::size_t>(h.order),
@@ -89,7 +91,11 @@ public:
     void read_record(std::uint64_t off,OffsetBTreeRecord& r) {
         if(off<h.record_base || (off-h.record_base)%sizeof(r) ||
            (off-h.record_base)/sizeof(r)>=h.records_used)throw TreeFault("invalid record offset");
-        get(off,&r,sizeof(r));if(r.valid>1)throw TreeFault("invalid record flag");
+        io.record_enter(off,false);
+        get(off,&r,sizeof(r));
+        io.record_leave(off,false);
+        r.latch=0; // Never publish a snapshot of the reader count.
+        if(r.valid>1)throw TreeFault("invalid record flag");
     }
     std::size_t descend(idx_key_t key) {
         auto off=h.root;

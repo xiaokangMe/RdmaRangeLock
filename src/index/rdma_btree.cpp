@@ -24,7 +24,8 @@ struct ImageIO final : TreeIO {
 };
 struct RemoteIO final : TreeIO {
     RdmaConnection connection;
-    std::uint64_t reads{0},writes{0};
+    std::uint64_t reads{0},writes{0},record_wait_ns{0};
+    std::uint64_t timeout_ms{10000};
     bool read(std::uint64_t off,void* p,std::size_t n) override {
         const auto& m=connection.remote_memory();
         if(off>m.length || n>m.length-off)return false;
@@ -37,6 +38,51 @@ struct RemoteIO final : TreeIO {
         if(!connection.write(m.address+off,m.rkey,p,n))return false;
         writes+=n;return true;
     }
+    bool cas_at(std::uint64_t off,std::uint64_t compare,std::uint64_t swap,std::uint64_t& previous) {
+        const auto& m=connection.remote_memory();
+        return off<=m.length && 8<=m.length-off && connection.compare_swap(m.address+off,m.rkey,compare,swap,previous);
+    }
+    void record_enter(std::uint64_t off,bool writer) override {
+        const auto address=off+offsetof(OffsetBTreeRecord,latch);
+        const auto start=Clock::now(),deadline=start+std::chrono::milliseconds(timeout_ms);
+        std::uint64_t current=0,prior=0;
+        bool announced=false;
+        for(;;) {
+            if(writer && announced) {
+                if(current==writer_bit)break;
+                if(!read(address,&current,8))throw TreeFault("record writer drain");
+            } else if(!(current&writer_bit)) {
+                if(current==writer_bit-1)throw TreeFault("record reader overflow");
+                const auto desired=writer ? current|writer_bit : current+1;
+                if(!cas_at(address,current,desired,prior))throw TreeFault("record latch CAS");
+                if(prior==current) {
+                    if(!writer)break;
+                    announced=true;current=desired;
+                }else current=prior;
+            } else if(!read(address,&current,8))throw TreeFault("record latch read");
+            if(Clock::now()>=deadline)throw TreeFault("record latch deadline");
+            cooperative_yield();
+        }
+        record_wait_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now()-start).count();
+    }
+    void record_leave(std::uint64_t off,bool writer) override {
+        const auto address=off+offsetof(OffsetBTreeRecord,latch);
+        std::uint64_t current=0,prior=0;
+        const auto deadline=Clock::now()+std::chrono::milliseconds(timeout_ms);
+        if(writer) {
+            if(!cas_at(address,writer_bit,0,prior) || prior!=writer_bit)throw TreeFault("record writer release");
+            return;
+        }
+        if(!read(address,&current,8))throw TreeFault("record reader release read");
+        for(;;) {
+            if(!(current&~writer_bit))throw TreeFault("record reader underflow");
+            if(!cas_at(address,current,current-1,prior))throw TreeFault("record reader release CAS");
+            if(current==prior)return;
+            current=prior;
+            if(Clock::now()>=deadline)throw TreeFault("record release deadline");
+            cooperative_yield();
+        }
+    }
     bool cas(std::uint64_t compare,std::uint64_t swap,std::uint64_t& previous) {
         const auto& m=connection.remote_memory();
         return connection.compare_swap(m.address,m.rkey,compare,swap,previous);
@@ -45,7 +91,7 @@ struct RemoteIO final : TreeIO {
 struct Session {
     RemoteIO io;
     std::unique_ptr<TreeCore> core;
-    std::vector<std::uint64_t> values;
+    std::vector<std::uint64_t> values,write_offsets,ordered_offsets;
     std::uint64_t point_value{0},wait_ns{0};
     bool attached{false};
 };
@@ -154,7 +200,7 @@ bool BTreeRdma::connect(const std::string& host,std::uint16_t port,std::size_t w
         if(first)impl_->initial=h;
         else if(h.order!=impl_->initial.order || h.bytes!=impl_->initial.bytes ||
                 s.io.connection.remote_memory().address!=impl_->admin.io.connection.remote_memory().address)return false;
-        s.core.reset(new TreeCore(s.io,h));return true;
+        s.io.timeout_ms=timeout_ms;s.core.reset(new TreeCore(s.io,h));return true;
     };
     if(!open(impl_->admin,true)){impl_->failed=true;return false;}
     for(std::size_t n=0;n<workers;++n) {
@@ -170,12 +216,16 @@ void BTreeRdma::prepare_thread(std::size_t worker,std::size_t capacity) {
     auto& s=*impl_->workers[worker];
     if(s.attached)throw TreeFault("worker already attached");
     s.values.resize(std::min<std::size_t>(capacity,impl_->initial.record_capacity));
+    s.write_offsets.reserve(64);s.ordered_offsets.reserve(64);
     s.attached=true;attached_tree()=impl_.get();execution_index_session()=&s;
 }
 void BTreeRdma::finish_thread() noexcept {
     if(attached_tree()==impl_.get()) {
         attached_session()->attached=false;execution_index_session()=nullptr;attached_tree()=nullptr;
     }
+}
+void BTreeRdma::prepare_write_capacity(std::size_t capacity) {
+    auto& s=impl_->session();s.write_offsets.reserve(capacity);s.ordered_offsets.reserve(capacity);
 }
 bool BTreeRdma::healthy() const{return !impl_->failed;}
 bool BTreeRdma::lookup(idx_key_t key,void*& value) const {
@@ -197,6 +247,35 @@ RC BTreeRdma::apply_batch(const std::vector<IndexMutation>& changes) {
     if(changes.empty())return RCOK;
     auto& s=impl_->session();
     try {
+        // Existing live records have stable offsets. They neither split a
+        // page nor mutate header counters, so independent writers can share
+        // the structural latch and protect only their own record values.
+        bool existing=changes.size()<=s.write_offsets.capacity();
+        if(existing) {
+            impl_->enter(s,false);
+            s.write_offsets.clear();s.ordered_offsets.clear();
+            for(const auto& c:changes) {
+                if(c.remove){existing=false;break;}
+                if(!c.value)throw TreeFault("null mutation value");
+                const auto d=s.core->descend(c.key);const auto& leaf=s.core->path[d];const auto slot=s.core->slots[d];
+                if(slot==leaf.head.count || leaf.keys[slot]!=c.key){existing=false;break;}
+                const auto off=leaf.links[slot];OffsetBTreeRecord record;s.core->read_record(off,record);
+                if(!record.valid){existing=false;break;}
+                s.write_offsets.push_back(off);s.ordered_offsets.push_back(off);
+            }
+            if(existing) {
+                std::sort(s.ordered_offsets.begin(),s.ordered_offsets.end());
+                s.ordered_offsets.erase(std::unique(s.ordered_offsets.begin(),s.ordered_offsets.end()),s.ordered_offsets.end());
+                for(const auto off:s.ordered_offsets)s.io.record_enter(off,true);
+                if(before_value_store_test_hook_)before_value_store_test_hook_();
+                for(std::size_t n=0;n<changes.size();++n)
+                    s.core->put(s.write_offsets[n]+offsetof(OffsetBTreeRecord,value),changes[n].value,8);
+                for(auto it=s.ordered_offsets.rbegin();it!=s.ordered_offsets.rend();++it)s.io.record_leave(*it,true);
+                impl_->leave(s,false);return RCOK;
+            }
+            impl_->leave(s,false);
+        }
+        // Release shared before acquiring exclusive; never upgrade in place.
         impl_->enter(s,true);
         if(!s.core->capacity(changes)){impl_->leave(s,true);return AbortCapacity;}
         for(const auto& c:changes)s.core->mutate(c);
@@ -254,10 +333,10 @@ bool BTreeRdma::validate() const {
     auto& s=impl_->admin;
     try {
         Validation v(*s.core); // Allocation before acquiring any latch.
-        impl_->enter(s,false);v.visit(s.core->h.root,0);
+        impl_->enter(s,true);v.visit(s.core->h.root,0);
         const bool valid=!v.next_leaf && v.live==s.core->h.live_records &&
             v.indexed==s.core->h.records_used && v.seen_pages==s.core->h.pages_used;
-        impl_->leave(s,false);if(!valid)impl_->poison(s);return valid;
+        impl_->leave(s,true);if(!valid)impl_->poison(s);return valid;
     } catch(...) {impl_->poison(s);return false;}
 }
 std::uint64_t BTreeRdma::rdma_operations() const {

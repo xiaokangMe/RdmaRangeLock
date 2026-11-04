@@ -1,0 +1,21 @@
+{
+  "name": "native-runtime-cross-endurance",
+  "workload": "ycsb-e",
+  "index": "rdma",
+  "cc": "rdma-next-key",
+  "key_count": 128,
+  "transaction_count": 200,
+  "operations_per_transaction": 4,
+  "range_length": 8,
+  "threads": 2,
+  "seed": 7,
+  "zipf": 0.99,
+  "order": 16,
+  "tree_pages": 8192,
+  "tree_records": 16384,
+  "tree_latch_timeout_ms": 10000,
+  "wait_policy": "wound-wait",
+  "coroutines": 2,
+  "warmup_seconds": 1,
+  "duration_seconds": 3600
+}

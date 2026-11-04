@@ -8,7 +8,7 @@ import subprocess
 import sys
 root=Path(__file__).resolve().parent.parent
 sys.path.insert(0,str(root/"scripts"))
-from run_shared_matrices import cases,validate_row
+from run_shared_matrices import cases,validate_row,config_fingerprint,validate_resume_rows,resume_keys,config_from_environment
 from report_shared_matrices import load_campaign
 config=json.loads((root/"experiments/configs/formal_shared_10s.json").read_text())
 assert len(list(cases(config,"local")))==756
@@ -45,3 +45,54 @@ assert validate_row(text(zero),0,False)["progress_status"]=="no-commits"
 r=subprocess.run([sys.argv[1],"--cc","rdma-next-key","--index","v2"],capture_output=True,text=True,timeout=10)
 assert r.returncode!=0 and "--rdma-lock-only" in r.stderr
 print("Matrix dimensions, backend identity, hard errors, count conservation and no-progress labeling: OK")
+
+# A resumable campaign must match every resolved parameter, including geometry
+# absent from a runner CSV (keys/ops/zipf) and the new runtime settings.
+runtime=dict(config,coordination_backend="native-rdma-state",coroutines=4,
+             coroutine_stack_bytes=65536,warmup_seconds=1)
+saved=dict(row,source_commit="baseline",result_kind="smoke-not-formal",
+           coordination="local",coroutines="4",warmup_seconds="1",execution_stack_bytes="65536",
+           campaign_config_sha256=config_fingerprint(runtime),range="0",bucket="0",seed="8")
+validate_resume_rows([saved],runtime,"baseline","smoke-not-formal","local")
+for key,value in (("source_commit","old"),("coordination","native-rdma-state"),
+                  ("coroutines","1"),("warmup_seconds","0"),("execution_stack_bytes","262144"),
+                  ("campaign_config_sha256","old")):
+    bad=dict(saved);bad[key]=value
+    try:validate_resume_rows([bad],runtime,"baseline","smoke-not-formal","local")
+    except ValueError:pass
+    else:raise AssertionError(("mixed resume accepted",key))
+changed=dict(runtime,operations=runtime["operations"]+1)
+try:validate_resume_rows([saved],changed,"baseline","smoke-not-formal","local")
+except ValueError:pass
+else:raise AssertionError("changed operation geometry accepted")
+baseline=dict(saved,cc="none",wait_policy="none")
+key=next(iter(resume_keys([baseline],runtime)))
+assert key[5]==runtime["wait_policies"][0], "unlocked baseline would be duplicated by resume"
+import os
+from unittest.mock import patch
+with patch.dict(os.environ,{"RRL_COROUTINES":"4","RRL_WARMUP_SECONDS":"7","RRL_COROUTINE_STACK_BYTES":"65536",
+                            "RRL_COORDINATION_BACKEND":"native-rdma-state"}):
+    e=config_from_environment()
+    assert e["coroutines"]==4 and e["warmup_seconds"]==7 and e["coroutine_stack_bytes"]==65536
+print("Exact resume configuration, baseline deduplication and shell runtime controls: OK")
+
+# The report must validate the same signature instead of silently grouping
+# rows whose dimensions look alike but whose workload parameters differ.
+import tempfile
+with tempfile.TemporaryDirectory() as directory:
+    d=Path(directory)
+    small=dict(runtime,duration_seconds=0,runs=1,seeds=[8],threads=[2],workloads=["ycsb-a"],
+               local_ccs=["next-key"],ranges=[8],buckets=[16],wait_policies=["wait-die"],
+               coroutines=1,coroutine_stack_bytes=262144,warmup_seconds=0)
+    report_row=dict(row,source_commit="baseline",result_kind="smoke-not-formal",
+                    transport="local-no-rdma",run="1",seed="8",range="0",bucket="0",
+                    campaign_config_sha256=config_fingerprint(small))
+    data=d/"rows.csv";data.write_text(text(report_row))
+    state=d/"campaign.json";state.write_text(json.dumps(dict(status="complete",kind="smoke-not-formal",
+        source_commit="baseline",config=small,result_files={"local":str(data)})))
+    load_campaign(state,True)
+    report_row["campaign_config_sha256"]="other-geometry";data.write_text(text(report_row))
+    try:load_campaign(state,True)
+    except ValueError:pass
+    else:raise AssertionError("report accepted a different workload configuration")
+print("Report configuration signature: OK")

@@ -1,6 +1,9 @@
 #include "lock/native_policy.h"
 #include "lock/remote_lock_manager.h"
 #include "txn/shared_dataset.h"
+#include "../src/lock/native_txn_layout.h"
+#include <chrono>
+#include <thread>
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
@@ -15,6 +18,27 @@ int main(int argc,char** argv) {
     const auto* cp=std::getenv("RRL_TEST_CONFIG");
     if(!lp || !dp || !sp)return 77;
     const std::string host=hp?hp:"127.0.0.1";
+    if(argc>1 && std::string(argv[1])=="--check-state-poison") {
+        LockManager unused;
+        NativePolicyClient c(host,std::stoi(sp),unused);
+        require(c.begin(WaitPolicy::WoundWait,0,1000000000ULL).result==TxnResult::Error,
+                "uncertain data did not poison native transactions");
+        std::cout<<"Native state rejects new transactions after data failure\n";return 0;
+    }
+    if(argc>1 && std::string(argv[1])=="--poison-active") {
+        RdmaConnection probe;require(probe.connect_client(host,std::stoi(dp)),"poison probe");
+        const auto memory=probe.remote_memory();
+        std::uint64_t latch=0;
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(10);
+        do {
+            require(probe.read(memory.address,memory.rkey,&latch,8),"probe active structure latch");
+            require(std::chrono::steady_clock::now()<deadline,"no active workload observed");
+            if(!latch)std::this_thread::yield();
+        }while(!latch);
+        const std::uint64_t poison=1;
+        require(probe.write(memory.address+offsetof(OffsetBTreeHeader,poison),memory.rkey,&poison,8),"inject data poison");
+        std::cout<<"Injected data failure during an active transaction\n";return 0;
+    }
     WorkloadConfig workload;RdmaTreeConfig tree;std::uint16_t ignored=0;
     load_shared_dataset_config(cp?cp:"experiments/configs/rdma_shared_smoke.json",workload,tree,ignored);
     const auto seed=make_shared_seed(WorkloadTrace::generate(workload));

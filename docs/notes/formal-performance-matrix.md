@@ -7,7 +7,9 @@
 在 .66 项目目录执行，源码提交后再正式运行：
 
 ```bash
-# 两套依次运行；默认 756 个本地 case，432 个跨主机 case
+# 新原生运行时配置：4 协程、10 秒预热、10 秒测量、3 重复
+python3 scripts/run_verified_matrices.py --config experiments/configs/formal_native_policies_10s.json
+# 原维度配置仍可运行：默认 756 个本地 case，432 个跨主机 case
 python3 scripts/run_verified_matrices.py --config experiments/configs/formal_shared_10s.json
 # 单独选择一套
 python3 scripts/run_shared_matrices.py --mode local
@@ -40,7 +42,7 @@ scripts/capacity_preflight.sh
 | 索引/记录 | .66 单个进程的 BTreeLatch | .66 数据服务注册内存内的 BTreeRdma |
 | workload | .66 | .67，经 10.0.0.3 访问 .66 |
 | 事务锁 | 同进程 LockManager | .66 专用 RemoteLockManager 锁表 |
-| 策略协调 | 同进程 coordinator | .66 TCP coordinator |
+| 策略协调 | 同进程 coordinator | .66 被动 RDMA 事务状态表（native-rdma-state）；显式兼容配置可选 TCP |
 | CSV 标记 | local-no-rdma / data_backend=local | rdma-cross-host-shared / data_backend=shared-rdma |
 
 各组内部所有协议固定同一个索引实现、布局、order、初始化集合、负载和计时。跨主机数据 QP 为每 worker 独占；锁 QP 默认 min(threads,2)。不同协议配置只改变锁计划。结构写批次使用全局排他 latch，是公开的基线瓶颈。
@@ -76,3 +78,16 @@ python3 scripts/report_shared_matrices.py --campaign experiments/results/formal-
 ```
 
 报告逐项核对源码提交、结果类别、backend、case 维度、种子、计数守恒和错误字段，再输出 summary.csv、PNG 和 report.md。历史锁服务 campaign 会被拒绝；smoke 必须显式传 --allow-smoke，图上标记 NOT FORMAL PERFORMANCE。新旧报告工具各自保留，不修改历史图表。
+
+## 原生运行时配置（2026-11-04 增补）
+
+新入口默认 coordination_backend=native-rdma-state；coroutines 默认 1，warmup_seconds 默认 10。要复现新 4 协程设置使用 formal_native_policies_10s.json，结果记录完整解析后的配置，不能只根据旧配置文件缺省字段推断历史结果。
+
+等价环境变量为 RRL_COORDINATION_BACKEND、RRL_COROUTINES、RRL_COROUTINE_STACK_BYTES、RRL_WARMUP_SECONDS，供 run_formal_matrix.sh 使用。每 case 的预热与正式事务以相同 worker/协程/协议运行，屏障排空后独立采集延迟和流量；预热错误仍令整轮失效。native 模式不启动 TCP coordinator，只在 QP/MR 建链交换时使用 TCP。
+
+状态服务默认 4096 个会话槽；同一会话的 attempt 按 generation 复用槽。物理锁槽容量保持原配置，max(worker) × coroutines 不得超过运行时/状态槽上限；正式执行之前必须通过相同最大并发、range、ops 和 seed 的容量门禁。lock_budget 对本地/TCP 元数据协调有效；原生授权容量由物理槽和会话槽单独约束，不把该数误作物理锁槽数。
+
+原生检查会固定二进制并记录 SHA-256；新配置不能恢复或汇总旧源码/后端/预热/协程设置的 CSV。纯验证请使用 native_runtime_smoke.json 或 --preflight-only --smoke --keep-geometry，不把缩短时间的数据当成正式结果。源码映射与验收边界见 native-runtime-acceptance-2026-11-04.md。
+
+
+恢复 CSV 还必须携带 campaign_config_sha256（全部解析配置的指纹）。即使源码相同，也拒绝 key_count、ops、zipf、duration 等配置变化；缺失指纹的历史结果不能拼接进新运行时。none 基线在恢复时归入首个 policy 槽，避免因报告为 none 而重复执行。

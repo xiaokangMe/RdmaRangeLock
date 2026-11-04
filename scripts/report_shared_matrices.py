@@ -6,7 +6,7 @@ import csv
 import json
 from pathlib import Path
 import statistics
-from run_shared_matrices import cases, ERRORS, validate_row
+from run_shared_matrices import cases, ERRORS, validate_row, config_fingerprint
 
 
 def load_campaign(path, allow_smoke=False):
@@ -32,10 +32,15 @@ def load_campaign(path, allow_smoke=False):
             buf=io.StringIO();writer=csv.DictWriter(buf,fieldnames=list(row));writer.writeheader();writer.writerow(row)
             validate_row(buf.getvalue(),state["config"]["duration_seconds"],mode=="cross-host",
                          state["config"].get("coordination_backend","tcp-control+rdma-slots") if mode=="cross-host" else None)
-            if int(row.get("coroutines",1))!=state["config"].get("coroutines",1) or int(row.get("warmup_seconds",0))!=state["config"].get("warmup_seconds",0):
+            if int(row.get("coroutines",1))!=state["config"].get("coroutines",1) or int(row.get("warmup_seconds",0))!=state["config"].get("warmup_seconds",0) or int(row.get("execution_stack_bytes",262144))!=state["config"].get("coroutine_stack_bytes",262144):
                 raise ValueError("mixed runtime geometry/warmup")
             if state["config"].get("warmup_seconds",0) and int(row.get("warmup_elapsed_ns",0))<state["config"]["warmup_seconds"]*1000000000:
                 raise ValueError("warmup window too short")
+            fingerprint=row.get("campaign_config_sha256")
+            if fingerprint and fingerprint!=config_fingerprint(state["config"]):
+                raise ValueError("CSV configuration fingerprint differs from campaign")
+            if formal and state["config"].get("coordination_backend")=="native-rdma-state" and not fingerprint:
+                raise ValueError("native formal result lacks configuration fingerprint")
             if row["result_kind"]!=state["kind"] or row["source_commit"]!=state["source_commit"]:
                 raise ValueError("mixed result kind or code baseline")
             if any(int(row[k]) for k in ERRORS):raise ValueError("hard errors in CSV")

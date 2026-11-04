@@ -75,11 +75,38 @@ def validate_row(output, seconds, shared, expected_coordination=None):
     return row
 
 
+
+def config_fingerprint(config):
+    """All resolved parameters matter when appending to an existing campaign."""
+    return hashlib.sha256(json.dumps(config,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+
+
+def validate_resume_rows(rows, config, commit, kind, mode):
+    expected_backend=config["coordination_backend"] if mode=="cross-host" else "local"
+    expected_fingerprint=config_fingerprint(config)
+    for row in rows:
+        if row.get("source_commit")!=commit or row.get("result_kind")!=kind:
+            raise ValueError("resume source/kind differs from this campaign")
+        if row.get("coordination")!=expected_backend or int(row.get("coroutines",1))!=config["coroutines"] or int(row.get("warmup_seconds",0))!=config["warmup_seconds"] or int(row.get("execution_stack_bytes",262144))!=config["coroutine_stack_bytes"]:
+            raise ValueError("resume runtime/backend differs from this campaign")
+        if row.get("campaign_config_sha256")!=expected_fingerprint:
+            raise ValueError("resume resolved configuration differs or fingerprint is missing")
+
+
+def resume_keys(rows, config):
+    # The unlocked baseline is scheduled once, under the first policy's slot,
+    # and reported as policy=none. Normalize this before identifying old cases.
+    return {(r["workload"],str(r["range"]),r["cc"],str(r["bucket"]),
+             str(r["threads"]),r["wait_policy"] if r["cc"]!="none" else config["wait_policies"][0],
+             str(r["seed"])) for r in rows}
+
 def config_from_environment():
     def ls(name, default, cast=str): return [cast(v) for v in os.environ.get("RRL_" + name, default).split(",")]
     def number(name, default): return int(os.environ.get("RRL_" + name, default))
     runs = number("RUNS", "3")
-    return dict(duration_seconds=number("DURATION", "10"), runs=runs, seeds=list(range(8, 8+runs)),
+    return dict(coordination_backend=os.environ.get("RRL_COORDINATION_BACKEND","native-rdma-state"),
+                coroutines=number("COROUTINES","1"),coroutine_stack_bytes=number("COROUTINE_STACK_BYTES","262144"),
+                warmup_seconds=number("WARMUP_SECONDS","10"),duration_seconds=number("DURATION", "10"), runs=runs, seeds=list(range(8, 8+runs)),
                 keys=number("KEYS", "10000"), transactions=number("TRANSACTIONS", "5000"),
                 operations=number("OPERATIONS", "10"), zipf=float(os.environ.get("RRL_ZIPF", "0.99")),
                 tpcc_items=number("TPCC_ITEMS", "5"), threads=ls("THREADS", "1,2,4,8,16,32", int),
@@ -247,6 +274,8 @@ def main():
         row = validate_row(output, duration, mode == "cross-host", config["coordination_backend"] if mode=="cross-host" else None)
         if cc=="none":row["wait_policy"]="none"
         return dict(source_commit=commit, result_kind=kind, transport="rdma-cross-host-shared" if mode=="cross-host" else "local-no-rdma",
+                    execution_stack_bytes=config["coroutine_stack_bytes"],
+                    campaign_config_sha256=config_fingerprint(config),
                     run=run+1, seed=cfg["seed"], range=length, bucket=bucket, zipf=config["zipf"], **row)
     try:
         if not args.smoke:
@@ -287,20 +316,17 @@ def main():
             if args.resume:
                 source=Path(args.resume)
                 if not source.is_file(): raise SystemExit("resume file missing: "+str(source))
-                previous=list(csv.DictReader(source.open(newline="")))
+                with source.open(newline="") as handle:
+                    reader=csv.DictReader(handle);previous=list(reader)
+                if not reader.fieldnames or len(reader.fieldnames)!=len(set(reader.fieldnames)) or any(None in row or None in row.values() for row in previous):
+                    raise ValueError("malformed resume CSV schema")
                 wanted={"local":"local-no-rdma","cross-host":"rdma-cross-host-shared"}[mode]
                 wrong=[r for r in previous if r.get("transport")!=wanted]
                 if wrong: raise SystemExit("resume file holds %d %s rows, not %s"
                                            % (len(wrong),wrong[0].get("transport"),mode))
-                for row in previous:
-                    if row.get("source_commit")!=commit or row.get("result_kind")!=kind:
-                        raise SystemExit("resume source/kind differs from this campaign")
-                    expected_backend=config["coordination_backend"] if mode=="cross-host" else "local"
-                    if row.get("coordination")!=expected_backend or int(row.get("coroutines",1))!=config["coroutines"] or int(row.get("warmup_seconds",0))!=config["warmup_seconds"]:
-                        raise SystemExit("resume runtime/backend differs from this campaign")
+                validate_resume_rows(previous,config,commit,kind,mode)
                 rows=list(previous)
-                done={(r["workload"],str(r["range"]),r["cc"],str(r["bucket"]),
-                       str(r["threads"]),r["wait_policy"],str(r["seed"])) for r in previous}
+                done=resume_keys(previous,config)
                 print("resume: keeping %d rows from %s" % (len(rows),source),flush=True)
             state["result_files"][mode]=str(outpath)
             allpoints=list(cases(config,mode));state[mode+"_expected"]=len(allpoints)

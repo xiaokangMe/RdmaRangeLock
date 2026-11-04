@@ -21,6 +21,7 @@ def main():
     parser.add_argument("--seconds",type=int,default=1)
     parser.add_argument("--endurance",type=int,default=0)
     parser.add_argument("--only",default="")
+    parser.add_argument("--fault-only",action="store_true")
     args=parser.parse_args()
     if not 1<=args.seconds<=600 or not 0<=args.endurance<=86400:raise SystemExit("duration bounds")
     root=Path(__file__).resolve().parent.parent
@@ -68,6 +69,42 @@ def main():
         return p.stdout
     base=json.loads((root/"experiments/configs/rdma_shared_smoke.json").read_text())
     cases=[]
+    if not args.endurance and not args.only:
+        for warmup in (0,30):
+            label="native-data-fault-"+("measurement" if warmup==0 else "warmup")
+            cfg=dict(base,workload="ycsb-e",cc="rdma-next-key",threads=2,coroutines=2,
+                     warmup_seconds=warmup,duration_seconds=30,wait_policy="wound-wait")
+            path=logs/(label+".json");path.write_text(json.dumps(cfg))
+            with SharedServices(build,path,logs/label,env,native=True) as service:
+                host="10.0.0.3" if args.cross_host else "127.0.0.1"
+                flags=["--index","rdma","--cc","rdma-next-key","--workload","ycsb-e",
+                       "--keys",str(cfg["key_count"]),"--txns",str(cfg["transaction_count"]),
+                       "--ops",str(cfg["operations_per_transaction"]),"--range",str(cfg["range_length"]),
+                       "--seed",str(cfg["seed"]),"--order",str(cfg["order"]),"--threads","2",
+                       "--coroutines","2","--warmup",str(warmup),"--duration","30",
+                       "--wait-policy","wound-wait","--rdma-host",host,
+                       "--data-port",str(service.data_port),"--rdma-port",str(service.lock_port),
+                       "--txn-state-port",str(service.txn_state_port),"--format","csv"]
+                cmd=actual("rrl_workload_runner",flags,env,args.cross_host)
+                (logs/(label+".command.json")).write_text(json.dumps(cmd))
+                peer=subprocess.Popen(cmd,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+                try:
+                    e=service.test_env()
+                    run(actual("rrl_native_shared_data_test",["--poison-active"],e,False),label+"-inject",e)
+                    out,err=peer.communicate(timeout=90)
+                    (logs/(label+".stdout")).write_text(out);(logs/(label+".stderr")).write_text(err)
+                    if peer.returncode!=3:raise RuntimeError(("fault did not invalidate native measurement",peer.returncode,out,err))
+                    row=list(csv.DictReader(io.StringIO(out)))[0]
+                    if not any(int(row[k]) for k in ("index_errors","lock_errors","lock_release_failures")):
+                        raise RuntimeError("data fault became ordinary conflict")
+                    run(actual("rrl_native_shared_data_test",["--check-state-poison"],e,False),label+"-state",e)
+                    service.check()
+                    print("PASS",label,flush=True)
+                finally:
+                    if peer.poll() is None:peer.terminate();peer.wait(timeout=30)
+        if args.fault_only:
+            (logs/"validated.json").write_text(json.dumps(dict(status="PASS",formal=False,fault_cases=2)))
+            print("PASS; native warmup/measurement data faults; logs:",logs,flush=True);return
     for policy in ("no-wait","wait-die","wound-wait"):
         if not args.endurance and not args.only:
             cfg=logs/(policy+"-contract.json");cfg.write_text(json.dumps(base))

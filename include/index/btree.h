@@ -47,11 +47,11 @@ struct OffsetBTreePage {
     // Followed by order keys and order+1 child/record offsets.
 };
 struct OffsetBTreeRecord {
-    std::uint64_t key{0}, value{0}, valid{0};
+    std::uint64_t key{0}, value{0}, valid{0}, latch{0};
 };
 static_assert(sizeof(OffsetBTreeHeader) == 128, "stable RDMA header");
 static_assert(sizeof(OffsetBTreePage) == 32, "stable RDMA page prefix");
-static_assert(sizeof(OffsetBTreeRecord) == 24, "stable RDMA record");
+static_assert(sizeof(OffsetBTreeRecord) == 32, "stable RDMA record");
 
 // Common page layout for v1 and v2. v1 leaves latch unused; v2 uses it for
 // parent-to-child latch coupling.
@@ -79,6 +79,7 @@ public:
     virtual bool preloaded() const { return false; }
     virtual void prepare_thread(std::size_t, std::size_t) {}
     virtual void finish_thread() noexcept {}
+    virtual void prepare_write_capacity(std::size_t) {}
     virtual bool healthy() const { return true; }
     virtual void scan_range_into(const KeyRangeEnt& range, std::vector<KeyValue>& out) const {
         out = scan_range(range);

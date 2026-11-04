@@ -39,6 +39,7 @@ public:
     bool preloaded() const override { return true; }
     void prepare_thread(std::size_t, std::size_t scan_capacity) override;
     void finish_thread() noexcept override;
+    void prepare_write_capacity(std::size_t) override;
     bool healthy() const override;
     RC apply_batch(const std::vector<IndexMutation>&) override;
     bool validate() const;

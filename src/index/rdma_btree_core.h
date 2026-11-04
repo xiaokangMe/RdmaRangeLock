@@ -142,6 +142,24 @@ public:
             lower=fence.EndKey;off=next;
         }
     }
+    void hierarchy_cover(const KeyRangeEnt& query,std::vector<IndexNodeSpan>& out) {
+        out.clear();if(query.empty())return;
+        auto visit=[&](auto&& self,std::uint64_t off,std::size_t depth,const KeyRangeEnt& fence)->void {
+            if(depth>=64)throw TreeFault("hierarchy depth");
+            auto& n=path[depth];read_node(off,n);
+            if(out.size()==out.capacity())throw TreeFault("hierarchy workspace capacity");
+            const bool present=n.head.leaf && query.has_start && std::binary_search(n.keys.begin(),n.keys.begin()+n.head.count,query.StartKey);
+            out.push_back({(off-sizeof(h))/h.page_bytes+2,fence,depth,n.head.count,n.head.leaf?0:n.head.count+1,h.order-1,n.head.leaf!=0,present});
+            if(n.head.leaf)return;
+            for(std::size_t i=0;i<=n.head.count;++i) {
+                auto range=fence;
+                if(i){range.has_start=true;range.StartKey=n.keys[i-1];range.start_bound=Bound::Closed;}
+                if(i<n.head.count){range.has_end=true;range.EndKey=n.keys[i];range.end_bound=Bound::Open;}
+                if(range.overlaps(query))self(self,n.links[i],depth+1,range);
+            }
+        };
+        visit(visit,h.root,0,KeyRangeEnt::from_left(0));
+    }
     bool lookup(idx_key_t key,std::uint64_t& value) {
         auto d=descend(key);auto& n=path[d];auto slot=slots[d];
         if(slot==n.head.count || n.keys[slot]!=key)return false;

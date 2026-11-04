@@ -28,9 +28,10 @@ def free_ports(count):
 
 
 class SharedServices:
-    def __init__(self, build, config, logdir, env, native=None):
+    def __init__(self, build, config, logdir, env, native=None, data_binary="rrl_rdma_data_server"):
         self.build, self.config, self.logdir = Path(build), Path(config), Path(logdir)
         self.env, self.native = env, native
+        self.data_binary=data_binary
         cfg=json.loads(self.config.read_text())
         self.leaf_objects=cfg.get("hierarchy_layout")=="leaf"
         if self.leaf_objects and native is not True:raise ValueError("leaf object services require native mode")
@@ -43,7 +44,7 @@ class SharedServices:
 
     def __enter__(self):
         self.logdir.mkdir(parents=True, exist_ok=True)
-        specs = [("rrl_rdma_data_server", ["--config", str(self.config), "--port", str(self.data_port)]),
+        specs = [(self.data_binary, ["--config", str(self.config), "--port", str(self.data_port)]),
                  ("rrl_rdma_lock_server", ([str(self.lock_port),"--objects",str(self.config)] if self.leaf_objects else [str(self.lock_port)] + (["--native-fail-stop"] if self.native is True else []))),
                  ]
         if self.native is not True:

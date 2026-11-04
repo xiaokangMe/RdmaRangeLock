@@ -6,7 +6,7 @@ import csv
 import json
 from pathlib import Path
 import statistics
-from run_shared_matrices import cases, ERRORS, validate_row, config_fingerprint, hierarchy_layout
+from run_shared_matrices import cases, ERRORS, validate_row, config_fingerprint, hierarchy_layout, hierarchy_behavior
 
 
 def load_campaign(path, allow_smoke=False):
@@ -32,7 +32,7 @@ def load_campaign(path, allow_smoke=False):
             buf=io.StringIO();writer=csv.DictWriter(buf,fieldnames=list(row));writer.writeheader();writer.writerow(row)
             validate_row(buf.getvalue(),state["config"]["duration_seconds"],mode=="cross-host",
                          state["config"].get("coordination_backend","tcp-control+rdma-slots") if mode=="cross-host" else None,
-                         hierarchy_layout(state["config"],row["cc"]))
+                         hierarchy_layout(state["config"],row["cc"]),hierarchy_behavior(state["config"],row["cc"]))
             if int(row.get("coroutines",1))!=state["config"].get("coroutines",1) or int(row.get("warmup_seconds",0))!=state["config"].get("warmup_seconds",0) or int(row.get("execution_stack_bytes",262144))!=state["config"].get("coroutine_stack_bytes",262144):
                 raise ValueError("mixed runtime geometry/warmup")
             if state["config"].get("warmup_seconds",0) and int(row.get("warmup_elapsed_ns",0))<state["config"]["warmup_seconds"]*1000000000:
@@ -71,7 +71,7 @@ def main():
     summary=[]
     for key,rows in sorted(groups.items()):
         mode,w,length,cc,b,t,policy=key
-        entry=dict(hierarchy_layout=hierarchy_layout(state["config"],cc),mode=mode,workload=w,range=length,cc=cc,bucket=b,threads=t,wait_policy=policy,repetitions=len(rows))
+        entry=dict(hierarchy_behavior=hierarchy_behavior(state["config"],cc),hierarchy_layout=hierarchy_layout(state["config"],cc),mode=mode,workload=w,range=length,cc=cc,bucket=b,threads=t,wait_policy=policy,repetitions=len(rows))
         metrics={"throughput":[float(r["throughput_committed_txn_s"]) for r in rows],
                  "abort_pct":[100*int(r["aborted"])/max(1,int(r["transactions"])) for r in rows],
                  "unfinished_pct":[100*int(r.get("logical_unfinished") or 0)/max(1,int(r.get("logical_started") or 0)) for r in rows],
@@ -101,7 +101,7 @@ def main():
             for (cc,b,policy),points in sorted(series.items()):
                 points=sorted((p for p in points if p[metric+"_mean"] is not None),key=lambda p:p["threads"])
                 if not points:continue
-                label=cc+" ["+hierarchy_layout(state["config"],cc)+"]"+(" b="+str(b) if b else "")+" / "+policy
+                label=cc+" / "+hierarchy_behavior(state["config"],cc)+" ["+hierarchy_layout(state["config"],cc)+"]"+(" b="+str(b) if b else "")+" / "+policy
                 x=[p["threads"] for p in points];y=[p[metric+"_mean"] for p in points]
                 error=[[p[metric+"_mean"]-p[metric+"_min"] for p in points],[p[metric+"_max"]-p[metric+"_mean"] for p in points]]
                 ax.errorbar(x,y,yerr=error,marker="o",capsize=3,label=label)

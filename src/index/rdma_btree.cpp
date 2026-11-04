@@ -232,6 +232,11 @@ bool BTreeRdma::leaf_cover_into(const KeyRangeEnt& range,std::vector<LeafSpan>& 
     try {impl_->enter(s,false);s.core->leaf_cover(range,out);impl_->leave(s,false);return true;}
     catch(...){impl_->poison(s);throw;}
 }
+bool BTreeRdma::hierarchy_cover_into(const KeyRangeEnt& range,std::vector<IndexNodeSpan>& out) const {
+    auto& s=impl_->session();
+    try {impl_->enter(s,false);s.core->hierarchy_cover(range,out);impl_->leave(s,false);return true;}
+    catch(...){impl_->poison(s);throw;}
+}
 bool BTreeRdma::healthy() const{return !impl_->failed;}
 bool BTreeRdma::lookup(idx_key_t key,void*& value) const {
     auto& s=impl_->session();

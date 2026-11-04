@@ -59,6 +59,11 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
         } else if(cfg.coordinator_host.empty())clients.emplace_back(new PolicyClient(local,w+1));
         else clients.emplace_back(new PolicyClient(cfg.coordinator_host,cfg.coordinator_port,cfg.wait_timeout_ms+5000));
     }
+    if(cfg.deneva_insert_behavior && (!cfg.leaf_hierarchy || cfg.protocol!=PolicyProtocol::Hierarchy || !cfg.txn_state_port))
+        throw std::invalid_argument("Deneva insert behavior requires native RDMA leaf hierarchy");
+    std::vector<TransactionTrace> operation_txns(count);
+    std::vector<std::vector<IndexMutation>> immediate_writes(count);
+    for(std::size_t w=0;w<count;++w){operation_txns[w].operations.resize(1);immediate_writes[w].reserve(1);}
     std::vector<std::vector<IndexMutation>> writes(count);
     std::vector<std::vector<KeyValue>> scans(count),rechecks(count);
     const auto scan_capacity=trace.config().range_length;
@@ -66,12 +71,13 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
     for(auto& v:rechecks)v.reserve(scan_capacity);
     std::size_t maxops=0;for(const auto& t:trace.transactions())maxops=std::max(maxops,t.operations.size());
     for(auto& v:writes)v.reserve(maxops);
-    std::vector<std::vector<LeafSpan>> leaf_scratch(count);
-    std::vector<std::vector<detail::HierarchyRequest>> leaf_plans(count);
+    std::vector<std::vector<IndexNodeSpan>> leaf_scratch(count);
+    std::vector<std::vector<detail::HierarchyRequest>> leaf_plans(count),leaf_checks(count);
     if(cfg.leaf_hierarchy)for(std::size_t w=0;w<count;++w) {
-        if(maxops && scan_capacity>std::numeric_limits<std::size_t>::max()/maxops-2)throw std::invalid_argument("leaf workspace overflow");
-        const auto capacity=maxops*(scan_capacity+2)+2;
-        leaf_scratch[w].reserve(scan_capacity+2);leaf_plans[w].reserve(capacity);
+        if(scan_capacity>SIZE_MAX/64-2 || (maxops && 64*(scan_capacity+2)>SIZE_MAX/maxops))throw std::invalid_argument("hierarchy workspace overflow");
+        const auto capacity=std::min<std::size_t>(cfg.lock_budget+1,maxops*64*(scan_capacity+2)+1);
+        leaf_scratch[w].reserve(64*(scan_capacity+2));
+        leaf_plans[w].reserve(capacity);leaf_checks[w].reserve(capacity);
     }
     std::atomic<bool> stopped{false};
     Clock::time_point start,deadline;
@@ -116,7 +122,6 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
             const auto& txn=trace.transactions()[i%total];
             std::uint64_t age=0,retries=0;
             bool completed=false,hard=false,attempted=false;
-            bool structural=detail::topology_write(txn);
             for(std::uint64_t attempt=0;attempt<cfg.max_attempts && !stopped;++attempt) {
                 const auto attempt_start=Clock::now();
                 if(attempt_start>=deadline)break;
@@ -129,6 +134,7 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                 const auto id=begun.id;age=begun.age;active_attempt=true;
                 TxnResult outcome=TxnResult::Ok;
                 bool touched=false;
+                std::uint64_t early_in_attempt=0;
                 pending.clear();
                 const auto own_write=[&](idx_key_t key)->const IndexMutation* {
                     for(auto it=pending.rbegin();it!=pending.rend();++it)if(it->key==key)return &*it;
@@ -169,24 +175,16 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                     return true;
                 };
                 if(cfg.protocol==PolicyProtocol::Hierarchy) {
-                    if(cfg.leaf_hierarchy) {
-                        const bool writing=std::any_of(txn.operations.begin(),txn.operations.end(),[](const Operation& op){return op.kind!=OperationKind::Read && op.kind!=OperationKind::RangeRead;});
-                        if(acquire(writing?LockMode::IX:LockMode::IS,KeyRangeEnt::point(0),LockKind::Node) &&
-                           acquire(structural?LockMode::X:LockMode::S,KeyRangeEnt::point(1),LockKind::Node)) {
-                            // apply_batch permits an absent Update to insert. A
-                            // shared topology lease cannot authorize that path.
-                            // Detect while topology is stable, then release and
-                            // restart with X; never upgrade while holding S.
-                            if(!structural)for(const auto& op:txn.operations)if(op.kind==OperationKind::Update) {
-                                void* value=nullptr;
-                                if(!index.lookup(op.key,value)){structural=true;outcome=TxnResult::Conflict;break;}
-                            }
+                    if(cfg.leaf_hierarchy && !cfg.deneva_insert_behavior) {
+                        if(!detail::leaf_plan(index,txn,leaf_scratch[worker],leaf_plans[worker]))outcome=TxnResult::Error;
+                        else {
+                            for(const auto& r:leaf_plans[worker])if(!acquire(r.mode,r.range,r.kind))break;
                             if(outcome==TxnResult::Ok) {
-                                if(!detail::leaf_plan(index,txn,leaf_scratch[worker],leaf_plans[worker]))outcome=TxnResult::Error;
-                                else for(const auto& r:leaf_plans[worker])if(!acquire(r.mode,r.range,r.kind))break;
+                                if(!detail::leaf_plan(index,txn,leaf_scratch[worker],leaf_checks[worker]))outcome=TxnResult::Error;
+                                else if(!detail::covers_hierarchy_plan(leaf_plans[worker],leaf_checks[worker]))outcome=TxnResult::Conflict;
                             }
                         }
-                    }else for(const auto& r:plans[i%total])if(!acquire(r.mode,r.range,r.kind))break;
+                    }else if(!cfg.leaf_hierarchy)for(const auto& r:plans[i%total])if(!acquire(r.mode,r.range,r.kind))break;
                 }
                 for(const auto& op:txn.operations) {
                     if(outcome!=TxnResult::Ok)break;
@@ -194,6 +192,14 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                     if(cfg.wait_policy==WaitPolicy::WoundWait) {
                         outcome=check(id).result;
                         if(outcome!=TxnResult::Ok)break;
+                    }
+                    if(cfg.deneva_insert_behavior) {
+                        auto& one=operation_txns[worker];one.operations[0]=op;
+                        if(!detail::leaf_plan(index,one,leaf_scratch[worker],leaf_plans[worker],true)) {outcome=TxnResult::Error;break;}
+                        for(const auto& r:leaf_plans[worker])if(!acquire(r.mode,r.range,r.kind))break;
+                        if(outcome!=TxnResult::Ok)break;
+                        if(!detail::leaf_plan(index,one,leaf_scratch[worker],leaf_checks[worker],true)){outcome=TxnResult::Error;break;}
+                        if(!detail::covers_hierarchy_plan(leaf_plans[worker],leaf_checks[worker])){outcome=TxnResult::Conflict;break;}
                     }
                     ++s.operations;
                     if(op.kind==OperationKind::RangeRead) {
@@ -247,7 +253,33 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                             if(op.kind==OperationKind::Update)++s.updates;
                             else if(op.kind==OperationKind::Insert)++s.inserts;
                             else ++s.deletes;
-                            pending.push_back({op.key,&op.value,op.kind==OperationKind::Delete});
+                            if(cfg.deneva_insert_behavior && op.kind==OperationKind::Insert) {
+                                auto& nodes=leaf_scratch[worker];
+                                if(!index.hierarchy_cover_into(KeyRangeEnt::point(op.key),nodes) || nodes.empty()){outcome=TxnResult::Error;break;}
+                                const auto leaf=nodes.back();
+                                if(leaf.keys>=leaf.max_keys-1) {
+                                    // Source txn.cpp:5064..5090: parent CAS,
+                                    // release, Abort in BOTH parent-full and
+                                    // parent-not-full branches; split unreachable.
+                                    const auto parent=nodes.size()>1?nodes[nodes.size()-2].id:0;
+                                    ++s.lock_acquires;const auto parent_start=Clock::now();
+                                    const auto rc=physical.lock(id,LockMode::X,KeyRangeEnt::point(parent),LockKind::Node);
+                                    p.call.add(ns(Clock::now()-parent_start));
+                                    if(rc==ERROR){outcome=TxnResult::Error;break;}
+                                    if(rc==RCOK && physical.unlock(id,KeyRangeEnt::point(parent),LockKind::Node)!=RCOK){outcome=TxnResult::Error;break;}
+                                    ++m.deneva_split_aborts;outcome=TxnResult::Conflict;break;
+                                }
+                                auto& immediate=immediate_writes[worker];immediate.clear();immediate.push_back({op.key,&op.value,false});
+                                const auto rc=index.apply_batch(immediate);
+                                if(rc==AbortCapacity){++s.lock_capacity_aborts;outcome=TxnResult::Conflict;break;}
+                                if(rc!=RCOK || !index.healthy())throw std::runtime_error("uncertain Deneva early insert; retain locks");
+                                ++early_in_attempt;++m.deneva_early_inserts;
+                                // Preserve operation order against earlier
+                                // private writes to this same key.
+                                pending.erase(std::remove_if(pending.begin(),pending.end(),[&](const IndexMutation& value){return value.key==op.key;}),pending.end());
+                                if(physical.unlock(id,KeyRangeEnt::point(leaf.id),LockKind::Node)!=RCOK){outcome=TxnResult::Error;break;}
+                                ++m.deneva_early_unlocks;
+                            }else pending.push_back({op.key,&op.value,op.kind==OperationKind::Delete});
                         }
                     }
                 }
@@ -274,6 +306,7 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                     ++s.committed;completed=true;
                     p.attempt.add(ns(Clock::now()-attempt_start));p.logical.add(ns(Clock::now()-logical_start));break;
                 }
+                if(early_in_attempt)++m.deneva_partial_write_aborts;
                 ++s.aborted;
                 if(outcome==TxnResult::Conflict)++s.lock_conflicts;
                 if(outcome==TxnResult::Wounded)++m.wound_aborts;
@@ -373,6 +406,8 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
 #undef SUM
         pm.warmup_committed+=m.warmup_committed;pm.warmup_aborted+=m.warmup_aborted;
         pm.state_rdma_operations+=m.state_rdma_operations;
+        pm.deneva_early_inserts+=m.deneva_early_inserts;pm.deneva_early_unlocks+=m.deneva_early_unlocks;
+        pm.deneva_split_aborts+=m.deneva_split_aborts;pm.deneva_partial_write_aborts+=m.deneva_partial_write_aborts;
         pm.logical_started+=m.logical_started;pm.unfinished+=m.unfinished;pm.logical_failed+=m.logical_failed;
         pm.retries+=m.retries;pm.max_retries=std::max(pm.max_retries,m.max_retries);
         pm.completed_retries+=m.completed_retries;pm.unfinished_retries+=m.unfinished_retries;

@@ -133,3 +133,18 @@ try:validate_row(leaf_output,0,False,expected_layout="bucket")
 except RuntimeError:pass
 else:raise AssertionError("real leaf results accepted as bucket")
 print("Real leaf execution and layout isolation: OK")
+
+bad=dict(row,hierarchy_behavior="deneva",isolation_semantics="strict-2pl")
+reject(bad)
+bad=dict(row,deneva_early_inserts="1");reject(bad)
+print("Deneva source behavior cannot masquerade as strict 2PL: OK")
+
+source_row=dict(row,index="rdma",cc="rdma-hierarchical",hierarchy_layout="leaf",hierarchy_behavior="deneva",
+                isolation_semantics="deneva-early-release",coordination="native-rdma-state",data_backend="shared-rdma",
+                data_rdma_operations="1",data_read_bytes="8",deneva_early_inserts="0",deneva_early_unlocks="0",
+                deneva_split_aborts="0",deneva_partial_write_aborts="0")
+validate_row(text(source_row),0,True,expected_behavior="deneva")
+try:validate_row(text(source_row),0,True,expected_behavior="strict")
+except RuntimeError:pass
+else:raise AssertionError("source early-release result accepted into strict campaign")
+print("Campaign isolation between Deneva early release and strict behavior: OK")

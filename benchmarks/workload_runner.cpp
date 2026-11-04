@@ -113,6 +113,9 @@ void load_config(const std::string& path, WorkloadConfig& config,
                 policy.coordinator_port = static_cast<std::uint16_t>(n);
             } else if (n > 1) throw std::invalid_argument("latency must be 0 or 1");
             if (key != "latency" || n) measured = true;
+        } else if (key == "hierarchy_behavior") {
+            if(value.kind!=ConfigScalar::String || (value.text!="strict" && value.text!="deneva"))throw std::invalid_argument("hierarchy_behavior must be strict or deneva");
+            policy.deneva_insert_behavior=value.text=="deneva";measured=true;
         } else if (key == "hierarchy_layout") {
             if(value.kind!=ConfigScalar::String || (value.text!="leaf" && value.text!="bucket"))throw std::invalid_argument("hierarchy_layout must be leaf or bucket");
             policy.leaf_hierarchy=value.text=="leaf";measured=true;
@@ -183,6 +186,10 @@ int run(int argc, char** argv) {
         else if (option == "--latency-histogram") {
             if (value.empty()) throw std::invalid_argument("latency-histogram: expected nonempty path");
             policy.histogram_path = value; measured = true;
+        }
+        else if(option=="--hierarchy-behavior") {
+            if(value!="strict" && value!="deneva")throw std::invalid_argument("hierarchy-behavior must be strict or deneva");
+            policy.deneva_insert_behavior=value=="deneva";measured=true;
         }
         else if(option=="--hierarchy-layout") {
             if(value!="leaf" && value!="bucket")throw std::invalid_argument("hierarchy-layout must be leaf or bucket");
@@ -261,6 +268,7 @@ int run(int argc, char** argv) {
     if (cc == "record-level-strict-2pl") cc = "record-2pl";
     const std::set<std::string> protocols{"none", "record-2pl", "gap-lock", "next-key", "hierarchical", "rdma-next-key", "rdma-hierarchical", "predicate", "rdma-predicate", "rdma-record-2pl", "rdma-gap-lock"};
     if (index_name != "v1" && index_name != "v2" && index_name != "rdma") throw std::invalid_argument("unknown index: " + index_name);
+    if(policy.deneva_insert_behavior && (!policy.leaf_hierarchy || cc!="rdma-hierarchical" || index_name!="rdma" || !policy.txn_state_port))throw std::invalid_argument("deneva behavior requires native RDMA leaf hierarchy");
     if(policy.leaf_hierarchy && cc!="hierarchical" && cc!="rdma-hierarchical")throw std::invalid_argument("leaf layout requires hierarchical protocol");
     if(policy.leaf_hierarchy && policy.coordinator_port)throw std::invalid_argument("leaf layout requires local or native coordination");
     if (!protocols.count(cc)) throw std::invalid_argument("unknown cc: " + cc);
@@ -449,7 +457,7 @@ int run(int argc, char** argv) {
         if (measured) std::cout << ",metrics_schema,wait_policy,coordination,logical_started,logical_unfinished,logical_failed,retries,max_retries,wound_aborts,deadline_aborts,retry_exhausted,completed_retries,unfinished_retries";
         if (measured) for (const char* name : {"successful_attempt","logical_completion","lock_wait","lock_call","release"})
             for (const char* field : {"count","total_ns","p50_ns","p95_ns","p99_ns","p999_ns","max_ns"}) std::cout << "," << name << "_" << field;
-        std::cout << ",data_backend,data_rdma_operations,data_read_bytes,data_write_bytes,data_latch_wait_ns,coroutines,active_contexts,warmup_seconds,warmup_committed,warmup_aborted,warmup_elapsed_ns,coroutine_switches_total,state_rdma_operations,hierarchy_layout\n";
+        std::cout << ",data_backend,data_rdma_operations,data_read_bytes,data_write_bytes,data_latch_wait_ns,coroutines,active_contexts,warmup_seconds,warmup_committed,warmup_aborted,warmup_elapsed_ns,coroutine_switches_total,state_rdma_operations,hierarchy_layout,hierarchy_behavior,isolation_semantics,deneva_early_inserts,deneva_early_unlocks,deneva_split_aborts,deneva_partial_write_aborts\n";
         std::cout << WorkloadTrace::name(config.kind) << ',' << index_name << ',' << cc << ',' << config.threads << ','
                   << stats.transactions << ',' << stats.committed << ',' << stats.aborted << ',' << stats.operations << ','
                   << stats.reads << ',' << stats.updates << ',' << stats.inserts << ',' << stats.deletes << ','
@@ -496,11 +504,16 @@ int run(int argc, char** argv) {
                   << ',' << policy.coroutines << ',' << std::min(config.threads*policy.coroutines,config.transaction_count)
                   << ',' << policy.warmup_seconds << ',' << stats.policy.warmup_committed << ',' << stats.policy.warmup_aborted
                   << ',' << stats.policy.warmup_elapsed_ns << ',' << stats.policy.coroutine_switches
-                  << ',' << stats.policy.state_rdma_operations << ',' << ((cc=="hierarchical" || cc=="rdma-hierarchical")?(policy.leaf_hierarchy?"leaf":"bucket"):"none") << '\n';
+                  << ',' << stats.policy.state_rdma_operations << ',' << ((cc=="hierarchical" || cc=="rdma-hierarchical")?(policy.leaf_hierarchy?"leaf":"bucket"):"none")
+                  << ',' << (policy.deneva_insert_behavior?"deneva":"strict") << ',' << (policy.deneva_insert_behavior?"deneva-early-release":"strict-2pl")
+                  << ',' << stats.policy.deneva_early_inserts << ',' << stats.policy.deneva_early_unlocks
+                  << ',' << stats.policy.deneva_split_aborts << ',' << stats.policy.deneva_partial_write_aborts << '\n';
     } else {
         std::cout << "data_backend=" << (index_name=="rdma"?"shared-rdma":"local")
                   << ",data_rdma_operations=" << data_ops << ",data_read_bytes=" << data_reads
-                  << ",data_write_bytes=" << data_writes << ",data_latch_wait_ns=" << data_wait << "\n";
+                  << ",data_write_bytes=" << data_writes << ",data_latch_wait_ns=" << data_wait
+                  << ",hierarchy_behavior=" << (policy.deneva_insert_behavior?"deneva":"strict")
+                  << ",isolation_semantics=" << (policy.deneva_insert_behavior?"deneva-early-release":"strict-2pl") << "\n";
         std::cout << "workload=" << WorkloadTrace::name(config.kind)
                   << ",index=" << index_name << ",cc=" << cc
                   << ",threads=" << config.threads

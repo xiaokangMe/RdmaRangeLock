@@ -18,6 +18,7 @@ struct PreloadedTree final:BTreeIndex {
  bool preloaded() const override{return true;}
  RC apply_batch(const std::vector<IndexMutation>& w) override{return tree.apply_batch(w);}
  bool leaf_cover_into(const KeyRangeEnt& r,std::vector<LeafSpan>& out) const override{return tree.leaf_cover_into(r,out);}
+ bool hierarchy_cover_into(const KeyRangeEnt& r,std::vector<IndexNodeSpan>& out) const override{return tree.hierarchy_cover_into(r,out);}
 };
 void missing_update_test() {
  WorkloadConfig cfg;cfg.key_count=16;cfg.transaction_count=1;cfg.operations_per_transaction=1;cfg.threads=1;
@@ -30,12 +31,38 @@ void missing_update_test() {
  ObjectLockManager locks;require(locks.init_local(detail::object_record_keys(trace),256,1,128),"missing update objects");
  PolicyRunConfig run;run.protocol=PolicyProtocol::Hierarchy;run.leaf_hierarchy=true;run.wait_policy=WaitPolicy::WaitDie;
  const auto result=run_policy_workload(index,locks,trace,run);
- require(!result.failed() && result.committed==1 && result.aborted==1 && result.policy.retries==1,"absent update restarts before structural mutation");
- void* value=nullptr;require(index.lookup(op.key,value) && *static_cast<std::uint64_t*>(value)==op.value,"missing update applied under X topology");
+ require(!result.failed() && result.committed==1 && result.aborted==0 && result.policy.retries==0,"absent update is planned with structural leaf protection");
+ void* value=nullptr;require(index.lookup(op.key,value) && *static_cast<std::uint64_t*>(value)==op.value,"missing update applied under safe ancestor protection");
  require(index.tree.validate() && locks.get_lock_count()==0,"missing update invariants");
 }
+void delete_reroute_test() {
+ for(bool restore:{false,true}) {
+  PreloadedTree index;require(index.init(8)==RCOK,"delete reroute tree");
+  std::vector<std::uint64_t> values(512);std::vector<idx_key_t> keys;
+  for(std::size_t k=0;k<512;++k){values[k]=k;keys.push_back(k);require(index.insert(k,&values[k])==RCOK,"delete reroute seed");}
+  std::vector<IndexNodeSpan> nodes;nodes.reserve(2048);
+  require(index.hierarchy_cover_into(KeyRangeEnt::point(200),nodes),"delete target ancestry");
+  const auto leaf=nodes.back();
+  TransactionTrace tx;
+  for(auto k=leaf.range.StartKey;k<leaf.range.EndKey;++k)tx.operations.push_back({OperationKind::Delete,k,0,0});
+  if(restore)tx.operations.push_back({OperationKind::Update,leaf.range.StartKey,0,999});
+  std::vector<detail::HierarchyRequest> held,current;held.reserve(4096);current.reserve(4096);
+  require(detail::leaf_plan(index,tx,nodes,held),"delete safety ancestor");
+  ObjectLockManager locks;require(locks.init_local(keys,4096,1,4096),"delete object init");
+  for(const auto& r:held)require(locks.lock(1,r.mode,r.range,r.kind)==RCOK,"hold delete plan");
+  std::vector<IndexMutation> changes;changes.reserve(tx.operations.size());
+  for(const auto& op:tx.operations)changes.push_back({op.key,&op.value,op.kind==OperationKind::Delete});
+  require(index.apply_batch(changes)==RCOK,"actual local unlink/reroute");
+  TransactionTrace scan;scan.operations={{OperationKind::RangeRead,leaf.range.StartKey,leaf.range.EndKey,0}};
+  require(detail::leaf_plan(index,scan,nodes,current),"rerouted range plan");
+  bool conflict=false;for(const auto& r:current)if(locks.lock(2,r.mode,r.range,r.kind)==AbortConflict){conflict=true;break;}
+  require(conflict,"deletion cannot publish an unprotected rerouted gap");
+  if(locks.get_lock_count(2))require(locks.unlock_all(2)==RCOK,"reader partial release");
+  require(locks.unlock_all(1)==RCOK && locks.get_lock_count()==0 && index.tree.validate(),"delete reroute strict invariants");
+ }
+}
 int main(int argc,char** argv){try {
- missing_update_test();
+ missing_update_test();delete_reroute_test();
  const bool remote=argc>1 && std::string(argv[1])=="--remote";
  WorkloadConfig c;c.key_count=128;c.transaction_count=100;c.operations_per_transaction=4;c.zipf_theta=0;
  const auto trace=WorkloadTrace::generate(c);const auto keys=detail::object_record_keys(trace);
@@ -65,18 +92,18 @@ int main(int argc,char** argv){try {
  require(locks.lock(2,LockMode::IX,KeyRangeEnt::point(other.id),LockKind::Node)==RCOK,"other leaf progresses");
  require(locks.lock(2,LockMode::X,KeyRangeEnt::point(first.id),LockKind::Record)==RCOK,"record and leaf namespaces separate");
  require(locks.unlock_all(2)==RCOK && locks.unlock_all(1)==RCOK && locks.get_lock_count()==0,"strict release");
- require(locks.lock(3,LockMode::S,KeyRangeEnt::point(1),LockKind::Node)==RCOK,"stable topology shared");
- require(locks.lock(4,LockMode::X,KeyRangeEnt::point(1),LockKind::Node)==AbortConflict,"insert/split excluded until scan ends");
- require(locks.unlock_all(3)==RCOK,"topology release");
- require(locks.lock(4,LockMode::X,KeyRangeEnt::point(1),LockKind::Node)==RCOK,"split can proceed after lease");
- require(locks.unlock_all(4)==RCOK,"split release");
- std::vector<detail::HierarchyRequest> plan;plan.reserve(512);std::vector<LeafSpan> scratch;scratch.reserve(256);
+ require(locks.lock(3,LockMode::S,KeyRangeEnt::point(1),LockKind::Node)==RCOK,"generic object shared");
+ require(locks.lock(4,LockMode::X,KeyRangeEnt::point(1),LockKind::Node)==AbortConflict,"generic object X conflict");
+ require(locks.unlock_all(3)==RCOK,"generic object release");
+ require(locks.lock(4,LockMode::X,KeyRangeEnt::point(1),LockKind::Node)==RCOK,"generic object X after release");
+ require(locks.unlock_all(4)==RCOK,"generic X release");
+ std::vector<detail::HierarchyRequest> plan;plan.reserve(512);std::vector<IndexNodeSpan> scratch;scratch.reserve(256);
  TransactionTrace mixed;mixed.operations={{OperationKind::RangeRead,first.range.StartKey,first.range.EndKey,0},{OperationKind::Update,first.range.StartKey,0,9}};
  require(detail::leaf_plan(*index,mixed,scratch,plan),"actual leaf mixed plan");
  auto found=std::find_if(plan.begin(),plan.end(),[&](const auto& r){return r.kind==LockKind::Node && r.range.StartKey==first.id;});
  require(found!=plan.end() && found->mode==LockMode::X,"scan/write final X with no upgrade");
  std::vector<LeafSpan> point;point.reserve(8);require(index->leaf_cover_into(KeyRangeEnt::point(UINT64_MAX),point) && point.size()==1 && point[0].id==leaves.back().id,"max key belongs to real last leaf");
  index->finish_thread();if(remote)require(rdma.validate(),"remote invariants");else require(local.validate(),"local invariants");
- std::cout<<"Actual leaf IDs/fences, final modes, per-object authority, namespaces and topology fencing OK\n";
+ std::cout<<"Actual leaf IDs/fences, final modes, per-object authority, namespaces and exact object modes OK\n";
  return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

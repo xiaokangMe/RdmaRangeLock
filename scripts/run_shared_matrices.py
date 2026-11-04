@@ -24,6 +24,10 @@ def hierarchy_layout(config, cc):
     return config.get("hierarchy_layout", "bucket") if cc in ("hierarchical", "rdma-hierarchical") else "none"
 
 
+def hierarchy_behavior(config, cc):
+    return config.get("hierarchy_behavior","strict") if cc=="rdma-hierarchical" and hierarchy_layout(config,cc)=="leaf" else "strict"
+
+
 def hierarchy_buckets(config, cc):
     return config["buckets"] if hierarchy_layout(config, cc)=="bucket" else [0]
 
@@ -39,12 +43,23 @@ def cases(config, mode):
                         yield workload, length, cc, bucket, threads, run, policy
 
 
-def validate_row(output, seconds, shared, expected_coordination=None, expected_layout=None):
+def validate_row(output, seconds, shared, expected_coordination=None, expected_layout=None, expected_behavior=None):
     reader = csv.DictReader(io.StringIO(output)); rows = list(reader)
     if len(rows) != 1 or len(reader.fieldnames) != len(set(reader.fieldnames)) or None in rows[0] or None in rows[0].values():
         raise RuntimeError("invalid runner CSV schema")
     row = rows[0]
     layout=row.get("hierarchy_layout", "bucket" if row.get("cc") in ("hierarchical","rdma-hierarchical") else "none")
+    behavior=row.get("hierarchy_behavior","strict")
+    isolation=row.get("isolation_semantics","strict-2pl")
+    if behavior not in ("strict","deneva") or isolation!={"strict":"strict-2pl","deneva":"deneva-early-release"}[behavior]:
+        raise RuntimeError("hierarchy behavior/isolation mismatch")
+    if expected_behavior is not None and behavior!=expected_behavior:raise RuntimeError("hierarchy behavior differs from configuration")
+    counters=("deneva_early_inserts","deneva_early_unlocks","deneva_split_aborts","deneva_partial_write_aborts")
+    if behavior=="strict" and any(int(row.get(k,0)) for k in counters):raise RuntimeError("early-release counters on strict path")
+    if behavior=="deneva":
+        if not shared or layout!="leaf" or row.get("cc")!="rdma-hierarchical":raise RuntimeError("Deneva source behavior on wrong path")
+        if int(row["deneva_early_inserts"])!=int(row["deneva_early_unlocks"]):raise RuntimeError("Deneva insertion/release mismatch")
+        if any(int(row[k])>int(row["aborted"]) for k in ("deneva_split_aborts","deneva_partial_write_aborts")):raise RuntimeError("Deneva abort counters mismatch")
     if expected_layout is not None and layout!=expected_layout:raise RuntimeError("hierarchy layout differs from configuration")
     if layout not in ("leaf","bucket","none"):raise RuntimeError("unknown hierarchy layout")
     if layout=="leaf" and row.get("cc") not in ("hierarchical","rdma-hierarchical"):raise RuntimeError("leaf layout on another protocol")
@@ -108,6 +123,8 @@ def validate_resume_rows(rows, config, commit, kind, mode):
     expected_backend=config["coordination_backend"] if mode=="cross-host" else "local"
     expected_fingerprint=config_fingerprint(config)
     for row in rows:
+        if row.get("hierarchy_behavior","strict")!=hierarchy_behavior(config,row["cc"]):
+            raise ValueError("resume hierarchy behavior differs from configuration")
         if row.get("hierarchy_layout", "bucket" if row.get("cc") in ("hierarchical","rdma-hierarchical") else "none")!=hierarchy_layout(config,row["cc"]):
             raise ValueError("resume hierarchy layout differs from configuration")
         if row.get("source_commit")!=commit or row.get("result_kind")!=kind:
@@ -129,7 +146,7 @@ def config_from_environment():
     def ls(name, default, cast=str): return [cast(v) for v in os.environ.get("RRL_" + name, default).split(",")]
     def number(name, default): return int(os.environ.get("RRL_" + name, default))
     runs = number("RUNS", "3")
-    return dict(hierarchy_layout=os.environ.get("RRL_HIERARCHY_LAYOUT","bucket"),coordination_backend=os.environ.get("RRL_COORDINATION_BACKEND","native-rdma-state"),
+    return dict(hierarchy_behavior=os.environ.get("RRL_HIERARCHY_BEHAVIOR","strict"),hierarchy_layout=os.environ.get("RRL_HIERARCHY_LAYOUT","bucket"),coordination_backend=os.environ.get("RRL_COORDINATION_BACKEND","native-rdma-state"),
                 coroutines=number("COROUTINES","1"),coroutine_stack_bytes=number("COROUTINE_STACK_BYTES","262144"),
                 warmup_seconds=number("WARMUP_SECONDS","10"),duration_seconds=number("DURATION", "10"), runs=runs, seeds=list(range(8, 8+runs)),
                 keys=number("KEYS", "10000"), transactions=number("TRANSACTIONS", "5000"),
@@ -171,9 +188,13 @@ def main():
     for sig in (signal.SIGTERM,signal.SIGINT):signal.signal(sig,interrupted)
     root = Path(__file__).resolve().parent.parent; os.chdir(root)
     config = config_from_environment() if args.environment_config else json.loads((root / args.config).read_text())
+    config.setdefault("hierarchy_behavior","strict")
+    if config["hierarchy_behavior"] not in ("strict","deneva"):raise SystemExit("hierarchy_behavior must be strict or deneva")
     config.setdefault("hierarchy_layout","bucket")
     if config["hierarchy_layout"] not in ("leaf","bucket"):raise SystemExit("hierarchy_layout must be leaf or bucket")
     config.setdefault("coordination_backend","native-rdma-state")
+    if config["hierarchy_behavior"]=="deneva" and (config["hierarchy_layout"]!="leaf" or config["coordination_backend"]!="native-rdma-state"):
+        raise SystemExit("Deneva source behavior requires native leaf objects")
     if config["hierarchy_layout"]=="leaf" and config["coordination_backend"]!="native-rdma-state":
         raise SystemExit("leaf layout requires native-rdma-state")
     config.setdefault("coroutines",1);config.setdefault("coroutine_stack_bytes",262144);config.setdefault("warmup_seconds",10)
@@ -289,7 +310,9 @@ def main():
                    coroutines=config["coroutines"],coroutine_stack_bytes=config["coroutine_stack_bytes"],warmup_seconds=config["warmup_seconds"],
                    wait_timeout_ms=config["wait_timeout_ms"], tree_latch_timeout_ms=config["tree_latch_timeout_ms"], lock_budget=config["lock_budget"])
         layout=hierarchy_layout(config,cc)
+        behavior=hierarchy_behavior(config,cc)
         if layout!="none":cfg["hierarchy_layout"]=layout
+        if layout=="leaf":cfg["hierarchy_behavior"]=behavior
         path = logs / (label + ".json"); path.write_text(json.dumps(cfg, indent=2))
         flags = ["--index", "v2", "--cc", cc, "--workload", workload, "--keys", str(config["keys"]),
                  "--txns", str(config["transactions"]), "--ops", str(config["operations"]),
@@ -300,6 +323,7 @@ def main():
                  "--coroutines",str(config["coroutines"]),"--coroutine-stack-bytes",str(config["coroutine_stack_bytes"]),
                  "--warmup",str(config["warmup_seconds"])]
         if layout!="none":flags += ["--hierarchy-layout",layout]
+        if layout=="leaf":flags += ["--hierarchy-behavior",behavior]
         if bucket: flags += ["--bucket", str(bucket)]
         if mode=="cross-host" and str(config["rdma_connections"])!="auto":
             flags += ["--rdma-connections", str(config["rdma_connections"])]
@@ -314,7 +338,7 @@ def main():
                 output = command([remote_dir + "/rrl_workload_runner"] + flags, label, True, duration+config["warmup_seconds"]+180)
                 service.check()
         else: output = command([str(build / "rrl_workload_runner")] + flags, label, timeout=duration+config["warmup_seconds"]+180)
-        row = validate_row(output, duration, mode == "cross-host", config["coordination_backend"] if mode=="cross-host" else None,layout)
+        row = validate_row(output, duration, mode == "cross-host", config["coordination_backend"] if mode=="cross-host" else None,layout,behavior)
         if cc=="none":row["wait_policy"]="none"
         return dict(source_commit=commit, result_kind=kind, transport="rdma-cross-host-shared" if mode=="cross-host" else "local-no-rdma",
                     execution_stack_bytes=config["coroutine_stack_bytes"], ycsb_unique_keys=config["ycsb_unique_keys"],
@@ -329,6 +353,10 @@ def main():
             native_checks=["python3",str(root/"scripts/check_native_runtime.py"),"--build",str(original_build)]
             if "cross-host" in modes:native_checks.append("--cross-host")
             command(native_checks,"native-correctness",timeout=900)
+            if config["hierarchy_layout"]=="leaf":
+                leaf_checks=["python3",str(root/"scripts/check_leaf_runtime.py"),"--build",str(original_build)]
+                if "cross-host" in modes:leaf_checks.append("--cross-host")
+                command(leaf_checks,"leaf-correctness",timeout=900)
             if any(hashlib.sha256((original_build/n).read_bytes()).hexdigest()!=binary_hashes[n] for n in binaries):
                 raise RuntimeError("build outputs changed during correctness gate; discard campaign")
         if "cross-host" in modes:

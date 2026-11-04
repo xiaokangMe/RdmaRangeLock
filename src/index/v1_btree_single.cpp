@@ -236,4 +236,8 @@ bool BTreeSingle::leaf_cover_into(const KeyRangeEnt& range,std::vector<LeafSpan>
     return detail::host_leaf_cover(root_.get(),range,out,false);
 }
 
+bool BTreeSingle::hierarchy_cover_into(const KeyRangeEnt& range,std::vector<IndexNodeSpan>& out) const {
+    return detail::host_hierarchy_cover(root_.get(),range,out,order_,false);
+}
+
 }  // namespace rrl

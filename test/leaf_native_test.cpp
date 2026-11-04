@@ -61,7 +61,7 @@ int main(int argc,char** argv){try {
   ObjectLockManager locks;require(locks.connect(host,lp,keys,1),"objects connect");NativePolicyClient client(host,sp,locks);
   const auto policy=argc>2?parse_wait_policy(argv[2]):WaitPolicy::WoundWait;
   const auto count=argc>3?std::stoull(argv[3]):50;
-  std::vector<LeafSpan> scratch;scratch.reserve(256);std::vector<detail::HierarchyRequest> plan;plan.reserve(512);
+  std::vector<IndexNodeSpan> scratch;scratch.reserve(256);std::vector<detail::HierarchyRequest> plan;plan.reserve(512);
   std::vector<IndexMutation> pending;pending.reserve(2);
   TransactionTrace tx;tx.operations={{OperationKind::Update,0,0,0},{OperationKind::Update,1,0,0}};
   for(std::uint64_t n=0;n<count;++n) {
@@ -69,7 +69,6 @@ int main(int argc,char** argv){try {
    for(unsigned retry=0;retry<100000 && !done;++retry) {
     const auto b=client.begin(policy,age,5000000000ULL);require(b.result==TxnResult::Ok,"begin");age=b.age;
     auto result=client.acquire(b.id,LockMode::IX,KeyRangeEnt::point(0),LockKind::Node).result;
-    if(result==TxnResult::Ok)result=client.acquire(b.id,LockMode::S,KeyRangeEnt::point(1),LockKind::Node).result;
     if(result==TxnResult::Ok) {
      require(detail::leaf_plan(index,tx,scratch,plan),"real leaf plan");
      for(const auto& r:plan){result=client.acquire(b.id,r.mode,r.range,r.kind).result;if(result!=TxnResult::Ok)break;}

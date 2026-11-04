@@ -525,4 +525,9 @@ bool BTreeLatch::leaf_cover_into(const KeyRangeEnt& range,std::vector<LeafSpan>&
     return detail::host_leaf_cover(root_.get(),range,out,true);
 }
 
+bool BTreeLatch::hierarchy_cover_into(const KeyRangeEnt& range,std::vector<IndexNodeSpan>& out) const {
+    std::shared_lock<std::shared_mutex> guard(root_guard_);
+    return detail::host_hierarchy_cover(root_.get(),range,out,order_,true);
+}
+
 }  // namespace rrl

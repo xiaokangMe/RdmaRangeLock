@@ -20,22 +20,35 @@ ERRORS = ("lock_errors", "index_errors", "lock_release_failures", "failed_transa
           "rdma_gate_transport_errors")
 
 
+def hierarchy_layout(config, cc):
+    return config.get("hierarchy_layout", "bucket") if cc in ("hierarchical", "rdma-hierarchical") else "none"
+
+
+def hierarchy_buckets(config, cc):
+    return config["buckets"] if hierarchy_layout(config, cc)=="bucket" else [0]
+
+
 def cases(config, mode):
     for workload in config["workloads"]:
         for length in config["ranges"] if workload == "ycsb-e" else [0]:
             for cc in config["rdma_ccs"] if mode == "cross-host" else config["local_ccs"]:
-                for bucket in config["buckets"] if cc in ("hierarchical", "rdma-hierarchical") else [0]:
+                for bucket in hierarchy_buckets(config, cc):
                     for threads, run, policy in itertools.product(config["threads"], range(config["runs"]), config["wait_policies"]):
                         # Unlocked baseline has no conflict policy; run once.
                         if cc == "none" and policy != config["wait_policies"][0]: continue
                         yield workload, length, cc, bucket, threads, run, policy
 
 
-def validate_row(output, seconds, shared, expected_coordination=None):
+def validate_row(output, seconds, shared, expected_coordination=None, expected_layout=None):
     reader = csv.DictReader(io.StringIO(output)); rows = list(reader)
     if len(rows) != 1 or len(reader.fieldnames) != len(set(reader.fieldnames)) or None in rows[0] or None in rows[0].values():
         raise RuntimeError("invalid runner CSV schema")
     row = rows[0]
+    layout=row.get("hierarchy_layout", "bucket" if row.get("cc") in ("hierarchical","rdma-hierarchical") else "none")
+    if expected_layout is not None and layout!=expected_layout:raise RuntimeError("hierarchy layout differs from configuration")
+    if layout not in ("leaf","bucket","none"):raise RuntimeError("unknown hierarchy layout")
+    if layout=="leaf" and row.get("cc") not in ("hierarchical","rdma-hierarchical"):raise RuntimeError("leaf layout on another protocol")
+    if layout=="leaf" and shared and row.get("coordination")!="native-rdma-state":raise RuntimeError("leaf objects require native coordination")
     if any(int(row[k]) for k in ERRORS): raise RuntimeError("hard error in measurement")
     if int(row["lock_capacity_aborts"]) or int(row["lock_gate_aborts"]):
         raise RuntimeError("capacity/gate saturation; formal case invalid")
@@ -95,6 +108,8 @@ def validate_resume_rows(rows, config, commit, kind, mode):
     expected_backend=config["coordination_backend"] if mode=="cross-host" else "local"
     expected_fingerprint=config_fingerprint(config)
     for row in rows:
+        if row.get("hierarchy_layout", "bucket" if row.get("cc") in ("hierarchical","rdma-hierarchical") else "none")!=hierarchy_layout(config,row["cc"]):
+            raise ValueError("resume hierarchy layout differs from configuration")
         if row.get("source_commit")!=commit or row.get("result_kind")!=kind:
             raise ValueError("resume source/kind differs from this campaign")
         if row.get("coordination")!=expected_backend or int(row.get("coroutines",1))!=config["coroutines"] or int(row.get("warmup_seconds",0))!=config["warmup_seconds"] or int(row.get("execution_stack_bytes",262144))!=config["coroutine_stack_bytes"]:
@@ -114,7 +129,7 @@ def config_from_environment():
     def ls(name, default, cast=str): return [cast(v) for v in os.environ.get("RRL_" + name, default).split(",")]
     def number(name, default): return int(os.environ.get("RRL_" + name, default))
     runs = number("RUNS", "3")
-    return dict(coordination_backend=os.environ.get("RRL_COORDINATION_BACKEND","native-rdma-state"),
+    return dict(hierarchy_layout=os.environ.get("RRL_HIERARCHY_LAYOUT","bucket"),coordination_backend=os.environ.get("RRL_COORDINATION_BACKEND","native-rdma-state"),
                 coroutines=number("COROUTINES","1"),coroutine_stack_bytes=number("COROUTINE_STACK_BYTES","262144"),
                 warmup_seconds=number("WARMUP_SECONDS","10"),duration_seconds=number("DURATION", "10"), runs=runs, seeds=list(range(8, 8+runs)),
                 keys=number("KEYS", "10000"), transactions=number("TRANSACTIONS", "5000"),
@@ -156,7 +171,11 @@ def main():
     for sig in (signal.SIGTERM,signal.SIGINT):signal.signal(sig,interrupted)
     root = Path(__file__).resolve().parent.parent; os.chdir(root)
     config = config_from_environment() if args.environment_config else json.loads((root / args.config).read_text())
+    config.setdefault("hierarchy_layout","bucket")
+    if config["hierarchy_layout"] not in ("leaf","bucket"):raise SystemExit("hierarchy_layout must be leaf or bucket")
     config.setdefault("coordination_backend","native-rdma-state")
+    if config["hierarchy_layout"]=="leaf" and config["coordination_backend"]!="native-rdma-state":
+        raise SystemExit("leaf layout requires native-rdma-state")
     config.setdefault("coroutines",1);config.setdefault("coroutine_stack_bytes",262144);config.setdefault("warmup_seconds",10)
     if config["coordination_backend"] not in ("native-rdma-state","tcp-control+rdma-slots"):
         raise SystemExit("invalid coordination backend")
@@ -269,6 +288,8 @@ def main():
                    wait_policy=policy, max_attempts=config["max_attempts"], duration_seconds=duration,
                    coroutines=config["coroutines"],coroutine_stack_bytes=config["coroutine_stack_bytes"],warmup_seconds=config["warmup_seconds"],
                    wait_timeout_ms=config["wait_timeout_ms"], tree_latch_timeout_ms=config["tree_latch_timeout_ms"], lock_budget=config["lock_budget"])
+        layout=hierarchy_layout(config,cc)
+        if layout!="none":cfg["hierarchy_layout"]=layout
         path = logs / (label + ".json"); path.write_text(json.dumps(cfg, indent=2))
         flags = ["--index", "v2", "--cc", cc, "--workload", workload, "--keys", str(config["keys"]),
                  "--txns", str(config["transactions"]), "--ops", str(config["operations"]),
@@ -278,6 +299,7 @@ def main():
                  "--duration", str(duration), "--format", "csv",
                  "--coroutines",str(config["coroutines"]),"--coroutine-stack-bytes",str(config["coroutine_stack_bytes"]),
                  "--warmup",str(config["warmup_seconds"])]
+        if layout!="none":flags += ["--hierarchy-layout",layout]
         if bucket: flags += ["--bucket", str(bucket)]
         if mode=="cross-host" and str(config["rdma_connections"])!="auto":
             flags += ["--rdma-connections", str(config["rdma_connections"])]
@@ -292,7 +314,7 @@ def main():
                 output = command([remote_dir + "/rrl_workload_runner"] + flags, label, True, duration+config["warmup_seconds"]+180)
                 service.check()
         else: output = command([str(build / "rrl_workload_runner")] + flags, label, timeout=duration+config["warmup_seconds"]+180)
-        row = validate_row(output, duration, mode == "cross-host", config["coordination_backend"] if mode=="cross-host" else None)
+        row = validate_row(output, duration, mode == "cross-host", config["coordination_backend"] if mode=="cross-host" else None,layout)
         if cc=="none":row["wait_policy"]="none"
         return dict(source_commit=commit, result_kind=kind, transport="rdma-cross-host-shared" if mode=="cross-host" else "local-no-rdma",
                     execution_stack_bytes=config["coroutine_stack_bytes"], ycsb_unique_keys=config["ycsb_unique_keys"],
@@ -321,7 +343,7 @@ def main():
             publish("capacity-preflight")
             preflight=[]
             for cc in config["rdma_ccs"]:
-                for bucket in config["buckets"] if cc=="rdma-hierarchical" else [0]:
+                for bucket in hierarchy_buckets(config,cc):
                     for run,policy in itertools.product(range(config["runs"]),config["wait_policies"]):
                         preflight.append(("ycsb-e",max(config["ranges"]),cc,bucket,max(config["threads"]),run,policy))
             state["preflight_expected"]=len(preflight)

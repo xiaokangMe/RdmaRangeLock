@@ -34,6 +34,7 @@ struct TransactionCoordinator::Impl {
     std::uint64_t next{1};
     bool poisoned{false};
     std::size_t lock_budget{16384};
+    bool exact_objects{false};
     WaitPolicy cohort_policy{WaitPolicy::NoWait};
     Txn* owned(std::uint64_t session, txnid_t id) {
         const auto it = txns.find(id);
@@ -46,9 +47,9 @@ struct TransactionCoordinator::Impl {
         return TxnResult::Ok;
     }
 };
-TransactionCoordinator::TransactionCoordinator(std::size_t lock_budget): impl_(new Impl) {
+TransactionCoordinator::TransactionCoordinator(std::size_t lock_budget,bool exact_objects): impl_(new Impl) {
     if(!lock_budget || lock_budget>1048576)throw std::invalid_argument("lock budget must be 1..1048576");
-    impl_->lock_budget=lock_budget;
+    impl_->lock_budget=lock_budget;impl_->exact_objects=exact_objects;
 }
 TransactionCoordinator::~TransactionCoordinator() = default;
 PolicyReply TransactionCoordinator::begin(std::uint64_t session, WaitPolicy policy,
@@ -99,7 +100,7 @@ PolicyReply TransactionCoordinator::acquire(std::uint64_t session, txnid_t id, L
         for(auto& [other_id,other]:impl_->txns) {
             if(other_id==id)continue;
             bool overlaps=false;
-            for(const auto& held:other.locks)if(request.conflicts(held)){overlaps=true;break;}
+            for(const auto& held:other.locks)if((!impl_->exact_objects || request.kind==held.kind) && request.conflicts(held)){overlaps=true;break;}
             if(!overlaps)continue;
             conflict=true;
             if(txn->policy==WaitPolicy::WaitDie && other.age<txn->age)must_die=true;

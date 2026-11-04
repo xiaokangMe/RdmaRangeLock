@@ -1,5 +1,7 @@
 #include "txn/workload.h"
 #include "lock/remote_lock_manager.h"
+#include "lock/object_lock_manager.h"
+#include "../src/txn/leaf_hierarchy.h"
 #include "common/config_parse.h"
 #include "txn/shared_dataset.h"
 
@@ -111,6 +113,9 @@ void load_config(const std::string& path, WorkloadConfig& config,
                 policy.coordinator_port = static_cast<std::uint16_t>(n);
             } else if (n > 1) throw std::invalid_argument("latency must be 0 or 1");
             if (key != "latency" || n) measured = true;
+        } else if (key == "hierarchy_layout") {
+            if(value.kind!=ConfigScalar::String || (value.text!="leaf" && value.text!="bucket"))throw std::invalid_argument("hierarchy_layout must be leaf or bucket");
+            policy.leaf_hierarchy=value.text=="leaf";measured=true;
         } else if (key == "ycsb_unique_keys") {
             if (value.kind != ConfigScalar::Number) throw std::invalid_argument("ycsb_unique_keys: expected 0 or 1");
             const auto n = parse_unsigned(value.text,key);
@@ -178,6 +183,10 @@ int run(int argc, char** argv) {
         else if (option == "--latency-histogram") {
             if (value.empty()) throw std::invalid_argument("latency-histogram: expected nonempty path");
             policy.histogram_path = value; measured = true;
+        }
+        else if(option=="--hierarchy-layout") {
+            if(value!="leaf" && value!="bucket")throw std::invalid_argument("hierarchy-layout must be leaf or bucket");
+            policy.leaf_hierarchy=value=="leaf";measured=true;
         }
         else if (option == "--wait-policy") { policy.wait_policy = parse_wait_policy(value); measured = true; }
         else if (option == "--lock-budget") { policy.lock_budget = parse_unsigned(value,option); measured = true; }
@@ -252,6 +261,8 @@ int run(int argc, char** argv) {
     if (cc == "record-level-strict-2pl") cc = "record-2pl";
     const std::set<std::string> protocols{"none", "record-2pl", "gap-lock", "next-key", "hierarchical", "rdma-next-key", "rdma-hierarchical", "predicate", "rdma-predicate", "rdma-record-2pl", "rdma-gap-lock"};
     if (index_name != "v1" && index_name != "v2" && index_name != "rdma") throw std::invalid_argument("unknown index: " + index_name);
+    if(policy.leaf_hierarchy && cc!="hierarchical" && cc!="rdma-hierarchical")throw std::invalid_argument("leaf layout requires hierarchical protocol");
+    if(policy.leaf_hierarchy && policy.coordinator_port)throw std::invalid_argument("leaf layout requires local or native coordination");
     if (!protocols.count(cc)) throw std::invalid_argument("unknown cc: " + cc);
     if (cc == "predicate" || cc == "rdma-predicate" || policy.warmup_seconds || policy.coroutines>1) measured = true;
     if(!policy.coroutines || policy.coroutines>4096 || config.threads>4096/policy.coroutines ||
@@ -336,7 +347,25 @@ int run(int argc, char** argv) {
         const auto plain = cc.rfind("rdma-",0) == 0 ? cc.substr(5) : cc;
         policy.protocol = plain == "none" ? PolicyProtocol::None : plain == "record-2pl" ? PolicyProtocol::Record : plain == "gap-lock" ? PolicyProtocol::Gap :
             plain == "next-key" ? PolicyProtocol::NextKey : plain == "predicate" ? PolicyProtocol::Predicate : PolicyProtocol::Hierarchy;
-        if (cc.rfind("rdma-",0) == 0) {
+        if(policy.leaf_hierarchy) {
+            ObjectLockManager locks;
+            const auto keys=detail::object_record_keys(trace);
+            const auto contexts=std::min(config.threads*policy.coroutines,config.transaction_count);
+            if(cc.rfind("rdma-",0)==0) {
+                if(!policy.txn_state_port)throw std::invalid_argument("RDMA leaf layout requires txn-state-port");
+                if(!locks.connect(rdma_host,rdma_port,keys,contexts))throw std::runtime_error("object RDMA connect/config mismatch");
+                active_connections=contexts;
+            }else {
+                std::size_t operations=0;for(const auto& t:trace.transactions())operations+=t.operations.size();
+                if(keys.size()>(SIZE_MAX-operations-16)/2)throw std::invalid_argument("local leaf directory size");
+                if(!locks.init_local(keys,2*(keys.size()+operations)+16,contexts,policy.lock_budget))throw std::runtime_error("local object init");
+            }
+            std::uint64_t start_ops=0;
+            policy.measurement_begin=[&]{snapshot_data();start_ops=locks.rdma_operations();};
+            stats=run_policy_workload(*index,locks,trace,policy);
+            stats.rdma_operations=locks.rdma_operations()-start_ops;
+            stats.rdma_timeouts=locks.rdma_timeouts();stats.rdma_completion_errors=locks.rdma_completion_errors();
+        }else if (cc.rfind("rdma-",0) == 0) {
             RemoteLockManager locks;
             locks.use_coordinator_transaction_ids();
             active_connections = policy.coroutines>1 && !rdma_connections ?
@@ -420,7 +449,7 @@ int run(int argc, char** argv) {
         if (measured) std::cout << ",metrics_schema,wait_policy,coordination,logical_started,logical_unfinished,logical_failed,retries,max_retries,wound_aborts,deadline_aborts,retry_exhausted,completed_retries,unfinished_retries";
         if (measured) for (const char* name : {"successful_attempt","logical_completion","lock_wait","lock_call","release"})
             for (const char* field : {"count","total_ns","p50_ns","p95_ns","p99_ns","p999_ns","max_ns"}) std::cout << "," << name << "_" << field;
-        std::cout << ",data_backend,data_rdma_operations,data_read_bytes,data_write_bytes,data_latch_wait_ns,coroutines,active_contexts,warmup_seconds,warmup_committed,warmup_aborted,warmup_elapsed_ns,coroutine_switches_total,state_rdma_operations\n";
+        std::cout << ",data_backend,data_rdma_operations,data_read_bytes,data_write_bytes,data_latch_wait_ns,coroutines,active_contexts,warmup_seconds,warmup_committed,warmup_aborted,warmup_elapsed_ns,coroutine_switches_total,state_rdma_operations,hierarchy_layout\n";
         std::cout << WorkloadTrace::name(config.kind) << ',' << index_name << ',' << cc << ',' << config.threads << ','
                   << stats.transactions << ',' << stats.committed << ',' << stats.aborted << ',' << stats.operations << ','
                   << stats.reads << ',' << stats.updates << ',' << stats.inserts << ',' << stats.deletes << ','
@@ -467,7 +496,7 @@ int run(int argc, char** argv) {
                   << ',' << policy.coroutines << ',' << std::min(config.threads*policy.coroutines,config.transaction_count)
                   << ',' << policy.warmup_seconds << ',' << stats.policy.warmup_committed << ',' << stats.policy.warmup_aborted
                   << ',' << stats.policy.warmup_elapsed_ns << ',' << stats.policy.coroutine_switches
-                  << ',' << stats.policy.state_rdma_operations << '\n';
+                  << ',' << stats.policy.state_rdma_operations << ',' << ((cc=="hierarchical" || cc=="rdma-hierarchical")?(policy.leaf_hierarchy?"leaf":"bucket"):"none") << '\n';
     } else {
         std::cout << "data_backend=" << (index_name=="rdma"?"shared-rdma":"local")
                   << ",data_rdma_operations=" << data_ops << ",data_read_bytes=" << data_reads

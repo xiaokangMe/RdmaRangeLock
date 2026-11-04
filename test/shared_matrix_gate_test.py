@@ -122,3 +122,14 @@ with tempfile.TemporaryDirectory() as directory:
     assert not list(Path(state["log_dir"]).glob("local-*.command.json")), "completed resume reran a case"
     load_campaign(next(iter(resumed)),True)
 print("Completed resume writes its CSV, deduplicates none and remains reportable: OK")
+
+# Real leaf results cannot silently enter an old bucket campaign.
+leaf_config=dict(config,hierarchy_layout="leaf")
+assert len(list(cases(leaf_config,"local")))<len(list(cases(config,"local")))
+leaf_command=list(command);leaf_command[2]="hierarchical";leaf_command += ["--hierarchy-layout","leaf"]
+leaf_output=subprocess.run(leaf_command,check=True,capture_output=True,text=True,timeout=20).stdout
+assert validate_row(leaf_output,0,False,expected_layout="leaf")["hierarchy_layout"]=="leaf"
+try:validate_row(leaf_output,0,False,expected_layout="bucket")
+except RuntimeError:pass
+else:raise AssertionError("real leaf results accepted as bucket")
+print("Real leaf execution and layout isolation: OK")

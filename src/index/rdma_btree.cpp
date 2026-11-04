@@ -227,6 +227,11 @@ void BTreeRdma::finish_thread() noexcept {
 void BTreeRdma::prepare_write_capacity(std::size_t capacity) {
     auto& s=impl_->session();s.write_offsets.reserve(capacity);s.ordered_offsets.reserve(capacity);
 }
+bool BTreeRdma::leaf_cover_into(const KeyRangeEnt& range,std::vector<LeafSpan>& out) const {
+    auto& s=impl_->session();
+    try {impl_->enter(s,false);s.core->leaf_cover(range,out);impl_->leave(s,false);return true;}
+    catch(...){impl_->poison(s);throw;}
+}
 bool BTreeRdma::healthy() const{return !impl_->failed;}
 bool BTreeRdma::lookup(idx_key_t key,void*& value) const {
     auto& s=impl_->session();

@@ -32,6 +32,8 @@ class SharedServices:
         self.build, self.config, self.logdir = Path(build), Path(config), Path(logdir)
         self.env, self.native = env, native
         cfg=json.loads(self.config.read_text())
+        self.leaf_objects=cfg.get("hierarchy_layout")=="leaf"
+        if self.leaf_objects and native is not True:raise ValueError("leaf object services require native mode")
         self.lock_budget=int(cfg.get("lock_budget",16384))
         if not 1<=self.lock_budget<=1048576:raise ValueError("lock_budget out of bounds")
         self.processes, self.logs = [], []
@@ -42,7 +44,7 @@ class SharedServices:
     def __enter__(self):
         self.logdir.mkdir(parents=True, exist_ok=True)
         specs = [("rrl_rdma_data_server", ["--config", str(self.config), "--port", str(self.data_port)]),
-                 ("rrl_rdma_lock_server", [str(self.lock_port)] + (["--native-fail-stop"] if self.native is True else [])),
+                 ("rrl_rdma_lock_server", ([str(self.lock_port),"--objects",str(self.config)] if self.leaf_objects else [str(self.lock_port)] + (["--native-fail-stop"] if self.native is True else []))),
                  ]
         if self.native is not True:
             specs.append(("rrl_wait_coordinator", [str(self.coordinator_port), str(self.lock_budget), "600000"]))

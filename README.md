@@ -144,7 +144,7 @@ python3 scripts/run_verified_matrices.py --smoke --build build-shared
     python3 scripts/check_native_runtime.py --build build-shared --cross-host
     python3 scripts/run_shared_matrices.py --config experiments/configs/native_runtime_smoke.json --mode both --smoke --no-build --keep-geometry
 
-新运行时不等于完整 Deneva 数据库：现有 Payment/New Order 仍为简化 trace；hierarchical 仍为逻辑 root/bucket/record，不是真实叶页锁；共享索引写批次仍有全局结构 latch，年龄分配字也可能成为热点。相关性能结论须由新的正式矩阵支持。
+新运行时不等于完整 Deneva 数据库：现有 Payment/New Order 仍为简化 trace；hierarchical 可显式选择旧 bucket 或真实 leaf；leaf 模式由真实叶 ID 驱动，但结构事务仍经过 topology S/X 屏障；已存在记录的普通更新使用共享结构 latch 与记录短 latch，结构变更仍串行，年龄分配字也可能成为热点。相关性能结论须由新的正式矩阵支持。
 
 
 YCSB 请求数遵循 Deneva 的可配置模型，默认 `REQ_PER_QUERY=10` 对应本项目 `--ops 10`；扫描长度由 `--range` 单独配置。默认事务内请求起始键去重且保持生成顺序（对应 Deneva `KEY_ORDER=false`）；区间可重叠。重复键专项验证显式使用 `--ycsb-unique-keys 0` / 配置 `ycsb_unique_keys: 0`，不能混作默认正式结果。TPC-C 子负载按其业务 trace 决定长度，`--ops` 不决定 Payment/New Order 操作数。详见 [Deneva 负载适配](docs/notes/deneva-ycsb-generation-2026-11-04.md)。
@@ -153,3 +153,11 @@ YCSB 请求数遵循 Deneva 的可配置模型，默认 `REQ_PER_QUERY=10` 对�
 
 
 两百万 key 配置：`experiments/configs/deneva_scale_2m.json` 用于单 case，`formal_native_deneva_2m_10s.json` 用于完整维度（尚未自动运行正式矩阵）。两者均配置 2,097,152 key 域、10 请求、10 秒预热与 10 秒测量，并同步增大数据页/记录容量。`deneva_scale_2m_boundary.json` 是小维度验证配置，执行 `python3 scripts/run_shared_matrices.py --config experiments/configs/deneva_scale_2m_boundary.json --mode both --smoke --keep-geometry --validation-seconds 10`，结果仍为非正式。规模、元数据 gate 与真实叶节点锁的区别见 [源码核查](docs/notes/deneva-gate-scale-warmup-2026-11-04.md)。
+
+## 真实叶层级锁（单独标识的候选实现）
+
+`--hierarchy-layout leaf` 对实际 B+ 树叶页加 IS/IX/S/X，再对实际记录资源加 S/X；叶 ID 来自本地页身份或远端页偏移，不是 `key / bucket_width`。旧布局用 `--hierarchy-layout bucket`。两种布局的配置、CSV、续跑与报告校验隔离，不复用旧数据。
+
+叶模式使用独立对象锁服务，每对象短 CAS 保护持有者链表，不扫描原区间锁槽；数据/事务状态/对象元数据均走单边 RDMA，TCP 只建链和通知断开。为保证 split/delete 生命周期，事务按 root→topology→实际叶→record 获取最终模式；Insert/Delete 取得 topology X，普通读/更新取得 S。结构事务的全局串行点仍待优化，不能宣称与 Deneva 完全等价。
+
+定向验证：`python3 scripts/check_leaf_runtime.py --build build-shared --cross-host`。完整候选维度在 `experiments/configs/formal_native_leaf_2m_10s.json`，本轮不启动完整正式矩阵。细节见 [真实叶移植](docs/notes/deneva-leaf-migration-2026-11-04.md)。远端数据格式为 2，记录含短 latch 共 32 字节，旧服务须重建，不能连接旧格式的 24 字节记录区。

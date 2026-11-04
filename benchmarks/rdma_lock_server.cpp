@@ -1,7 +1,11 @@
 #include "lock/remote_lock_manager.h"
 #include "common/config_parse.h"
+#include "lock/object_lock_manager.h"
+#include "txn/shared_dataset.h"
+#include "../src/txn/leaf_hierarchy.h"
 
 #include <chrono>
+#include <fstream>
 #include <condition_variable>
 #include <mutex>
 #include <cstdint>
@@ -112,6 +116,22 @@ void clear_owner_state(std::uint16_t port, std::uint64_t owner, RdmaOpTag failed
 }
 
 int run(int argc, char** argv) {
+    if(argc==4 && std::string(argv[2])=="--objects") {
+        const auto port=parse_unsigned(argv[1],"port");if(!port || port>65535)throw std::invalid_argument("port bounds");
+        WorkloadConfig c;RdmaTreeConfig t;std::uint16_t ignored;
+        load_shared_dataset_config(argv[3],c,t,ignored);
+        const auto trace=WorkloadTrace::generate(c);
+        // Runtime geometry is ignored by the dataset parser; read it explicitly.
+        std::ifstream input(argv[3]);const std::string text((std::istreambuf_iterator<char>(input)),{});
+        const auto entries=FlatConfigParser(text).parse();
+        std::size_t contexts=64,budget=16384,threads=1,coroutines=1;
+        for(const auto& e:entries)if(e.first=="threads")threads=parse_unsigned(e.second.text,e.first);
+            else if(e.first=="coroutines")coroutines=parse_unsigned(e.second.text,e.first);
+            else if(e.first=="lock_budget")budget=parse_unsigned(e.second.text,e.first);
+        if(!threads || !coroutines || threads>4096/coroutines)throw std::invalid_argument("object context bounds");
+        contexts=std::max(contexts,threads*coroutines+16);
+        return run_object_lock_server(static_cast<std::uint16_t>(port),detail::object_record_keys(trace),t.page_capacity+2,contexts,budget);
+    }
     if (argc > 3 || (argc == 3 && std::string(argv[2]) != "--native-fail-stop"))
         throw std::invalid_argument("usage: lock_server [port] [--native-fail-stop]");
     const bool native_fail_stop = argc == 3;

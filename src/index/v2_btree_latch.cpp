@@ -1,3 +1,4 @@
+#include "leaf_cover.h"
 #include "index/btree.h"
 
 #include <algorithm>
@@ -28,6 +29,7 @@ RC BTreeLatch::init(std::size_t order) {
 
 std::unique_ptr<BTreeLatch::Page> BTreeLatch::make_page(bool leaf) const {
     auto page = std::make_unique<Page>();
+    page->identity=next_page_identity_.fetch_add(1);
     page->is_leaf = leaf;
     page->keys.reserve(order_);
     if (leaf) page->values.reserve(order_);
@@ -516,6 +518,11 @@ std::size_t BTreeLatch::height() const {
     std::size_t result = 0;
     for (const Page* page = root_.get(); page != nullptr; page = page->is_leaf ? nullptr : page->children.front().get()) ++result;
     return result;
+}
+
+bool BTreeLatch::leaf_cover_into(const KeyRangeEnt& range,std::vector<LeafSpan>& out) const {
+    std::shared_lock<std::shared_mutex> guard(root_guard_);
+    return detail::host_leaf_cover(root_.get(),range,out,true);
 }
 
 }  // namespace rrl

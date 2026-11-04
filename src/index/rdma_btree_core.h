@@ -110,6 +110,38 @@ public:
         }
         throw TreeFault("tree depth/cycle");
     }
+    void leaf_cover(const KeyRangeEnt& range,std::vector<LeafSpan>& out) {
+        out.clear();if(range.empty())return;
+        const auto key=range.has_start?range.StartKey:0;
+        auto off=h.root;idx_key_t lower=0;
+        for(std::size_t depth=0;;++depth) {
+            if(depth>=64)throw TreeFault("leaf cover depth");
+            auto& n=path[0];read_node(off,n);
+            if(n.head.leaf)break;
+            const auto slot=std::upper_bound(n.keys.begin(),n.keys.begin()+n.head.count,key)-n.keys.begin();
+            if(slot)lower=n.keys[slot-1];
+            off=n.links[slot];
+        }
+        std::size_t visited=0;
+        for(;;) {
+            if(++visited>h.pages_used)throw TreeFault("leaf cover cycle");
+            auto& n=path[0];read_node(off,n);
+            if(!n.head.leaf)throw TreeFault("leaf cover nonleaf");
+            const auto next=n.head.next;auto fence=KeyRangeEnt::from_left(lower);
+            if(next) {
+                auto& right=path[1];read_node(next,right);
+                if(!right.head.leaf || !right.head.count)throw TreeFault("leaf cover sibling");
+                fence.has_end=true;fence.EndKey=right.keys[0];fence.end_bound=Bound::Open;
+            }
+            if(fence.overlaps(range)) {
+                if(out.size()==out.capacity())throw TreeFault("leaf cover workspace capacity");
+                out.push_back({(off-sizeof(h))/h.page_bytes+2,fence});
+            }
+            if(!next || (range.has_end && (range.EndKey<fence.EndKey ||
+               (range.EndKey==fence.EndKey && range.end_bound==Bound::Open))))return;
+            lower=fence.EndKey;off=next;
+        }
+    }
     bool lookup(idx_key_t key,std::uint64_t& value) {
         auto d=descend(key);auto& n=path[d];auto slot=slots[d];
         if(slot==n.head.count || n.keys[slot]!=key)return false;

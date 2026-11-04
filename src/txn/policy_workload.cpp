@@ -4,6 +4,7 @@
 #include "common/execution_context.h"
 #include "lock/native_policy.h"
 #include "hierarchical_plan.h"
+#include "leaf_hierarchy.h"
 #include <atomic>
 #include <algorithm>
 #include <thread>
@@ -43,12 +44,12 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
     const auto count=std::min(trace.config().threads*cfg.coroutines,total);
     const auto os_workers=std::min(trace.config().threads,count);
     const bool warmup=cfg.warmup_seconds!=0;
-    TransactionCoordinator local(cfg.lock_budget);
+    TransactionCoordinator local(cfg.lock_budget,cfg.leaf_hierarchy);
     std::vector<std::unique_ptr<PolicyClient>> clients;
     std::vector<std::unique_ptr<NativePolicyClient>> native;
     std::vector<Worker> parts(count);
     std::vector<std::vector<detail::HierarchyRequest>> plans;
-    if(cfg.protocol==PolicyProtocol::Hierarchy)for(const auto& t:trace.transactions())
+    if(cfg.protocol==PolicyProtocol::Hierarchy && !cfg.leaf_hierarchy)for(const auto& t:trace.transactions())
         plans.push_back(detail::hierarchy_plan(t,trace.config().hierarchy_bucket_width));
     for(std::size_t w=0;w<count;++w) {
         if(cfg.protocol==PolicyProtocol::None)clients.emplace_back(nullptr);
@@ -65,6 +66,13 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
     for(auto& v:rechecks)v.reserve(scan_capacity);
     std::size_t maxops=0;for(const auto& t:trace.transactions())maxops=std::max(maxops,t.operations.size());
     for(auto& v:writes)v.reserve(maxops);
+    std::vector<std::vector<LeafSpan>> leaf_scratch(count);
+    std::vector<std::vector<detail::HierarchyRequest>> leaf_plans(count);
+    if(cfg.leaf_hierarchy)for(std::size_t w=0;w<count;++w) {
+        if(maxops && scan_capacity>std::numeric_limits<std::size_t>::max()/maxops-2)throw std::invalid_argument("leaf workspace overflow");
+        const auto capacity=maxops*(scan_capacity+2)+2;
+        leaf_scratch[w].reserve(scan_capacity+2);leaf_plans[w].reserve(capacity);
+    }
     std::atomic<bool> stopped{false};
     Clock::time_point start,deadline;
     bool timed=warmup || trace.config().duration_seconds!=0;
@@ -108,6 +116,7 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
             const auto& txn=trace.transactions()[i%total];
             std::uint64_t age=0,retries=0;
             bool completed=false,hard=false,attempted=false;
+            bool structural=detail::topology_write(txn);
             for(std::uint64_t attempt=0;attempt<cfg.max_attempts && !stopped;++attempt) {
                 const auto attempt_start=Clock::now();
                 if(attempt_start>=deadline)break;
@@ -159,8 +168,26 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                     if(rc!=RCOK){outcome=TxnResult::Error;return false;}
                     return true;
                 };
-                if(cfg.protocol==PolicyProtocol::Hierarchy)
-                    for(const auto& r:plans[i%total])if(!acquire(r.mode,r.range,r.kind))break;
+                if(cfg.protocol==PolicyProtocol::Hierarchy) {
+                    if(cfg.leaf_hierarchy) {
+                        const bool writing=std::any_of(txn.operations.begin(),txn.operations.end(),[](const Operation& op){return op.kind!=OperationKind::Read && op.kind!=OperationKind::RangeRead;});
+                        if(acquire(writing?LockMode::IX:LockMode::IS,KeyRangeEnt::point(0),LockKind::Node) &&
+                           acquire(structural?LockMode::X:LockMode::S,KeyRangeEnt::point(1),LockKind::Node)) {
+                            // apply_batch permits an absent Update to insert. A
+                            // shared topology lease cannot authorize that path.
+                            // Detect while topology is stable, then release and
+                            // restart with X; never upgrade while holding S.
+                            if(!structural)for(const auto& op:txn.operations)if(op.kind==OperationKind::Update) {
+                                void* value=nullptr;
+                                if(!index.lookup(op.key,value)){structural=true;outcome=TxnResult::Conflict;break;}
+                            }
+                            if(outcome==TxnResult::Ok) {
+                                if(!detail::leaf_plan(index,txn,leaf_scratch[worker],leaf_plans[worker]))outcome=TxnResult::Error;
+                                else for(const auto& r:leaf_plans[worker])if(!acquire(r.mode,r.range,r.kind))break;
+                            }
+                        }
+                    }else for(const auto& r:plans[i%total])if(!acquire(r.mode,r.range,r.kind))break;
+                }
                 for(const auto& op:txn.operations) {
                     if(outcome!=TxnResult::Ok)break;
                     if(Clock::now()>=deadline){outcome=TxnResult::Deadline;break;}

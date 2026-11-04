@@ -91,3 +91,6 @@ python3 scripts/report_shared_matrices.py --campaign experiments/results/formal-
 
 
 恢复 CSV 还必须携带 campaign_config_sha256（全部解析配置的指纹）。即使源码相同，也拒绝 key_count、ops、zipf、duration 等配置变化；缺失指纹的历史结果不能拼接进新运行时。none 基线在恢复时归入首个 policy 槽，避免因报告为 none 而重复执行。
+
+
+独立验证可加 --artifact-root DIR（在 DIR 下写 logs/results）和 --state-file FILE（独立状态快照）。CTest 的恢复集成测试使用临时目录和独立状态文件，不覆盖正在运行 campaign 的全局监控快照。

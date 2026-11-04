@@ -76,6 +76,16 @@ def validate_row(output, seconds, shared, expected_coordination=None):
 
 
 
+
+def write_matrix_rows(rows, outpath, temp):
+    if not rows:
+        raise ValueError("refuse an empty completed matrix")
+    fields=list(dict.fromkeys(k for row in rows for k in row))
+    with Path(temp).open("w",newline="") as handle:
+        writer=csv.DictWriter(handle,fieldnames=fields)
+        writer.writeheader();writer.writerows(rows)
+    Path(temp).replace(outpath)
+
 def config_fingerprint(config):
     """All resolved parameters matter when appending to an existing campaign."""
     return hashlib.sha256(json.dumps(config,sort_keys=True,separators=(",",":")).encode()).hexdigest()
@@ -129,6 +139,9 @@ def main():
     parser.add_argument("--config", default="experiments/configs/formal_shared_10s.json")
     parser.add_argument("--mode", choices=("local", "cross-host", "both"), default="both")
     parser.add_argument("--build", default="build-shared")
+    parser.add_argument("--artifact-root",help="isolated directory containing logs/ and results/; default experiments/")
+    parser.add_argument("--state-file",default="/tmp/rrl-shared-campaign-state.json",
+                        help="live status snapshot; use a separate file for isolated validation")
     parser.add_argument("--smoke", action="store_true", help="one second, one repetition; tagged non-formal")
     parser.add_argument("--environment-config", action="store_true")
     parser.add_argument("--validation-seconds", type=int, default=1)
@@ -183,6 +196,8 @@ def main():
     if set(config["wait_policies"]) - {"no-wait", "wait-die", "wound-wait"}: raise SystemExit("invalid wait policy")
     if not config["wait_policies"] or not config["workloads"] or not config["threads"] or not config["ranges"] or not config["buckets"]: raise SystemExit("empty dimensions")
     if set(config["local_ccs"]) - {"none", "record-2pl", "gap-lock", "next-key", "hierarchical", "predicate"}: raise SystemExit("invalid local protocols")
+    if args.mode in ("local","both") and not config["local_ccs"]:raise SystemExit("empty local protocols")
+    if args.mode in ("cross-host","both") and not config["rdma_ccs"]:raise SystemExit("empty RDMA protocols")
     if set(config["rdma_ccs"]) - {"rdma-record-2pl", "rdma-gap-lock", "rdma-next-key", "rdma-hierarchical", "rdma-predicate"}: raise SystemExit("invalid RDMA protocols")
     if subprocess.check_output(["git", "diff", "HEAD", "--"], text=True).strip() and not args.smoke:
         raise SystemExit("commit source/config before formal run")
@@ -190,8 +205,9 @@ def main():
     if untracked.strip() and not args.smoke: raise SystemExit("uncommitted source/config files")
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     kind = "smoke-not-formal" if args.smoke else "formal-shared-data"
-    logs = root / "experiments/logs" / (kind + "-" + stamp); logs.mkdir(parents=True)
-    results = root / "experiments/results"; results.mkdir(exist_ok=True)
+    artifacts=Path(args.artifact_root).resolve() if args.artifact_root else root/"experiments"
+    logs = artifacts / "logs" / (kind + "-" + stamp); logs.mkdir(parents=True)
+    results = artifacts / "results"; results.mkdir(exist_ok=True)
     build = (root / args.build).resolve()
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     tracked = subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], text=True).split("\0")
@@ -221,7 +237,7 @@ def main():
         state["status"] = status; state["updated"] = datetime.datetime.now().isoformat()
         text = json.dumps(state, indent=2)
         temp = logs / "state.tmp"; temp.write_text(text); temp.replace(state_file)
-        (Path("/tmp/rrl-shared-campaign-state.json")).write_text(text)
+        Path(args.state_file).write_text(text)
         print(status, state["local_completed"], state["cross_host_completed"], flush=True)
     ssh = ["ssh", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-i",
            os.environ.get("RRL_SSH_KEY", str(Path.home() / ".ssh/rdmarangelock_deploy")),
@@ -330,6 +346,12 @@ def main():
                 print("resume: keeping %d rows from %s" % (len(rows),source),flush=True)
             state["result_files"][mode]=str(outpath)
             allpoints=list(cases(config,mode));state[mode+"_expected"]=len(allpoints)
+            expected_keys={(p[0],str(p[1]),p[2],str(p[3]),str(p[4]),p[6],str(config["seeds"][p[5]])) for p in allpoints}
+            if len(done)!=len(rows) or not done.issubset(expected_keys):
+                raise ValueError("duplicate or unexpected resume cases")
+            # Even an entirely completed resume must persist its output before
+            # publishing a complete state that points at this new CSV path.
+            if rows:write_matrix_rows(rows,outpath,logs/"matrix.tmp")
             for index,point in enumerate(allpoints):
                 label=mode+"-"+str(index)+"-"+point[0]+"-"+point[2]
                 key=(point[0],str(point[1]),point[2],str(point[3]),str(point[4]),
@@ -340,11 +362,7 @@ def main():
                 state["current_case"]=dict(mode=mode,index=index,point=point);publish(mode)
                 rows.append(execute(mode,point,label))
                 if rows[-1]["progress_status"]=="no-commits":state["no_progress_cases"]+=1
-                fields=list(dict.fromkeys(k for row in rows for k in row))
-                temp=logs/"matrix.tmp"
-                with temp.open("w",newline="") as f:
-                    writer=csv.DictWriter(f,fieldnames=fields);writer.writeheader();writer.writerows(rows)
-                temp.replace(outpath)
+                write_matrix_rows(rows,outpath,logs/"matrix.tmp")
                 state["local_completed" if mode=="local" else "cross_host_completed"] += 1
             publish(mode+"-complete")
         state["current_case"]=None;publish("complete")

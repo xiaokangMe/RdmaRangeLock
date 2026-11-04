@@ -34,7 +34,8 @@
 6. 原 local-only 检查误把第二个本地 peer 当成不存在的 remote 目录；已修复为两本地进程，--cross-host 仍为两主机。
 7. resume 原先只按维度识别 case，可能混入旧提交/后端/预热设置。现拒绝不同源码、结果类别、协调后端、协程数、预热时长和栈大小，并校验全部解析配置指纹，覆盖 keys/ops/zipf/duration 等 CSV 原本缺失的输入。
 8. none 基线报告 policy=none，但恢复时应归入首个 policy 的执行槽，否则会重复执行该基线。新增归一化键和回归测试。
-9. destructive poison 测试必须最后使用其状态服务；CTest 显式安排共享数据用例先执行，不删除或跳过故障用例。
+9. 全部 case 都已完成的 resume 原先不写新 CSV，却发布 complete；现先原子保存保留行，并拒绝重复/意外 case、空协议矩阵。子进程回归确保不重跑 case、CSV 实际存在且报告可读。
+10. destructive poison 测试必须最后使用其状态服务；CTest 显式安排共享数据用例先执行，不删除或跳过故障用例。
 
 ## 尚未消除的边界
 

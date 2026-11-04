@@ -96,3 +96,29 @@ with tempfile.TemporaryDirectory() as directory:
     except ValueError:pass
     else:raise AssertionError("report accepted a different workload configuration")
 print("Report configuration signature: OK")
+
+with tempfile.TemporaryDirectory() as directory:
+    cfg=dict(config,name="resume-integration",local_ccs=["none"],threads=[1],workloads=["ycsb-a"],
+             warmup_seconds=0,coroutines=1,coordination_backend="native-rdma-state",
+             keys=16,transactions=16,operations=2)
+    path=Path(directory)/"config.json";path.write_text(json.dumps(cfg))
+    artifacts=Path(directory)/"artifacts";result_dir=artifacts/"results"
+    before=set(result_dir.glob("smoke-not-formal-*.json"))
+    cmd=[sys.executable,str(root/"scripts/run_shared_matrices.py"),"--config",str(path),
+         "--mode","local","--smoke","--keep-geometry","--no-build","--build",str(Path(sys.argv[1]).resolve().parent),
+         "--artifact-root",str(artifacts),"--state-file",str(Path(directory)/"live.json")]
+    first=subprocess.run(cmd,cwd=root,check=True,capture_output=True,text=True,timeout=30)
+    manifests=set(result_dir.glob("smoke-not-formal-*.json"))-before
+    assert len(manifests)==1, manifests
+    initial=json.loads(next(iter(manifests)).read_text())
+    original=Path(initial["result_files"]["local"])
+    second=subprocess.run(cmd+["--resume",str(original)],cwd=root,check=True,capture_output=True,text=True,timeout=30)
+    resumed=set(result_dir.glob("smoke-not-formal-*.json"))-before-manifests
+    assert len(resumed)==1, resumed
+    state=json.loads(next(iter(resumed)).read_text())
+    output=Path(state["result_files"]["local"])
+    assert state["status"]=="complete" and output.is_file()
+    assert output.read_bytes()==original.read_bytes()
+    assert not list(Path(state["log_dir"]).glob("local-*.command.json")), "completed resume reran a case"
+    load_campaign(next(iter(resumed)),True)
+print("Completed resume writes its CSV, deduplicates none and remains reportable: OK")

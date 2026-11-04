@@ -56,7 +56,9 @@ inline bool leaf_plan(BTreeIndex& index,const TransactionTrace& txn,std::vector<
                     std::none_of(txn.operations.begin(),txn.operations.end(),[&](const Operation& other){
                         return other.kind==OperationKind::Delete && other.key==it->range.StartKey;
                     });
-                if(!it->leaf && it->children>delete_budget && spare && stable_lower){safe=&*it;break;}
+                const bool root_survives=it->depth!=0 ||
+                    (it->children>1 && delete_budget<it->children-1);
+                if(!it->leaf && it->children>delete_budget && root_survives && spare && stable_lower){safe=&*it;break;}
             }else if(spare){safe=&*it;break;}
         }
         if(safe)add(LockMode::X,safe->id,LockKind::Node,safe->depth+1);

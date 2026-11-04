@@ -61,8 +61,23 @@ void delete_reroute_test() {
   require(locks.unlock_all(1)==RCOK && locks.get_lock_count()==0 && index.tree.validate(),"delete reroute strict invariants");
  }
 }
+void root_collapse_test() {
+ PreloadedTree index;require(index.init(3)==RCOK,"collapse tree");
+ std::vector<std::uint64_t> values{0,1,2};
+ for(std::size_t k=0;k<3;++k)require(index.insert(k,&values[k])==RCOK,"collapse seed");
+ std::vector<IndexNodeSpan> nodes;nodes.reserve(256);
+ std::vector<detail::HierarchyRequest> plan;plan.reserve(256);
+ TransactionTrace tx;tx.operations={{OperationKind::Delete,0,0,0}};
+ require(detail::leaf_plan(index,tx,nodes,plan),"collapse plan");
+ require(nodes.front().children==2 && plan.front().range.StartKey==0 && plan.front().mode==LockMode::X,"root collapse requires logical root X");
+ ObjectLockManager locks;require(locks.init_local({0,1,2},256,1,256),"collapse objects");
+ for(const auto& r:plan)require(locks.lock(1,r.mode,r.range,r.kind)==RCOK,"collapse writer");
+ require(index.erase(0)==RCOK && index.tree.height()==1,"real local root collapse");
+ require(locks.lock(2,LockMode::IS,KeyRangeEnt::point(0),LockKind::Node)==AbortConflict,"replacement root remains fenced");
+ require(locks.unlock_all(1)==RCOK && index.tree.validate(),"collapse strict release");
+}
 int main(int argc,char** argv){try {
- missing_update_test();delete_reroute_test();
+ missing_update_test();delete_reroute_test();root_collapse_test();
  const bool remote=argc>1 && std::string(argv[1])=="--remote";
  WorkloadConfig c;c.key_count=128;c.transaction_count=100;c.operations_per_transaction=4;c.zipf_theta=0;
  const auto trace=WorkloadTrace::generate(c);const auto keys=detail::object_record_keys(trace);

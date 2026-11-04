@@ -43,6 +43,7 @@ public:
     bool healthy() const override;
     RC apply_batch(const std::vector<IndexMutation>&) override;
     bool leaf_cover_into(const KeyRangeEnt&,std::vector<LeafSpan>&) const override;
+    bool hierarchy_cover_into(const KeyRangeEnt&,std::vector<IndexNodeSpan>&) const override;
     bool validate() const;
     std::uint64_t rdma_operations() const;
     std::uint64_t read_bytes() const;

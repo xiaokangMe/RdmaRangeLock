@@ -22,6 +22,13 @@ enum class LatchMode : std::uint8_t {
 
 // Actual leaf page identity and its routing fence (including empty gaps).
 struct LeafSpan { std::uint64_t id{0}; KeyRangeEnt range; };
+// Index metadata only: transaction code decides modes from actual ancestry.
+struct IndexNodeSpan {
+    std::uint64_t id{0};
+    KeyRangeEnt range;
+    std::size_t depth{0}, keys{0}, children{0}, max_keys{0};
+    bool leaf{false}, start_key_present{false};
+};
 
 struct KeyValue {
     idx_key_t key{0};
@@ -79,8 +86,9 @@ public:
     virtual bool lookup(idx_key_t key, void*& value) const = 0;
     virtual std::vector<KeyValue> scan_range(const KeyRangeEnt& range) const = 0;
     virtual std::size_t size() const = 0;
-    // Caller holds the lock-layer topology lease while using this snapshot.
+    // Snapshot uses short index latches. Callers revalidate after locking IDs.
     virtual bool leaf_cover_into(const KeyRangeEnt&,std::vector<LeafSpan>&) const { return false; }
+    virtual bool hierarchy_cover_into(const KeyRangeEnt&,std::vector<IndexNodeSpan>&) const { return false; }
     // Backend lifecycle hooks run before Begin/after End, outside txn locks.
     virtual bool preloaded() const { return false; }
     virtual void prepare_thread(std::size_t, std::size_t) {}
@@ -111,6 +119,7 @@ public:
     std::vector<KeyValue> scan_range(const KeyRangeEnt& range) const override;
     std::size_t size() const override { return size_; }
     bool leaf_cover_into(const KeyRangeEnt&,std::vector<LeafSpan>&) const override;
+    bool hierarchy_cover_into(const KeyRangeEnt&,std::vector<IndexNodeSpan>&) const override;
     bool validate() const;
     std::size_t height() const;
     std::size_t order() const { return order_; }
@@ -146,6 +155,7 @@ public:
     std::vector<KeyValue> scan_range(const KeyRangeEnt& range) const override;
     std::size_t size() const override;
     bool leaf_cover_into(const KeyRangeEnt&,std::vector<LeafSpan>&) const override;
+    bool hierarchy_cover_into(const KeyRangeEnt&,std::vector<IndexNodeSpan>&) const override;
     bool validate() const;
     std::size_t height() const;
     std::size_t order() const { return order_; }

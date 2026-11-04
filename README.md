@@ -127,6 +127,8 @@ python3 scripts/run_verified_matrices.py --smoke --build build-shared
 
 ## Deneva 式原生事务运行时
 
+通信选择以 Deneva 对应配置/算法的实际调用路径为准，不一律排除 TCP。当前 Deneva 的通用消息使用 TCP，选定单边算法的索引/记录/锁访问使用 RDMA，QP/MR 建链通过 rdmaio 的 UDP 控制请求；本项目现有 TCP 建链是适配差异，不冒称完全相同。源码对应关系、当前通信审计和差异见 [通信对齐说明](docs/notes/deneva-communication-alignment-2026-11-05.md)。
+
 实现依据与逐文件来源见 [原生运行时移植说明](docs/notes/deneva-native-runtime-2026-11-04.md)。新增被动事务状态服务、每 worker 多个栈式协程、并发 warm-up、排空/测量屏障和独立流量快照。设备 context/PD 按进程共享，QP/CQ/缓冲仍按上下文隔离，避免大并发建链重复消耗设备 FD。
 
 - 原生路径使用 --txn-state-port；旧 --coordinator-port 显式选择 TCP 兼容路径，二者互斥。TCP 兼容路径只支持每 worker 一个协程。

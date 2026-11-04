@@ -20,7 +20,7 @@ struct PolicyReply {
 // PrepareCommit is the serialization point between a wound and commit.
 class TransactionCoordinator {
 public:
-    explicit TransactionCoordinator(std::size_t lock_budget = 16384);
+    explicit TransactionCoordinator(std::size_t lock_budget = 16384, bool exact_objects = false);
     ~TransactionCoordinator();
     PolicyReply begin(std::uint64_t session, WaitPolicy policy, std::uint64_t age,
                       std::uint64_t budget_ns);

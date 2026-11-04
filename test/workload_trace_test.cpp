@@ -1,7 +1,10 @@
 #include "txn/workload.h"
+#include "txn/shared_dataset.h"
+#include <unordered_map>
 #include <iostream>
 #include <set>
 #include <stdexcept>
+namespace rrl { bool seed_index(BTreeIndex&, const WorkloadTrace&, std::unordered_map<idx_key_t,std::uint64_t>&); }
 using namespace rrl;
 int main(){
   auto fail=[](bool ok,const char* msg){if(!ok)std::cerr<<"FAIL: "<<msg<<"\n";return ok;};
@@ -31,5 +34,18 @@ int main(){
   if(!fail(rejected,"impossible unique request count rejected"))return 1;
   invalid.ycsb_unique_keys=false;
   if(!fail(WorkloadTrace::generate(invalid).transactions()[0].operations.size()==10,"explicit repeated-key regression mode"))return 1;
+  // Compare actual legacy local-loader contents with the direct remote seed.
+  for(auto kind:{WorkloadKind::YcsbA,WorkloadKind::YcsbB,WorkloadKind::YcsbE,WorkloadKind::TpccPayment,WorkloadKind::TpccNewOrder}) {
+    for(bool unique:{false,true}) {
+      WorkloadConfig c;c.kind=kind;c.key_count=128;c.transaction_count=200;c.operations_per_transaction=10;c.ycsb_unique_keys=unique;
+      auto trace=WorkloadTrace::generate(c);BTreeSingle tree;tree.init(16);
+      std::unordered_map<idx_key_t,std::uint64_t> values;
+      if(!fail(seed_index(tree,trace,values),"legacy loader"))return 1;
+      auto direct=make_shared_seed(trace);auto rows=tree.scan_range(KeyRangeEnt::unbounded());
+      if(!fail(direct.size()==rows.size(),"direct seed cardinality"))return 1;
+      for(size_t i=0;i<rows.size();++i)
+        if(!fail(direct[i].first==rows[i].key && direct[i].second==*static_cast<uint64_t*>(rows[i].value),"exact direct seed content"))return 1;
+    }
+  }
   std::cout<<"workload trace: OK\n";
 }

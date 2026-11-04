@@ -118,7 +118,7 @@ def config_from_environment():
                 coroutines=number("COROUTINES","1"),coroutine_stack_bytes=number("COROUTINE_STACK_BYTES","262144"),
                 warmup_seconds=number("WARMUP_SECONDS","10"),duration_seconds=number("DURATION", "10"), runs=runs, seeds=list(range(8, 8+runs)),
                 keys=number("KEYS", "10000"), transactions=number("TRANSACTIONS", "5000"),
-                operations=number("OPERATIONS", "10"), zipf=float(os.environ.get("RRL_ZIPF", "0.99")),
+                operations=number("OPERATIONS", "10"), ycsb_unique_keys=number("YCSB_UNIQUE_KEYS","1"), zipf=float(os.environ.get("RRL_ZIPF", "0.99")),
                 tpcc_items=number("TPCC_ITEMS", "5"), threads=ls("THREADS", "1,2,4,8,16,32", int),
                 workloads=ls("WORKLOADS", "ycsb-a,ycsb-e,tpcc-payment,tpcc-new-order"),
                 ranges=ls("RANGE_LENGTHS", "8,32,128", int), buckets=ls("BUCKETS", "16,64,256", int),
@@ -164,6 +164,9 @@ def main():
         raise SystemExit("runtime geometry bounds")
     if config["coordination_backend"]=="tcp-control+rdma-slots" and config["coroutines"]!=1:
         raise SystemExit("TCP compatibility path requires one coroutine per worker")
+    config.setdefault("ycsb_unique_keys",1)
+    if type(config["ycsb_unique_keys"]) is not int or config["ycsb_unique_keys"] not in (0,1):
+        raise SystemExit("ycsb_unique_keys must be 0 or 1")
     config.setdefault("wait_policies", ["no-wait"])
     config.setdefault("max_attempts", 1000)
     config.setdefault("order", 128); config.setdefault("tree_pages", 8192); config.setdefault("tree_records", 262144)
@@ -259,6 +262,7 @@ def main():
         duration = config["duration_seconds"] if duration is None else duration
         cfg = dict(workload=workload, index="rdma", cc=cc, key_count=config["keys"],
                    transaction_count=config["transactions"], operations_per_transaction=config["operations"],
+                   ycsb_unique_keys=config["ycsb_unique_keys"],
                    range_length=length, threads=threads, seed=config["seeds"][run], zipf=config["zipf"],
                    tpcc_items_per_order=config["tpcc_items"], order=config["order"],
                    tree_pages=config["tree_pages"], tree_records=config["tree_records"],
@@ -267,7 +271,8 @@ def main():
                    wait_timeout_ms=config["wait_timeout_ms"], tree_latch_timeout_ms=config["tree_latch_timeout_ms"], lock_budget=config["lock_budget"])
         path = logs / (label + ".json"); path.write_text(json.dumps(cfg, indent=2))
         flags = ["--index", "v2", "--cc", cc, "--workload", workload, "--keys", str(config["keys"]),
-                 "--txns", str(config["transactions"]), "--ops", str(config["operations"]), "--range", str(length),
+                 "--txns", str(config["transactions"]), "--ops", str(config["operations"]),
+                 "--ycsb-unique-keys",str(config["ycsb_unique_keys"]),"--range", str(length),
                  "--threads", str(threads), "--seed", str(cfg["seed"]), "--zipf", str(config["zipf"]),
                  "--items", str(config["tpcc_items"]), "--order", str(config["order"]),
                  "--duration", str(duration), "--format", "csv",
@@ -290,7 +295,7 @@ def main():
         row = validate_row(output, duration, mode == "cross-host", config["coordination_backend"] if mode=="cross-host" else None)
         if cc=="none":row["wait_policy"]="none"
         return dict(source_commit=commit, result_kind=kind, transport="rdma-cross-host-shared" if mode=="cross-host" else "local-no-rdma",
-                    execution_stack_bytes=config["coroutine_stack_bytes"],
+                    execution_stack_bytes=config["coroutine_stack_bytes"], ycsb_unique_keys=config["ycsb_unique_keys"],
                     campaign_config_sha256=config_fingerprint(config),
                     run=run+1, seed=cfg["seed"], range=length, bucket=bucket, zipf=config["zipf"], **row)
     try:

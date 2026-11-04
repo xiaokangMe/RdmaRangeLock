@@ -1,0 +1,22 @@
+{
+  "name": "deneva-scale-2m-ycsb",
+  "workload": "ycsb-a",
+  "index": "rdma",
+  "cc": "rdma-next-key",
+  "key_count": 2097152,
+  "transaction_count": 5000,
+  "operations_per_transaction": 10,
+  "ycsb_unique_keys": 1,
+  "range_length": 20,
+  "threads": 2,
+  "seed": 8,
+  "zipf": 0.99,
+  "order": 128,
+  "tree_pages": 131072,
+  "tree_records": 4194304,
+  "tree_latch_timeout_ms": 10000,
+  "wait_policy": "wound-wait",
+  "coroutines": 2,
+  "warmup_seconds": 10,
+  "duration_seconds": 10
+}

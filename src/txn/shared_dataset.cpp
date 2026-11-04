@@ -3,18 +3,28 @@
 #include <fstream>
 #include <map>
 #include <set>
-#include <unordered_map>
+#include <unordered_set>
 
 namespace rrl {
-bool seed_index(BTreeIndex&,const WorkloadTrace&,std::unordered_map<idx_key_t,std::uint64_t>&);
 TreeSeed make_shared_seed(const WorkloadTrace& trace) {
-    BTreeSingle tree;
-    if(tree.init(128)!=RCOK)throw std::runtime_error("seed tree init");
-    std::unordered_map<idx_key_t,std::uint64_t> values;
-    if(!seed_index(tree,trace,values))throw std::runtime_error("seed tree populate");
-    TreeSeed seed;seed.reserve(values.size());
-    for(const auto& p:values)seed.push_back(p);
-    std::sort(seed.begin(),seed.end(),[](const auto& a,const auto& b){return a.first<b.first;});return seed;
+    // Deneva loads records before running transactions. Construct that image
+    // directly; building a throwaway local index here wastes O(table) nodes
+    // on both the data server and every one-sided client at large scale.
+    std::unordered_set<idx_key_t> inserts;
+    for(const auto& txn:trace.transactions())for(const auto& op:txn.operations)
+        if(op.kind==OperationKind::Insert)inserts.insert(op.key);
+    TreeSeed seed;seed.reserve(trace.config().key_count);
+    for(std::size_t key=0;key<trace.config().key_count;++key)
+        if(!inserts.count(key))seed.emplace_back(key,key);
+    // Match seed_index exactly: non-insert requests also seed keys outside
+    // the base domain, and may restore an insert hole accessed elsewhere.
+    for(const auto& txn:trace.transactions())for(const auto& op:txn.operations)
+        if(op.kind!=OperationKind::Insert && op.kind!=OperationKind::Delete &&
+           (op.key>=trace.config().key_count || inserts.count(op.key)))
+            seed.emplace_back(op.key,op.key);
+    std::sort(seed.begin(),seed.end(),[](const auto& a,const auto& b){return a.first<b.first;});
+    seed.erase(std::unique(seed.begin(),seed.end(),[](const auto& a,const auto& b){return a.first==b.first;}),seed.end());
+    return seed;
 }
 void load_shared_dataset_config(const std::string& path,WorkloadConfig& c,RdmaTreeConfig& t,std::uint16_t& port) {
     std::ifstream in(path);if(!in)throw std::invalid_argument("cannot read dataset config");

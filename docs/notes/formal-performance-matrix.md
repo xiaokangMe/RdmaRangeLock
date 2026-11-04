@@ -45,11 +45,11 @@ scripts/capacity_preflight.sh
 | 策略协调 | 同进程 coordinator | .66 被动 RDMA 事务状态表（native-rdma-state）；显式兼容配置可选 TCP |
 | CSV 标记 | local-no-rdma / data_backend=local | rdma-cross-host-shared / data_backend=shared-rdma |
 
-各组内部所有协议固定同一个索引实现、布局、order、初始化集合、负载和计时。跨主机数据 QP 为每 worker 独占；锁 QP 默认 min(threads,2)。不同协议配置只改变锁计划。结构写批次使用全局排他 latch，是公开的基线瓶颈。
+各组内部所有协议固定同一个索引实现、布局、order、初始化集合、负载和计时。原生跨主机数据/状态 QP 按执行上下文（worker × coroutine）隔离；锁 QP 默认按上下文配置，显式 rdma_connections 可覆盖。不同协议配置只改变锁计划。结构写批次使用全局排他 latch，是公开的基线瓶颈。
 
 每个跨主机 case 启动独立的新数据服务、新锁服务和新 coordinator，结束后仅清理该 case 自己创建的进程。数据服务先按共同 trace 生成初始集合；客户端只验证指纹，不重新灌数。传输使用 RoCE GID 3。端口自动分配，完整命令落日志。不要把不同 case、协议、coordinator 的客户端接到同一个表，也不要单独重启其中一个服务继续测量。
 
-默认维度：4 workload（YCSB-A/E、项目 Payment/New Order 子负载），10000 key，5000 条循环 trace，每事务 10 ops（New Order 实际操作数由 items 决定），Zipf 0.99，items 5，线程 1/2/4/8/16/32，YCSB-E range 8/32/128，hierarchy bucket 16/64/256，三次重复。它们不是完整 TPC-C。
+默认维度：4 workload（YCSB-A/E、项目 Payment/New Order 子负载），10000 key，5000 条循环 trace，YCSB 每事务默认 10 个请求（--ops 可配；Payment 固定业务 trace，New Order 由 items 决定），Zipf 0.99，items 5，线程 1/2/4/8/16/32，YCSB-E range 8/32/128，hierarchy bucket 16/64/256，三次重复。它们不是完整 TPC-C。
 
 `wait_policies` 可设三策略的任意子集，所有协议统一 `max_attempts`。默认单个 no-wait，故默认 case 数仍为 756/432；策略维度扩大时实际 case 数自动计算，none 基线每个重复只执行一次。缓冲写入在 PrepareCommit 后应用，计时从所有 worker 缓冲准备完成后开始。
 
@@ -83,7 +83,7 @@ python3 scripts/report_shared_matrices.py --campaign experiments/results/formal-
 
 新入口默认 coordination_backend=native-rdma-state；coroutines 默认 1，warmup_seconds 默认 10。要复现新 4 协程设置使用 formal_native_policies_10s.json，结果记录完整解析后的配置，不能只根据旧配置文件缺省字段推断历史结果。
 
-等价环境变量为 RRL_COORDINATION_BACKEND、RRL_COROUTINES、RRL_COROUTINE_STACK_BYTES、RRL_WARMUP_SECONDS，供 run_formal_matrix.sh 使用。每 case 的预热与正式事务以相同 worker/协程/协议运行，屏障排空后独立采集延迟和流量；预热错误仍令整轮失效。native 模式不启动 TCP coordinator，只在 QP/MR 建链交换时使用 TCP。
+等价环境变量为 RRL_COORDINATION_BACKEND、RRL_COROUTINES、RRL_COROUTINE_STACK_BYTES、RRL_WARMUP_SECONDS，供 run_formal_matrix.sh 使用。每 case 的预热与正式事务以相同 worker/协程/协议运行，屏障排空后独立采集延迟和流量；预热错误仍令整轮失效。native 模式不启动 TCP coordinator；TCP 用于 QP/MR 建链交换、连接存活和故障/断连通知，不进行逐事务或逐锁授权。
 
 状态服务默认 4096 个会话槽；同一会话的 attempt 按 generation 复用槽。物理锁槽容量保持原配置，max(worker) × coroutines 不得超过运行时/状态槽上限；正式执行之前必须通过相同最大并发、range、ops 和 seed 的容量门禁。lock_budget 对本地/TCP 元数据协调有效；原生授权容量由物理槽和会话槽单独约束，不把该数误作物理锁槽数。
 
@@ -94,3 +94,11 @@ python3 scripts/report_shared_matrices.py --campaign experiments/results/formal-
 
 
 独立验证可加 --artifact-root DIR（在 DIR 下写 logs/results）和 --state-file FILE（独立状态快照）。CTest 的恢复集成测试使用临时目录和独立状态文件，不覆盖正在运行 campaign 的全局监控快照。
+
+
+YCSB 事务长度与 Deneva 的 REQ_PER_QUERY 对齐，默认 10 个请求但始终可配置；一次 scan 可读取多条记录，不计为多条请求。默认 ycsb_unique_keys=1，对事务内请求起始 key 去重并保留生成顺序（Deneva 当前 KEY_ORDER=false）。配置、每 case 的服务端数据集/客户端 CLI、CSV 和完整配置指纹均保存该语义；RRL_YCSB_UNIQUE_KEYS=0 仅用于显式重复键消融/正确性验证，不能与默认结果混合。起始键唯一不代表扫描区间不相交。TPC-C 简化子负载独立于该参数。
+
+原生物理锁服务启用 --native-fail-stop，断开 owner 若仍有锁或 gate，停止该 case，绝不清锁后重新授权；不单独重启服务接续测量。正常释放后的断开继续服务。该故障策略与旧兼容恢复路径分别验证。
+
+
+两百万 key 域的完整维度配置为 formal_native_deneva_2m_10s.json，数据页/记录容量同步设为 131072/4194304。先用 `--mode cross-host --preflight-only --smoke --keep-geometry --validation-seconds 10` 验证最大并发/扫描几何；该命令只做容量检查，保留十秒预热/十秒窗口，仍标为非正式。小维度入口验证用 deneva_scale_2m_boundary.json。A 初始记录数等于 key 域大小；E 留有插入空位，实际行数见每 case 数据服务日志，不把二者都声称成满表。详细源码对照与验证记录见 deneva-gate-scale-warmup-2026-11-04.md。

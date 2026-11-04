@@ -102,7 +102,7 @@ RdmaRangeLock/
 
 单边 RDMA 数据路径按 Deneva 的根/子节点/叶链偏移寻址方式接入：`.66` 数据服务的注册内存保存权威 B+ 树和 uint64 记录；`.67` 事务进程逐层 RDMA READ 查树、读取记录，提交时 RDMA WRITE 写回。所有 RDMA 锁协议共用这一条路径，不在客户端保留独立数据库。
 
-`.66` 分别启动专用数据、物理锁表、时间戳协调器服务。旧兼容路径的协调面走 TCP；新的 native-rdma-state 路径把事务状态、数据和物理锁槽都放在注册内存，以单边 RDMA 访问。TCP 只做 QP/MR 建链交换，不处理每次事务或锁请求。结构采用共享/排他 latch，写批次串行；删除为 tombstone，容量固定且可配置。当前是可验证的共享数据基线，不能据此宣称已达到 Sherman 等索引的扩展性。
+`.66` 分别启动专用数据、物理锁表、时间戳协调器服务。旧兼容路径的协调面走 TCP；新的 native-rdma-state 路径把事务状态、数据和物理锁槽都放在注册内存，以单边 RDMA 访问。TCP 用于 QP/MR 建链交换、连接存活和故障/断连通知，不处理每次事务或锁授权请求。结构采用共享/排他 latch，写批次串行；删除为 tombstone，容量固定且可配置。当前是可验证的共享数据基线，不能据此宣称已达到 Sherman 等索引的扩展性。
 
 ```bash
 cmake -S . -B build-shared -DCMAKE_BUILD_TYPE=Release
@@ -145,3 +145,11 @@ python3 scripts/run_verified_matrices.py --smoke --build build-shared
     python3 scripts/run_shared_matrices.py --config experiments/configs/native_runtime_smoke.json --mode both --smoke --no-build --keep-geometry
 
 新运行时不等于完整 Deneva 数据库：现有 Payment/New Order 仍为简化 trace；hierarchical 仍为逻辑 root/bucket/record，不是真实叶页锁；共享索引写批次仍有全局结构 latch，年龄分配字也可能成为热点。相关性能结论须由新的正式矩阵支持。
+
+
+YCSB 请求数遵循 Deneva 的可配置模型，默认 `REQ_PER_QUERY=10` 对应本项目 `--ops 10`；扫描长度由 `--range` 单独配置。默认事务内请求起始键去重且保持生成顺序（对应 Deneva `KEY_ORDER=false`）；区间可重叠。重复键专项验证显式使用 `--ycsb-unique-keys 0` / 配置 `ycsb_unique_keys: 0`，不能混作默认正式结果。TPC-C 子负载按其业务 trace 决定长度，`--ops` 不决定 Payment/New Order 操作数。详见 [Deneva 负载适配](docs/notes/deneva-ycsb-generation-2026-11-04.md)。
+
+原生运行时的物理锁服务使用 `--native-fail-stop`：断开的 QP 若仍持有锁或 gate，立即停止该物理服务，不再清锁后授权；无残留的正常断开继续服务。此为保证失败实验不继续运行的策略，不提供跨故障恢复提交的能力。
+
+
+两百万 key 配置：`experiments/configs/deneva_scale_2m.json` 用于单 case，`formal_native_deneva_2m_10s.json` 用于完整维度（尚未自动运行正式矩阵）。两者均配置 2,097,152 key 域、10 请求、10 秒预热与 10 秒测量，并同步增大数据页/记录容量。`deneva_scale_2m_boundary.json` 是小维度验证配置，执行 `python3 scripts/run_shared_matrices.py --config experiments/configs/deneva_scale_2m_boundary.json --mode both --smoke --keep-geometry --validation-seconds 10`，结果仍为非正式。规模、元数据 gate 与真实叶节点锁的区别见 [源码核查](docs/notes/deneva-gate-scale-warmup-2026-11-04.md)。

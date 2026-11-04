@@ -70,5 +70,6 @@
   "coordination_backend": "native-rdma-state",
   "coroutines": 4,
   "coroutine_stack_bytes": 262144,
-  "warmup_seconds": 10
+  "warmup_seconds": 10,
+  "ycsb_unique_keys": 1
 }

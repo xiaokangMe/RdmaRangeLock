@@ -42,7 +42,7 @@ class SharedServices:
     def __enter__(self):
         self.logdir.mkdir(parents=True, exist_ok=True)
         specs = [("rrl_rdma_data_server", ["--config", str(self.config), "--port", str(self.data_port)]),
-                 ("rrl_rdma_lock_server", [str(self.lock_port)]),
+                 ("rrl_rdma_lock_server", [str(self.lock_port)] + (["--native-fail-stop"] if self.native is True else [])),
                  ]
         if self.native is not True:
             specs.append(("rrl_wait_coordinator", [str(self.coordinator_port), str(self.lock_budget), "600000"]))

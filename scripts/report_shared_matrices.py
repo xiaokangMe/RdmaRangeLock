@@ -115,7 +115,7 @@ def main():
           "本地与跨主机分组绘图；跨主机必须读取共享远端索引和记录，禁止混入旧锁服务结果。", "",
           "折线为各次重复的均值，误差线为最小/最大。p99 面板是各次已完成逻辑事务 p99 的均值，不是合并直方图后的总体 p99；无提交样本的点省略，未完成比例和无进展重复保留在 summary.csv。新运行时 none 基线同样经过预热与统一测量驱动，具有完成延迟但没有事务锁等待。旧基线无延迟样本。",
           "原始阻塞、重试、attempt 中止率和未完成比例在原始 CSV；summary.csv 汇总吞吐、等待/启动逻辑事务、重试/启动逻辑事务和已完成逻辑事务的 p99。", "",
-          "当前共享索引的写批次存在全局结构 latch 串行点；协调后端："+state["config"].get("coordination_backend","tcp-control+rdma-slots")+"；每 worker 协程数："+str(state["config"].get("coroutines",1))+"；预热秒数："+str(state["config"].get("warmup_seconds",0))+"。原生模式只在建链交换 QP/MR 属性时使用 TCP，事务状态、数据和锁槽均为单边 RDMA。此结果不能直接支持与 Sherman/ROLEX 的公平端到端排名。", ""]
+          "当前共享索引的写批次存在全局结构 latch 串行点；协调后端："+state["config"].get("coordination_backend","tcp-control+rdma-slots")+"；每 worker 协程数："+str(state["config"].get("coroutines",1))+"；预热秒数："+str(state["config"].get("warmup_seconds",0))+"。原生模式的 TCP 用于建链交换 QP/MR 属性、连接存活及故障/断连通知；不承担逐事务或逐锁授权。事务状态、数据和锁槽均为单边 RDMA。此结果不能直接支持与 Sherman/ROLEX 的公平端到端排名。", ""]
     for name in figures:text += ["!["+name+"]("+name+")",""]
     (out/"report.md").write_text("\n".join(text))
     print(out/"report.md")

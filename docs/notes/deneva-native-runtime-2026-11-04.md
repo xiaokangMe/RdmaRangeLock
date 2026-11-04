@@ -72,3 +72,10 @@ Deneva 目录的 git 基线为 a1a2f46，工作树含已有修改；以下以实
 Deneva transport/rdma.cpp:446..464 的 Rdma::init 只创建一个 RNic，再创建 server/client RegHandler；client_qp 为 worker/coroutine 创建 RC QP 时使用共享 nic。按此方式，把本项目的设备 context/PD 做成进程内按设备选择共享的引用计数资源，保留每个 QP 独立 CQ、scratch MR 和服务端 region MR。最后一个 QP/MR 销毁后才释放 PD/context；fork 子进程不得复用父进程 pool。原来的断连先销毁 QP、再恢复内存的顺序不变，不共享 CQ 或可写 scratch。
 
 验证：低 FD 上限下同时创建 64 个真实 QP，关闭其中 63 个后剩余 QP 可继续读；重跑硬件 CTest、完整几何容量预检和跨主机短负载。Deneva 单一共享 MR 尚不直接搬来，因为现有服务端 MR 的连接生命周期与故障隔离需要分别保持，不在此次混改。
+
+
+## 原生物理锁连接断开：失败封闭方案
+
+复查发现旧 clear_owner_state 会清除断开 QP 的物理锁。取消 TCP 第二授权后，这不能用于原生运行时：若事务已 COMMITTING、其数据 QP 仍可用，锁 QP 断开后清锁会放入竞争写事务，导致旧写覆盖。
+
+增加显式 --native-fail-stop 模式：恢复用 NIC CAS 检查所有 shard；发现断开 owner 持有 gate 或 slot，停止整个物理服务，决不清理再授权。无残留锁的正常断开不影响服务。旧兼容模式保留原恢复契约。原生 SharedServices 必须启动此模式，专门故障测试保持数据/状态连接活着、让 COMMITTING 事务的物理 QP 消失，再验证竞争者不得获锁。该策略是实验失败封闭，不是完整故障恢复；已有一小时运行仅覆盖此前版本正常路径，版本单独记录。

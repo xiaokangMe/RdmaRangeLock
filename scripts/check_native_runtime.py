@@ -32,7 +32,7 @@ def main():
     # build must never replace a running check's next service executable.
     pinned=logs/"binaries";pinned.mkdir()
     names=("rrl_workload_runner","rrl_rdma_data_server","rrl_rdma_lock_server",
-           "rrl_rdma_txn_server","rrl_native_policy_test","rrl_native_shared_data_test")
+           "rrl_rdma_txn_server","rrl_native_policy_test","rrl_native_shared_data_test","rrl_native_lock_failure_test")
     hashes={}
     for name in names:
         before=hashlib.sha256((build/name).read_bytes()).hexdigest()
@@ -51,7 +51,7 @@ def main():
     if args.cross_host:
         remote=subprocess.check_output(ssh+["mktemp -d /tmp/rrl-native-check.XXXXXX"],text=True).strip()
         if not remote.startswith("/tmp/rrl-native-check."):raise RuntimeError("unsafe remote directory")
-        names=("rrl_workload_runner","rrl_native_policy_test","rrl_native_shared_data_test")
+        names=("rrl_workload_runner","rrl_native_policy_test","rrl_native_shared_data_test","rrl_native_lock_failure_test")
         subprocess.run(["scp"]+ssh[1:-1]+[str(build/n) for n in names]+[ssh[-1]+":"+remote+"/"],check=True)
         for name in names:
             digest=subprocess.check_output(ssh+["sha256sum "+shlex.quote(remote+"/"+name)],text=True).split()[0]
@@ -70,6 +70,17 @@ def main():
     base=json.loads((root/"experiments/configs/rdma_shared_smoke.json").read_text())
     cases=[]
     if not args.endurance and not args.only:
+        for mode in ("clean","running","committing","gate"):
+            label="native-lock-fault-"+mode
+            path=logs/(label+".json");path.write_text(json.dumps(base))
+            with SharedServices(build,path,logs/label,env,native=True) as service:
+                e=service.test_env("10.0.0.3" if args.cross_host else "127.0.0.1")
+                run(actual("rrl_native_lock_failure_test",[mode],e,args.cross_host),label,e)
+                if mode=="clean":service.check()
+                else:
+                    if service.processes[1].wait(timeout=10)!=2:raise RuntimeError("native physical server failed open")
+                    if any(p.poll() is not None for i,p in enumerate(service.processes) if i!=1):raise RuntimeError("unrelated data/state failure")
+                print("PASS",label,flush=True)
         for warmup in (0,30):
             label="native-data-fault-"+("measurement" if warmup==0 else "warmup")
             cfg=dict(base,workload="ycsb-e",cc="rdma-next-key",threads=2,coroutines=2,
@@ -98,12 +109,19 @@ def main():
                     if not any(int(row[k]) for k in ("index_errors","lock_errors","lock_release_failures")):
                         raise RuntimeError("data fault became ordinary conflict")
                     run(actual("rrl_native_shared_data_test",["--check-state-poison"],e,False),label+"-state",e)
-                    service.check()
+                    # An uncertain active data fault may deliberately leave
+                    # physical locks fenced. The native lock service then
+                    # stops, rather than reclaiming and reopening them.
+                    for number, process in enumerate(service.processes):
+                        code=process.poll()
+                        if code is None:continue
+                        if number==1 and code==2 and "native owner disconnected" in (logs/label/"rrl_rdma_lock_server.log").read_text():continue
+                        raise RuntimeError(("unexpected fault service exit",number,code))
                     print("PASS",label,flush=True)
                 finally:
                     if peer.poll() is None:peer.terminate();peer.wait(timeout=30)
         if args.fault_only:
-            (logs/"validated.json").write_text(json.dumps(dict(status="PASS",formal=False,fault_cases=2)))
+            (logs/"validated.json").write_text(json.dumps(dict(status="PASS",formal=False,fault_cases=6)))
             print("PASS; native warmup/measurement data faults; logs:",logs,flush=True);return
     for policy in ("no-wait","wait-die","wound-wait"):
         if not args.endurance and not args.only:

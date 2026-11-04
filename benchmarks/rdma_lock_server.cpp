@@ -46,7 +46,7 @@ std::chrono::milliseconds recovery_timeout() {
     return std::chrono::milliseconds(ms);
 }
 
-void clear_owner_state(std::uint16_t port, std::uint64_t owner, RdmaOpTag failed_tag) {
+void clear_owner_state(std::uint16_t port, std::uint64_t owner, RdmaOpTag failed_tag, bool native_fail_stop) {
     if (owner == 0) return; // Unowned probes/recovery connections never publish locks.
     // Use NIC atomics for both ordinary clients and recovery. CPU atomics are
     // not a portable mutual exclusion mechanism against remote NIC atomics.
@@ -68,6 +68,8 @@ void clear_owner_state(std::uint16_t port, std::uint64_t owner, RdmaOpTag failed
                 recovery_failed(owner, "acquire CAS");
             if (previous == 0) break;
             if (previous == owner) {
+                if (native_fail_stop)
+                    recovery_failed(owner, "native owner disconnected with held gate; locks remain fenced");
                 // A torn slot WRITE is not a recoverable transaction. Never
                 // reopen its shard without a journal/publication protocol.
                 if (failed_tag == RdmaOpTag::None || failed_tag == RdmaOpTag::StoreSlot)
@@ -87,6 +89,11 @@ void clear_owner_state(std::uint16_t port, std::uint64_t owner, RdmaOpTag failed
         if (count && !recovery.read(base + offsetof(RemoteLockShard, slots), remote.rkey,
                                     slots.data(), count * sizeof(RemoteLockSlot)))
             recovery_failed(owner, "slots");
+        if (native_fail_stop) {
+            for (std::uint64_t i = 0; i < count; ++i)
+                if (slots[i].owner == owner)
+                    recovery_failed(owner, "native owner disconnected with published locks; refusing early unlock");
+        }
         std::uint64_t kept = 0;
         for (std::uint64_t i = 0; i < count; ++i)
             if (slots[i].owner != owner) slots[kept++] = slots[i];
@@ -105,7 +112,9 @@ void clear_owner_state(std::uint16_t port, std::uint64_t owner, RdmaOpTag failed
 }
 
 int run(int argc, char** argv) {
-    if (argc > 2) throw std::invalid_argument("usage: lock_server [port]");
+    if (argc > 3 || (argc == 3 && std::string(argv[2]) != "--native-fail-stop"))
+        throw std::invalid_argument("usage: lock_server [port] [--native-fail-stop]");
+    const bool native_fail_stop = argc == 3;
     const auto parsed = argc > 1 ? parse_unsigned(argv[1], "port") : 19876;
     if (!parsed || parsed > 65535) throw std::invalid_argument("port must be 1..65535");
     const auto port = static_cast<std::uint16_t>(parsed);
@@ -128,14 +137,14 @@ int run(int argc, char** argv) {
             std::cerr << "RDMA lock server accept failed\n";
             return 2;
         }
-        std::thread([connection, port] {
+        std::thread([connection, port, native_fail_stop] {
             connection->wait_for_disconnect();
             const auto owner = connection->peer_owner_token();
             const auto tag = connection->peer_failure_tag();
             // Destroy the server QP and invalidate its MR before any recovery
             // can acquire gates or read slots written through that connection.
             delete connection;
-            clear_owner_state(port, owner, tag);
+            clear_owner_state(port, owner, tag, native_fail_stop);
         }).detach();
     }
 }

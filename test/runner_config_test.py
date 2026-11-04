@@ -77,3 +77,14 @@ with tempfile.TemporaryDirectory() as tmp:
     if any(w["root_conflicts"] + w["bucket_conflicts"] for w in workers):
         raise RuntimeError("pure point workload should conflict only on records")
 print("hierarchy diagnostic channel and counters: OK")
+
+reject([runner,"--keys","1","--ops","10"])
+reject(base+["--ycsb-unique-keys","2"])
+subprocess.run([runner,"--keys","1","--ops","10","--txns","2","--ycsb-unique-keys","0"],check=True,capture_output=True,timeout=10)
+with tempfile.TemporaryDirectory() as tmp:
+    path=Path(tmp)/"unique.json"
+    path.write_text(json.dumps(dict(keys=1,operations=10,transactions=2,ycsb_unique_keys=0)))
+    subprocess.run([runner,"--config",str(path)],check=True,capture_output=True,timeout=10)
+    path.write_text(json.dumps(dict(keys=1,operations=10,transactions=2,ycsb_unique_keys=2)))
+    reject([runner,"--config",str(path)])
+print("Deneva unique-key configuration and explicit repeated-key mode: OK")

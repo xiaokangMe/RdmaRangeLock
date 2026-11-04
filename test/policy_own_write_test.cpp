@@ -19,7 +19,7 @@ struct CapacityIndex final : BTreeIndex {
 };
 int main(){try {
     for(auto kind:{WorkloadKind::YcsbA,WorkloadKind::YcsbE}) {
-        WorkloadConfig cfg;cfg.kind=kind;cfg.key_count=4;cfg.transaction_count=100;
+        WorkloadConfig cfg;cfg.ycsb_unique_keys=false;cfg.kind=kind;cfg.key_count=4;cfg.transaction_count=100;
         cfg.operations_per_transaction=20;cfg.range_length=4;cfg.threads=1;cfg.seed=71;
         auto trace=WorkloadTrace::generate(cfg);std::map<idx_key_t,std::uint64_t> model;
         for(const auto& p:make_shared_seed(trace))model.insert(p);
@@ -42,7 +42,7 @@ int main(){try {
     }
     // One key and many operations ensure every trace transaction has a write.
     for(auto policy:{WaitPolicy::NoWait,WaitPolicy::WaitDie,WaitPolicy::WoundWait}) {
-        WorkloadConfig cfg;cfg.kind=WorkloadKind::YcsbA;cfg.key_count=1;
+        WorkloadConfig cfg;cfg.ycsb_unique_keys=false;cfg.kind=WorkloadKind::YcsbA;cfg.key_count=1;
         cfg.transaction_count=20;cfg.operations_per_transaction=32;cfg.threads=2;cfg.seed=71;
         const auto trace=WorkloadTrace::generate(cfg);
         for(const auto& txn:trace.transactions())

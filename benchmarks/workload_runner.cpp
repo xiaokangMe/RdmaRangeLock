@@ -111,6 +111,11 @@ void load_config(const std::string& path, WorkloadConfig& config,
                 policy.coordinator_port = static_cast<std::uint16_t>(n);
             } else if (n > 1) throw std::invalid_argument("latency must be 0 or 1");
             if (key != "latency" || n) measured = true;
+        } else if (key == "ycsb_unique_keys") {
+            if (value.kind != ConfigScalar::Number) throw std::invalid_argument("ycsb_unique_keys: expected 0 or 1");
+            const auto n = parse_unsigned(value.text,key);
+            if (n > 1) throw std::invalid_argument("ycsb_unique_keys must be 0 or 1");
+            config.ycsb_unique_keys = n != 0;
         } else if (key == "hierarchy_diagnostics") {
             if (value.kind != ConfigScalar::Number) throw std::invalid_argument("hierarchy_diagnostics: expected 0 or 1");
             const auto enabled = parse_unsigned(value.text, key);
@@ -199,6 +204,11 @@ int run(int argc, char** argv) {
         else if (option == "--keys") config.key_count = parse_unsigned(value, option);
         else if (option == "--txns") config.transaction_count = parse_unsigned(value, option);
         else if (option == "--ops") config.operations_per_transaction = parse_unsigned(value, option);
+        else if (option == "--ycsb-unique-keys") {
+            const auto n = parse_unsigned(value,option);
+            if (n > 1) throw std::invalid_argument("ycsb-unique-keys must be 0 or 1");
+            config.ycsb_unique_keys = n != 0;
+        }
         else if (option == "--range") config.range_length = parse_unsigned(value, option);
         else if (option == "--bucket") {
             if (value == "auto") bucket_auto = true;

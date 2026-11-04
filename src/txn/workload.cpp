@@ -46,8 +46,20 @@ void ycsb(TransactionTrace& t, const WorkloadConfig& c, std::mt19937_64& g, cons
           size_t n, size_t& mx) {
     double rr = c.kind == WorkloadKind::YcsbA ? .5 : .95;
     std::bernoulli_distribution read(rr), ins(.05);
-    for (size_t i = 0; i < c.operations_per_transaction; i++) {
+    // Deneva ordinary YCSB generation: reject duplicate request keys and
+    // replenish to REQ_PER_QUERY. KEY_ORDER=false preserves generation order.
+    // Ranges may overlap; uniqueness applies to request anchors, not all rows.
+    std::unordered_set<idx_key_t> selected;
+    t.operations.reserve(c.operations_per_transaction);
+    size_t rejected = 0;
+    for (size_t i = 0; i < c.operations_per_transaction;) {
         idx_key_t k = key(g, c, z);
+        if (c.ycsb_unique_keys && !selected.insert(k).second) {
+            // Diagnose unsupported extreme skew rather than hanging forever.
+            if (++rejected >= 1048576)
+                throw std::invalid_argument("YCSB unique-key sampling exhausted; reduce skew or request count");
+            continue;
+        }
         Operation o;
         o.value = (uint64_t(n) << 32) | i;
         if (c.kind == WorkloadKind::YcsbE && !ins(g)) {
@@ -57,16 +69,18 @@ void ycsb(TransactionTrace& t, const WorkloadConfig& c, std::mt19937_64& g, cons
             mx = std::max(mx, size_t(o.end_key));
         } else if (c.kind == WorkloadKind::YcsbE) {
             o.kind = OperationKind::Insert;
-            o.key = c.key_count == 0 ? 0 : std::min<idx_key_t>(
+            // Historical repeated-key fixtures retain their exact generator.
+            o.key = c.ycsb_unique_keys ? k : (c.key_count == 0 ? 0 : std::min<idx_key_t>(
                 c.key_count - 1,
                 k + std::max<size_t>(1, c.range_length / 2) +
-                    (i % std::max<size_t>(1, c.range_length)));
+                    (i % std::max<size_t>(1, c.range_length))));
         } else {
             o.kind = read(g) ? OperationKind::Read : OperationKind::Update;
             o.key = k;
         }
         mx = std::max(mx, size_t(o.key));
         t.operations.push_back(o);
+        ++i;
     }
 }
 
@@ -204,6 +218,9 @@ const char* WorkloadTrace::name(WorkloadKind k) {
 }
 
 WorkloadTrace WorkloadTrace::generate(const WorkloadConfig& c) {
+    const bool ycsb_kind = c.kind == WorkloadKind::YcsbA || c.kind == WorkloadKind::YcsbB || c.kind == WorkloadKind::YcsbE;
+    if (ycsb_kind && c.ycsb_unique_keys && (!c.key_count || c.operations_per_transaction > c.key_count))
+        throw std::invalid_argument("YCSB unique requests must not exceed key_count");
     WorkloadTrace t;
     t.config_ = c;
     std::mt19937_64 g(c.seed);

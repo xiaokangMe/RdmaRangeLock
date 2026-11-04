@@ -39,6 +39,11 @@ void load_shared_dataset_config(const std::string& path,WorkloadConfig& c,RdmaTr
         if(found!=numbers.end()) {
             if(e.second.kind!=ConfigScalar::Number || !assigned.insert(found->second).second)throw std::invalid_argument("invalid/duplicate dataset integer");
             *found->second=parse_unsigned(e.second.text,e.first);
+        } else if(e.first=="ycsb_unique_keys") {
+            if(e.second.kind!=ConfigScalar::Number)throw std::invalid_argument("ycsb_unique_keys must be 0 or 1");
+            const auto n=parse_unsigned(e.second.text,e.first);
+            if(n>1)throw std::invalid_argument("ycsb_unique_keys must be 0 or 1");
+            c.ycsb_unique_keys=n!=0;
         } else if(e.first=="workload") {
             if(e.second.kind!=ConfigScalar::String)throw std::invalid_argument("workload must be string");
             c.kind=WorkloadTrace::parse_kind(e.second.text);

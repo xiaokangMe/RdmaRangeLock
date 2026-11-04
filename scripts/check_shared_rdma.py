@@ -76,7 +76,7 @@ def main():
                 run(shared_command(["--read", "777", "12345"], True), "cross-independent-read")
             # Two independent processes on distinct hosts update one protected
             # shared record. The final exact sum detects private copies/lost writes.
-            commands = [shared_command(["--increment", "500"], remote_host) for remote_host in (False, True)]
+            commands = [shared_command(["--increment", "500"], remote_host) for remote_host in (False, args.cross_host)]
             peers = [subprocess.Popen(c, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env) for c in commands]
             try:
                 for number, peer in enumerate(peers):

@@ -1,3 +1,4 @@
+#include "common/execution_context.h"
 #include "rdma/rdma_transport.h"
 #include "common/config_parse.h"
 #include "control_io.h"
@@ -16,6 +17,8 @@
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <map>
+#include <memory>
 #include <cstdlib>
 #include <thread>
 #include <vector>
@@ -106,6 +109,46 @@ int make_client_socket(const std::string& host, std::uint16_t port, Clock::time_
     return fd;
 }
 
+// Deneva transport/rdma.cpp Rdma::init shares one RNic/PD across worker
+// QPs. Keep independent CQ/MR/scratch ownership, sharing only device resources.
+struct SharedDevice {
+    ibv_context* context{nullptr};
+    ibv_pd* pd{nullptr};
+    ~SharedDevice() {
+        if(pd && ibv_dealloc_pd(pd)!=0)std::abort();
+        if(context && ibv_close_device(context)!=0)std::abort();
+    }
+};
+std::shared_ptr<SharedDevice> acquire_device() {
+    static std::mutex mutex;
+    static std::map<std::string,std::weak_ptr<SharedDevice>> devices_by_request;
+    const char* requested=std::getenv("RRL_RDMA_DEVICE");
+    // A forked child creates its own verbs context/PD, never uses inherited
+    // provider queues or doorbell state.
+    const auto key=std::to_string(::getpid())+":"+(requested?requested:"");
+    std::lock_guard<std::mutex> guard(mutex);
+    if(auto existing=devices_by_request[key].lock())return existing;
+    auto shared=std::make_shared<SharedDevice>();
+    int count=0;
+    ibv_device** devices=ibv_get_device_list(&count);
+    if(!devices)return {};
+    for(int i=0;i<count && !shared->context;++i) {
+        if(requested && std::string(ibv_get_device_name(devices[i]))!=requested)continue;
+        auto* candidate=ibv_open_device(devices[i]);
+        if(!candidate)continue;
+        ibv_port_attr port{};
+        if(ibv_query_port(candidate,kPort,&port)==0 && port.state==IBV_PORT_ACTIVE)
+            shared->context=candidate;
+        else ibv_close_device(candidate);
+    }
+    ibv_free_device_list(devices);
+    if(!shared->context)return {};
+    shared->pd=ibv_alloc_pd(shared->context);
+    if(!shared->pd)return {};
+    devices_by_request[key]=shared;
+    return shared;
+}
+
 bool query_local(RdmaConnection::Impl* impl, WireInfo& wire);
 bool transition_init(RdmaConnection::Impl* impl);
 bool transition_ready(RdmaConnection::Impl* impl, const WireInfo& remote);
@@ -113,6 +156,7 @@ bool transition_ready(RdmaConnection::Impl* impl, const WireInfo& remote);
 }  // namespace
 
 struct RdmaConnection::Impl {
+    std::shared_ptr<SharedDevice> device;
     ibv_context* context{nullptr};
     ibv_pd* pd{nullptr};
     ibv_cq* cq{nullptr};
@@ -157,8 +201,8 @@ struct RdmaConnection::Impl {
         if (region_mr) ibv_dereg_mr(region_mr);
         if (local_mr) ibv_dereg_mr(local_mr);
         if (cq) ibv_destroy_cq(cq);
-        if (pd) ibv_dealloc_pd(pd);
-        if (context) ibv_close_device(context);
+        // Device/PD remains alive until every QP and MR sharing it is gone.
+        device.reset();
         if (socket_fd >= 0) ::close(socket_fd);
     }
 };
@@ -167,23 +211,10 @@ namespace {
 
 bool create_resources(RdmaConnection::Impl* impl, void* region, std::size_t region_length,
                      bool client) {
-    int count = 0;
-    ibv_device** devices = ibv_get_device_list(&count);
-    if (!devices || count == 0) return false;
-    const char* requested = std::getenv("RRL_RDMA_DEVICE");
-    for (int i = 0; i < count && !impl->context; ++i) {
-        if (requested && std::string(ibv_get_device_name(devices[i])) != requested) continue;
-        ibv_context* candidate = ibv_open_device(devices[i]);
-        if (!candidate) continue;
-        ibv_port_attr port{};
-        if (ibv_query_port(candidate, kPort, &port) == 0 && port.state == IBV_PORT_ACTIVE)
-            impl->context = candidate;
-        else
-            ibv_close_device(candidate);
-    }
-    ibv_free_device_list(devices);
-    if (!impl->context) return false;
-    impl->pd = ibv_alloc_pd(impl->context);
+    impl->device=acquire_device();
+    if(!impl->device)return false;
+    impl->context=impl->device->context;
+    impl->pd=impl->device->pd;
     impl->cq = ibv_create_cq(impl->context, 64, nullptr, nullptr, 0);
     if (!impl->pd || !impl->cq) return false;
 
@@ -394,7 +425,7 @@ bool post_and_poll(RdmaConnection::Impl* impl, ibv_send_wr& wr, ibv_sge& sge) {
             fail_connection(impl);
             return false;
         }
-        std::this_thread::yield();
+        cooperative_yield();
     }
 }
 
@@ -467,7 +498,7 @@ bool post_batch_and_poll(RdmaConnection::Impl* impl,
             fail_connection(impl);
             return false;
         }
-        std::this_thread::yield();
+        cooperative_yield();
     }
 }
 

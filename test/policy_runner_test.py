@@ -14,7 +14,9 @@ base = [runner, '--cc', 'hierarchical', '--keys', '16', '--txns', '40', '--ops',
         '--threads', '2', '--format', 'csv']
 for flags in (['--wait-policy', 'typo'], ['--max-attempts', '0'], ['--wait-timeout-ms', '0'],
               ['--wait-timeout-ms', '600001'], ['--coordinator-port', '65536'], ['--lock-budget', '0'],
-              ['--latency', '2'], ['--index', 'rdma'], ['--data-port', '12345'],
+              ['--latency', '2'], ['--coroutines','0'], ['--coroutines','4097'],
+              ['--coroutine-stack-bytes','1'], ['--warmup','600001'], ['--txn-state-port','65536'],
+              ['--txn-state-port','12345'], ['--coordinator-port','12345','--txn-state-port','12346'], ['--index', 'rdma'], ['--data-port', '12345'],
               ['--rdma-lock-only', '2'], ['--rdma-lock-only', '1'], ['--cc', 'none', '--wait-policy', 'wait-die'],
               ['--cc', 'rdma-hierarchical', '--wait-policy', 'wait-die']):
     command = base[:]

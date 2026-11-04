@@ -30,14 +30,19 @@ def load_campaign(path, allow_smoke=False):
         for row in rows:
             import io
             buf=io.StringIO();writer=csv.DictWriter(buf,fieldnames=list(row));writer.writeheader();writer.writerow(row)
-            validate_row(buf.getvalue(),state["config"]["duration_seconds"],mode=="cross-host")
+            validate_row(buf.getvalue(),state["config"]["duration_seconds"],mode=="cross-host",
+                         state["config"].get("coordination_backend","tcp-control+rdma-slots") if mode=="cross-host" else None)
+            if int(row.get("coroutines",1))!=state["config"].get("coroutines",1) or int(row.get("warmup_seconds",0))!=state["config"].get("warmup_seconds",0):
+                raise ValueError("mixed runtime geometry/warmup")
+            if state["config"].get("warmup_seconds",0) and int(row.get("warmup_elapsed_ns",0))<state["config"]["warmup_seconds"]*1000000000:
+                raise ValueError("warmup window too short")
             if row["result_kind"]!=state["kind"] or row["source_commit"]!=state["source_commit"]:
                 raise ValueError("mixed result kind or code baseline")
             if any(int(row[k]) for k in ERRORS):raise ValueError("hard errors in CSV")
             if int(row["elapsed_ns"])<state["config"]["duration_seconds"]*1000000000:
                 raise ValueError("measurement window too short")
             if mode=="cross-host" and (row["index"]!="rdma" or row["data_backend"]!="shared-rdma" or
-                                      int(row["data_rdma_operations"])<=0 or int(row["lock_capacity_aborts"]) or int(row["lock_gate_aborts"])):
+                                      (int(row["committed"])>0 and int(row["data_rdma_operations"])<=0) or int(row["lock_capacity_aborts"]) or int(row["lock_gate_aborts"])):
                 raise ValueError("wrong data backend or capacity/gate saturation")
             if mode=="local" and row["data_backend"]!="local":raise ValueError("wrong local backend")
             policy=row.get("wait_policy") if row["cc"]!="none" else "none"
@@ -103,9 +108,9 @@ def main():
     text=["# "+("共享数据正式矩阵报告" if state["kind"]=="formal-shared-data" else "运行与绘图入口验证（非正式性能结果）"),"",
           "源码提交：`"+state["source_commit"]+"`；输入：`"+str(Path(args.campaign).resolve())+"`。",
           "本地与跨主机分组绘图；跨主机必须读取共享远端索引和记录，禁止混入旧锁服务结果。", "",
-          "折线为各次重复的均值，误差线为最小/最大。p99 面板是各次已完成逻辑事务 p99 的均值，不是合并直方图后的总体 p99；无提交样本的点省略，未完成比例和无进展重复保留在 summary.csv。none 基线没有事务级延迟/等待样本。",
+          "折线为各次重复的均值，误差线为最小/最大。p99 面板是各次已完成逻辑事务 p99 的均值，不是合并直方图后的总体 p99；无提交样本的点省略，未完成比例和无进展重复保留在 summary.csv。新运行时 none 基线同样经过预热与统一测量驱动，具有完成延迟但没有事务锁等待。旧基线无延迟样本。",
           "原始阻塞、重试、attempt 中止率和未完成比例在原始 CSV；summary.csv 汇总吞吐、等待/启动逻辑事务、重试/启动逻辑事务和已完成逻辑事务的 p99。", "",
-          "当前共享索引的写批次存在全局结构 latch 串行点；协调面为 TCP，数据和锁槽为单边 RDMA。图表不能支持纯单边事务或与 Sherman/ROLEX 的公平端到端排名。", ""]
+          "当前共享索引的写批次存在全局结构 latch 串行点；协调后端："+state["config"].get("coordination_backend","tcp-control+rdma-slots")+"；每 worker 协程数："+str(state["config"].get("coroutines",1))+"；预热秒数："+str(state["config"].get("warmup_seconds",0))+"。原生模式只在建链交换 QP/MR 属性时使用 TCP，事务状态、数据和锁槽均为单边 RDMA。此结果不能直接支持与 Sherman/ROLEX 的公平端到端排名。", ""]
     for name in figures:text += ["!["+name+"]("+name+")",""]
     (out/"report.md").write_text("\n".join(text))
     print(out/"report.md")

@@ -69,7 +69,8 @@ void load_config(const std::string& path, WorkloadConfig& config,
         {"threads", &config.threads}, {"duration", &config.duration_seconds}, {"duration_seconds", &config.duration_seconds},
         {"hierarchy_bucket_width", &config.hierarchy_bucket_width}, {"bucket", &config.hierarchy_bucket_width},
         {"tpcc_items_per_order", &config.tpcc_items_per_order}, {"items", &config.tpcc_items_per_order},
-        {"tree_latch_timeout_ms", &tree_timeout}, {"seed", &config.seed}, {"order", &order}, {"rdma_connections", &connections}};
+        {"coroutines", &policy.coroutines}, {"coroutine_stack_bytes", &policy.coroutine_stack_bytes},
+        {"warmup_seconds", &policy.warmup_seconds}, {"tree_latch_timeout_ms", &tree_timeout}, {"seed", &config.seed}, {"order", &order}, {"rdma_connections", &connections}};
     std::set<std::size_t*> assigned;
     bool zipf_seen = false, port_seen = false;
     for (const auto& entry : values) {
@@ -88,6 +89,11 @@ void load_config(const std::string& path, WorkloadConfig& config,
             const auto n=parse_unsigned(value.text,key);
             if(!n || n>65535)throw std::invalid_argument("data_port bounds");
             data_port=static_cast<std::uint16_t>(n);
+        } else if (key == "txn_state_port") {
+            if(value.kind!=ConfigScalar::Number)throw std::invalid_argument("txn_state_port expected number");
+            const auto n=parse_unsigned(value.text,key);
+            if(!n || n>65535)throw std::invalid_argument("txn_state_port bounds");
+            policy.txn_state_port=static_cast<std::uint16_t>(n);measured=true;
         } else if (key == "latency_histogram") {
             if (value.kind != ConfigScalar::String || value.text.empty()) throw std::invalid_argument("latency_histogram: expected nonempty path");
             policy.histogram_path = value.text; measured = true;
@@ -172,6 +178,14 @@ int run(int argc, char** argv) {
         else if (option == "--lock-budget") { policy.lock_budget = parse_unsigned(value,option); measured = true; }
         else if (option == "--max-attempts") { policy.max_attempts = parse_unsigned(value,option); measured = true; }
         else if (option == "--wait-timeout-ms") { policy.wait_timeout_ms = parse_unsigned(value,option); measured = true; }
+        else if (option == "--coroutines") {policy.coroutines=parse_unsigned(value,option);measured=true;}
+        else if (option == "--coroutine-stack-bytes") {policy.coroutine_stack_bytes=parse_unsigned(value,option);measured=true;}
+        else if (option == "--warmup") {policy.warmup_seconds=parse_unsigned(value,option);measured=true;}
+        else if (option == "--txn-state-port") {
+            const auto n=parse_unsigned(value,option);
+            if(!n || n>65535)throw std::invalid_argument("txn-state-port bounds");
+            policy.txn_state_port=static_cast<std::uint16_t>(n);measured=true;
+        }
         else if (option == "--coordinator-port") {
             const auto n = parse_unsigned(value,option);
             if (!n || n > 65535) throw std::invalid_argument("coordinator-port must be 1..65535");
@@ -229,22 +243,29 @@ int run(int argc, char** argv) {
     const std::set<std::string> protocols{"none", "record-2pl", "gap-lock", "next-key", "hierarchical", "rdma-next-key", "rdma-hierarchical", "predicate", "rdma-predicate", "rdma-record-2pl", "rdma-gap-lock"};
     if (index_name != "v1" && index_name != "v2" && index_name != "rdma") throw std::invalid_argument("unknown index: " + index_name);
     if (!protocols.count(cc)) throw std::invalid_argument("unknown cc: " + cc);
-    if (cc == "predicate" || cc == "rdma-predicate") measured = true;
+    if (cc == "predicate" || cc == "rdma-predicate" || policy.warmup_seconds || policy.coroutines>1) measured = true;
+    if(!policy.coroutines || policy.coroutines>4096 || config.threads>4096/policy.coroutines ||
+       policy.coroutine_stack_bytes<65536 || policy.coroutine_stack_bytes>16777216 || policy.warmup_seconds>600000)
+        throw std::invalid_argument("runtime geometry bounds");
+    if(policy.txn_state_port && (cc.rfind("rdma-",0)!=0 || policy.coordinator_port))
+        throw std::invalid_argument("native RDMA state requires rdma protocol and excludes TCP coordinator");
+    if(policy.coroutines>1 && policy.coordinator_port)
+        throw std::invalid_argument("coroutines require local or native RDMA state; TCP is compatibility only");
     if(cc.rfind("rdma-",0)==0 && index_name!="rdma" && !lock_only)
         throw std::invalid_argument("RDMA experiments require --index rdma and shared data; historical lock-service microbenchmarks require explicit --rdma-lock-only 1");
     if(lock_only && (index_name=="rdma" || cc.rfind("rdma-",0)!=0))
         throw std::invalid_argument("rdma-lock-only is only for local-index/remote-lock microbenchmarks");
     if(index_name=="rdma") {
-        if(cc.rfind("rdma-",0)!=0 || !data_port || !policy.coordinator_port || !tree_timeout || tree_timeout>600000)
-            throw std::invalid_argument("shared RDMA index requires rdma protocol, data-port, coordinator-port and bounded tree timeout");
+        if(cc.rfind("rdma-",0)!=0 || !data_port || (!policy.coordinator_port && !policy.txn_state_port) || !tree_timeout || tree_timeout>600000)
+            throw std::invalid_argument("shared RDMA index requires rdma protocol, data-port, txn-state-port (or legacy coordinator-port) and bounded tree timeout");
         measured=true;
     } else if(data_port)throw std::invalid_argument("data-port requires --index rdma");
     if (!policy.max_attempts || !policy.wait_timeout_ms || policy.wait_timeout_ms > 600000 || !policy.lock_budget || policy.lock_budget > 1048576)
         throw std::invalid_argument("invalid max-attempts, wait-timeout-ms (1..600000) or lock-budget (1..1048576)");
-    if (measured && cc == "none") throw std::invalid_argument("wait-policy/latency requires a lock protocol");
+    if (measured && cc == "none" && policy.wait_policy!=WaitPolicy::NoWait) throw std::invalid_argument("wait-policy/latency requires a lock protocol");
     if (measured && config.hierarchy_diagnostics) throw std::invalid_argument("legacy hierarchy diagnostics are separate from latency mode");
     if (measured && cc.rfind("rdma-",0) == 0) {
-        if (!policy.coordinator_port) throw std::invalid_argument("coordinated RDMA requires --coordinator-port and a dedicated rrl_wait_coordinator");
+        if (!policy.coordinator_port && !policy.txn_state_port) throw std::invalid_argument("RDMA policy requires --txn-state-port or explicit legacy --coordinator-port");
         policy.coordinator_host = rdma_host;
     }
     if (bucket_auto) config.hierarchy_bucket_width = auto_bucket_width(config.kind);
@@ -278,7 +299,7 @@ int run(int argc, char** argv) {
         index = &v1;
     } else if(index_name=="rdma") {
         const auto seed=make_shared_seed(trace);
-        if(!remote_index.connect(rdma_host,data_port,config.threads,tree_seed_fingerprint(seed),tree_timeout) ||
+        if(!remote_index.connect(rdma_host,data_port,std::min(config.threads*policy.coroutines,config.transaction_count),tree_seed_fingerprint(seed),tree_timeout) ||
            remote_index.init(order)!=RCOK)throw std::runtime_error("shared RDMA data connect/configuration mismatch");
         index=&remote_index;
     } else {
@@ -286,9 +307,15 @@ int run(int argc, char** argv) {
         index = &v2;
     }
 
-    const auto data_ops_start=remote_index.rdma_operations();
-    const auto data_reads_start=remote_index.read_bytes(),data_writes_start=remote_index.write_bytes();
-    const auto data_wait_start=remote_index.latch_wait_ns();
+    auto data_ops_start=remote_index.rdma_operations();
+    auto data_reads_start=remote_index.read_bytes(),data_writes_start=remote_index.write_bytes();
+    auto data_wait_start=remote_index.latch_wait_ns();
+    auto snapshot_data=[&] {
+        data_ops_start=remote_index.rdma_operations();
+        data_reads_start=remote_index.read_bytes();data_writes_start=remote_index.write_bytes();
+        data_wait_start=remote_index.latch_wait_ns();
+    };
+    policy.measurement_begin=snapshot_data;
     RunStats stats;
     RemoteLockManager::Diagnostics rdma_diag{};
     // 0 on every non-RDMA protocol: no connection was opened for this run.
@@ -297,18 +324,32 @@ int run(int argc, char** argv) {
     std::int64_t rdma_failure_shard = -1;
     if (measured) {
         const auto plain = cc.rfind("rdma-",0) == 0 ? cc.substr(5) : cc;
-        policy.protocol = plain == "record-2pl" ? PolicyProtocol::Record : plain == "gap-lock" ? PolicyProtocol::Gap :
+        policy.protocol = plain == "none" ? PolicyProtocol::None : plain == "record-2pl" ? PolicyProtocol::Record : plain == "gap-lock" ? PolicyProtocol::Gap :
             plain == "next-key" ? PolicyProtocol::NextKey : plain == "predicate" ? PolicyProtocol::Predicate : PolicyProtocol::Hierarchy;
         if (cc.rfind("rdma-",0) == 0) {
             RemoteLockManager locks;
             locks.use_coordinator_transaction_ids();
-            active_connections = resolve_connection_count(config.threads,rdma_connections);
+            active_connections = policy.coroutines>1 && !rdma_connections ?
+                std::min(config.threads*policy.coroutines,config.transaction_count) :
+                resolve_connection_count(config.threads,rdma_connections);
             locks.set_connection_count(active_connections);
             locks.set_bucket_width(config.hierarchy_bucket_width);
             if (!locks.connect(rdma_host,rdma_port)) throw std::runtime_error("RDMA connect failed");
+            RemoteLockManager::Diagnostics before{};
+            std::uint64_t ops_before=0;
+            policy.measurement_begin=[&] {snapshot_data();before=locks.diagnostics();ops_before=locks.rdma_operations();};
             stats = run_policy_workload(*index,locks,trace,policy);
             stats.rdma_timeouts=locks.rdma_timeouts(); stats.rdma_completion_errors=locks.rdma_completion_errors();
-            stats.rdma_operations=locks.rdma_operations(); rdma_diag=locks.diagnostics();
+            stats.rdma_operations=locks.rdma_operations()-ops_before; rdma_diag=locks.diagnostics();
+#define DELTA(f) rdma_diag.f-=before.f
+            DELTA(gate_attempts);DELTA(gate_retries);DELTA(gate_aborts);DELTA(batches);
+            DELTA(lock_calls);DELTA(cache_hits);DELTA(io_wait_ns);DELTA(local_gate_wait_ns);DELTA(gate_hold_ns);
+            DELTA(index_build_ns);DELTA(lookup_ns);DELTA(slot_checks);DELTA(txn_wait_ns);
+            DELTA(sync_calls);DELTA(sync_ns);DELTA(read_bytes);DELTA(write_bytes);
+#undef DELTA
+            for(std::size_t i=0;i<rdma_diag.phase_calls.size();++i) {
+                rdma_diag.phase_calls[i]-=before.phase_calls[i];rdma_diag.phase_ns[i]-=before.phase_ns[i];
+            }
             rdma_failure=locks.last_failure(); rdma_failure_shard=locks.last_failure_shard();
         } else {
             LockManager locks; locks.set_bucket_width(config.hierarchy_bucket_width);
@@ -369,7 +410,7 @@ int run(int argc, char** argv) {
         if (measured) std::cout << ",metrics_schema,wait_policy,coordination,logical_started,logical_unfinished,logical_failed,retries,max_retries,wound_aborts,deadline_aborts,retry_exhausted,completed_retries,unfinished_retries";
         if (measured) for (const char* name : {"successful_attempt","logical_completion","lock_wait","lock_call","release"})
             for (const char* field : {"count","total_ns","p50_ns","p95_ns","p99_ns","p999_ns","max_ns"}) std::cout << "," << name << "_" << field;
-        std::cout << ",data_backend,data_rdma_operations,data_read_bytes,data_write_bytes,data_latch_wait_ns\n";
+        std::cout << ",data_backend,data_rdma_operations,data_read_bytes,data_write_bytes,data_latch_wait_ns,coroutines,active_contexts,warmup_seconds,warmup_committed,warmup_aborted,warmup_elapsed_ns,coroutine_switches_total,state_rdma_operations\n";
         std::cout << WorkloadTrace::name(config.kind) << ',' << index_name << ',' << cc << ',' << config.threads << ','
                   << stats.transactions << ',' << stats.committed << ',' << stats.aborted << ',' << stats.operations << ','
                   << stats.reads << ',' << stats.updates << ',' << stats.inserts << ',' << stats.deletes << ','
@@ -405,14 +446,18 @@ int run(int argc, char** argv) {
         std::cout << ',' << rdma_diag.txn_wait_ns;
         if (measured) {
             const auto& m=stats.policy;
-            std::cout << ",2," << wait_policy_name(policy.wait_policy) << ',' << (policy.coordinator_host.empty()?"local":"tcp-control+rdma-slots")
+            std::cout << ",2," << wait_policy_name(policy.wait_policy) << ',' << (policy.txn_state_port?"native-rdma-state":policy.coordinator_host.empty()?"local":"tcp-control+rdma-slots")
                 << ',' << m.logical_started << ',' << m.unfinished << ',' << m.logical_failed << ',' << m.retries << ',' << m.max_retries
                 << ',' << m.wound_aborts << ',' << m.deadline_aborts << ',' << m.retry_exhausted << ',' << m.completed_retries << ',' << m.unfinished_retries;
             for (const auto* q : {&m.successful_attempt,&m.logical_completion,&m.lock_wait,&m.lock_call,&m.release})
                 std::cout << ',' << q->count << ',' << q->total_ns << ',' << q->p50_ns << ',' << q->p95_ns << ',' << q->p99_ns << ',' << q->p999_ns << ',' << q->max_ns;
         }
         std::cout << ',' << (index_name=="rdma"?"shared-rdma":"local") << ',' << data_ops << ',' << data_reads
-                  << ',' << data_writes << ',' << data_wait << '\n';
+                  << ',' << data_writes << ',' << data_wait
+                  << ',' << policy.coroutines << ',' << std::min(config.threads*policy.coroutines,config.transaction_count)
+                  << ',' << policy.warmup_seconds << ',' << stats.policy.warmup_committed << ',' << stats.policy.warmup_aborted
+                  << ',' << stats.policy.warmup_elapsed_ns << ',' << stats.policy.coroutine_switches
+                  << ',' << stats.policy.state_rdma_operations << '\n';
     } else {
         std::cout << "data_backend=" << (index_name=="rdma"?"shared-rdma":"local")
                   << ",data_rdma_operations=" << data_ops << ",data_read_bytes=" << data_reads

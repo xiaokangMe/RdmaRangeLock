@@ -1,0 +1,60 @@
+{
+  "name": "native-runtime-entrypoint-smoke",
+  "duration_seconds": 10,
+  "transactions": 200,
+  "keys": 128,
+  "operations": 4,
+  "runs": 1,
+  "seeds": [
+    8
+  ],
+  "threads": [
+    1,
+    2
+  ],
+  "workloads": [
+    "ycsb-a",
+    "ycsb-e"
+  ],
+  "ranges": [
+    8
+  ],
+  "buckets": [
+    16
+  ],
+  "zipf": 0.99,
+  "tpcc_items": 5,
+  "local_ccs": [
+    "none",
+    "next-key",
+    "hierarchical"
+  ],
+  "rdma_ccs": [
+    "rdma-next-key",
+    "rdma-hierarchical"
+  ],
+  "wait_policies": [
+    "no-wait",
+    "wait-die",
+    "wound-wait"
+  ],
+  "max_attempts": 1000,
+  "profile": 0,
+  "slot_lookup": "linear",
+  "rdma_connections": "auto",
+  "local_gate": 1,
+  "gate_retry": 64,
+  "gid_index": 3,
+  "server_roce": "10.0.0.3",
+  "client_roce": "10.0.0.4",
+  "order": 16,
+  "tree_pages": 8192,
+  "tree_records": 262144,
+  "wait_timeout_ms": 5000,
+  "tree_latch_timeout_ms": 10000,
+  "lock_budget": 16384,
+  "coordination_backend": "native-rdma-state",
+  "coroutines": 4,
+  "coroutine_stack_bytes": 262144,
+  "warmup_seconds": 10
+}

@@ -102,7 +102,7 @@ RdmaRangeLock/
 
 单边 RDMA 数据路径按 Deneva 的根/子节点/叶链偏移寻址方式接入：`.66` 数据服务的注册内存保存权威 B+ 树和 uint64 记录；`.67` 事务进程逐层 RDMA READ 查树、读取记录，提交时 RDMA WRITE 写回。所有 RDMA 锁协议共用这一条路径，不在客户端保留独立数据库。
 
-`.66` 分别启动专用数据、物理锁表、时间戳协调器服务。协调面仍走 TCP，数据和物理锁槽走单边 RDMA，不称纯单边事务系统。结构采用共享/排他 latch，写批次串行；删除为 tombstone，容量固定且可配置。当前是可验证的共享数据基线，不能据此宣称已达到 Sherman 等索引的扩展性。
+`.66` 分别启动专用数据、物理锁表、时间戳协调器服务。旧兼容路径的协调面走 TCP；新的 native-rdma-state 路径把事务状态、数据和物理锁槽都放在注册内存，以单边 RDMA 访问。TCP 只做 QP/MR 建链交换，不处理每次事务或锁请求。结构采用共享/排他 latch，写批次串行；删除为 tombstone，容量固定且可配置。当前是可验证的共享数据基线，不能据此宣称已达到 Sherman 等索引的扩展性。
 
 ```bash
 cmake -S . -B build-shared -DCMAKE_BUILD_TYPE=Release
@@ -124,3 +124,24 @@ python3 scripts/run_verified_matrices.py --smoke --build build-shared
 显式策略模式输出 `metrics_schema=2`：成功 attempt 与含重试逻辑事务各自的 p50/p95/p99/p999，等待时间、重试次数、未完成/失败计数。所有 CSV 增加 `data_backend,data_rdma_operations,data_read_bytes,data_write_bytes,data_latch_wait_ns`；后四项只统计测量期间的数据路径，不含连接和最终结构校验。原 `rdma_*` 仍为物理锁路径计数，不把两类操作混淆。
 
 具体边界、故障与正确性记录见 [迁移方案](docs/notes/deneva-shared-rdma-data-2026-11-03.md) 和 [共享数据验收记录](docs/notes/shared-rdma-acceptance-2026-11-04.md)。
+
+## Deneva 式原生事务运行时
+
+实现依据与逐文件来源见 [原生运行时移植说明](docs/notes/deneva-native-runtime-2026-11-04.md)。新增被动事务状态服务、每 worker 多个栈式协程、并发 warm-up、排空/测量屏障和独立流量快照。设备 context/PD 按进程共享，QP/CQ/缓冲仍按上下文隔离，避免大并发建链重复消耗设备 FD。
+
+- 原生路径使用 --txn-state-port；旧 --coordinator-port 显式选择 TCP 兼容路径，二者互斥。TCP 兼容路径只支持每 worker 一个协程。
+- --threads 是 OS worker 数，--coroutines 是每 worker 协程数；并发事务数不超过二者乘积（也不超过 trace 事务数）。
+- --warmup 为每个 case 的并发预热秒数，--duration 为排空后独立测量秒数。预热数据保留，预热吞吐、延迟和 RDMA 流量不混入正式计数。
+- 新增 CSV 字段包括 coroutines、active_contexts、warmup_seconds、warmup_committed、warmup_aborted、warmup_elapsed_ns、coroutine_switches_total、state_rdma_operations；coroutine_switches_total 含启动与预热切换，其余测量流量按阶段截取。硬错误计数保留整轮，包括预热错误。
+- 每个原生状态服务限定一种等待策略；每 case 创建新服务，禁止把不同策略的事务放进同一个 wait-for graph。状态服务默认 4096 个会话槽，attempt 复用会话槽且带独立 generation；会话槽在服务生存期内不回收。
+- 本地矩阵继续使用本地索引/本地锁；新正式配置为 experiments/configs/formal_native_policies_10s.json（4 协程、10 秒预热、10 秒测量、3 次重复）。原矩阵入口继续可用；配置与 CSV 明确记录协调后端，恢复/报告禁止混入旧后端、旧提交或旧预热配置。
+
+验证入口（不启动完整正式矩阵）：
+
+    cmake -S . -B build-shared -DCMAKE_BUILD_TYPE=Release
+    cmake --build build-shared -j4
+    python3 scripts/check_shared_rdma.py --build build-shared --cross-host --only contracts
+    python3 scripts/check_native_runtime.py --build build-shared --cross-host
+    python3 scripts/run_shared_matrices.py --config experiments/configs/native_runtime_smoke.json --mode both --smoke --no-build --keep-geometry
+
+新运行时不等于完整 Deneva 数据库：现有 Payment/New Order 仍为简化 trace；hierarchical 仍为逻辑 root/bucket/record，不是真实叶页锁；共享索引写批次仍有全局结构 latch，年龄分配字也可能成为热点。相关性能结论须由新的正式矩阵支持。

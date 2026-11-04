@@ -1,3 +1,4 @@
+#include "common/execution_context.h"
 #include "lock/remote_lock_manager.h"
 
 #include <algorithm>
@@ -291,6 +292,7 @@ std::uint64_t RemoteLockManager::timeouts_by_tag(RdmaOpTag tag) const {
 }
 
 RemoteLockManager::ConnectionSlot& RemoteLockManager::current_slot() const {
+    if(coroutine_active())return *connections_[execution_context_id()%connections_.size()];
     struct Assignment {
         std::size_t index{0};
         std::uint64_t generation{0};
@@ -431,7 +433,7 @@ RemoteLockManager::GateOutcome RemoteLockManager::enter_shards(
     // keeps a bounded spin: unbounded blocking there would turn the
     // all-or-nothing multi-shard acquisition into a deadlock risk. The release
     // path is different - giving up leaves the locks behind it published for
-    // good - so it waits with backoff until the gate frees up.
+    // good - so it yields while waiting for the gate to free up.
     gate_attempts_.fetch_add(1, std::memory_order_relaxed);
     const std::size_t limit = reliable ? 4096 : gate_retries_;
     for (std::size_t attempt = 0;; ++attempt) {
@@ -443,21 +445,9 @@ RemoteLockManager::GateOutcome RemoteLockManager::enter_shards(
         }
         if (attempt >= limit) break;
         gate_retry_count_.fetch_add(1, std::memory_order_relaxed);
-        if (reliable) {
-            const auto backoff = std::chrono::microseconds(
-                std::size_t{1} << std::min<std::size_t>(attempt, 7));
-            std::this_thread::sleep_for(backoff);
-        } else if (attempt < 4) {
-            const unsigned spins = 1u << std::min<std::size_t>(attempt, 4);
-            for (unsigned spin = 0; spin < spins; ++spin) std::this_thread::yield();
-        } else {
-            // A gate is held for a few RDMA round trips, far longer than a
-            // yield. Sleeping a short, capped interval is what actually lets a
-            // contending request through instead of aborting the transaction.
-            const auto backoff = std::chrono::microseconds(
-                std::min<std::size_t>(std::size_t{1} << std::min<std::size_t>(attempt - 3, 6), 64));
-            std::this_thread::sleep_for(backoff);
-        }
+        // A failed multi-gate attempt released its partial gates before
+        // yielding. Never sleep while another local routine owns the gate.
+        cooperative_yield();
     }
     gate_abort_count_.fetch_add(1, std::memory_order_relaxed);
     return GateOutcome::Busy;

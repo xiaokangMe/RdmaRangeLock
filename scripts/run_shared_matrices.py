@@ -31,7 +31,7 @@ def cases(config, mode):
                         yield workload, length, cc, bucket, threads, run, policy
 
 
-def validate_row(output, seconds, shared):
+def validate_row(output, seconds, shared, expected_coordination=None):
     reader = csv.DictReader(io.StringIO(output)); rows = list(reader)
     if len(rows) != 1 or len(reader.fieldnames) != len(set(reader.fieldnames)) or None in rows[0] or None in rows[0].values():
         raise RuntimeError("invalid runner CSV schema")
@@ -66,7 +66,10 @@ def validate_row(output, seconds, shared):
         # from cases that actually committed work.
         if int(row["committed"]) > 0 and (int(row["data_rdma_operations"]) <= 0 or int(row["data_read_bytes"]) <= 0):
             raise RuntimeError("shared data path idle while transactions committed")
-        if row["coordination"] != "tcp-control+rdma-slots": raise RuntimeError("wrong coordination path")
+        if row["coordination"] not in ("tcp-control+rdma-slots","native-rdma-state"):
+            raise RuntimeError("wrong coordination path")
+        if expected_coordination and row["coordination"]!=expected_coordination:
+            raise RuntimeError("coordination differs from campaign configuration")
     elif row["data_backend"] != "local": raise RuntimeError("local matrix unexpectedly uses RDMA data")
     row["progress_status"]="commits" if int(row["committed"]) else "no-commits"
     return row
@@ -113,6 +116,14 @@ def main():
     for sig in (signal.SIGTERM,signal.SIGINT):signal.signal(sig,interrupted)
     root = Path(__file__).resolve().parent.parent; os.chdir(root)
     config = config_from_environment() if args.environment_config else json.loads((root / args.config).read_text())
+    config.setdefault("coordination_backend","native-rdma-state")
+    config.setdefault("coroutines",1);config.setdefault("coroutine_stack_bytes",262144);config.setdefault("warmup_seconds",10)
+    if config["coordination_backend"] not in ("native-rdma-state","tcp-control+rdma-slots"):
+        raise SystemExit("invalid coordination backend")
+    if not 1<=config["coroutines"]<=4096 or not 65536<=config["coroutine_stack_bytes"]<=16777216 or not 0<=config["warmup_seconds"]<=600000:
+        raise SystemExit("runtime geometry bounds")
+    if config["coordination_backend"]=="tcp-control+rdma-slots" and config["coroutines"]!=1:
+        raise SystemExit("TCP compatibility path requires one coroutine per worker")
     config.setdefault("wait_policies", ["no-wait"])
     config.setdefault("max_attempts", 1000)
     config.setdefault("order", 128); config.setdefault("tree_pages", 8192); config.setdefault("tree_records", 262144)
@@ -127,7 +138,8 @@ def main():
     config.setdefault("gid_index", 3); config.setdefault("server_roce", "10.0.0.3")
     if not 1<=args.validation_seconds<=600:raise SystemExit("validation seconds must be 1..600")
     if args.smoke:
-        config.update(duration_seconds=args.validation_seconds, runs=1, seeds=[config["seeds"][0]])
+        config.update(duration_seconds=args.validation_seconds, runs=1, seeds=[config["seeds"][0]],
+                      warmup_seconds=min(config["warmup_seconds"],args.validation_seconds))
         if not args.keep_geometry:
             config.update(keys=min(config["keys"], 128), transactions=min(config["transactions"], 200),
                           operations=min(config["operations"], 4), threads=[1, 4], ranges=[8], buckets=[16], order=16)
@@ -135,6 +147,8 @@ def main():
         raise SystemExit("formal runs must build from the recorded committed source")
     elif config["duration_seconds"] < 10 or config["runs"] < 3:
         raise SystemExit("formal matrices require >=10 seconds and >=3 repetitions; use --smoke for validation")
+    if max(config["threads"])*config["coroutines"]>4096:
+        raise SystemExit("active execution contexts exceed runtime/state capacity")
     if str(config["rdma_connections"])!="auto" and (not str(config["rdma_connections"]).isdigit() or int(config["rdma_connections"])<1):
         raise SystemExit("rdma_connections must be auto or positive integer")
     if len(config["seeds"]) != config["runs"] or len(set(config["seeds"])) != config["runs"]:
@@ -164,7 +178,7 @@ def main():
         with (logs / "build.log").open("w") as log:
             subprocess.run(["cmake", "-S", str(root), "-B", str(build), "-DCMAKE_BUILD_TYPE=Release"], check=True, stdout=log, stderr=log)
             subprocess.run(["cmake", "--build", str(build), "-j4"], check=True, stdout=log, stderr=log)
-    binaries = ("rrl_workload_runner", "rrl_rdma_data_server", "rrl_rdma_lock_server", "rrl_wait_coordinator")
+    binaries = ("rrl_workload_runner", "rrl_rdma_data_server", "rrl_rdma_lock_server", "rrl_wait_coordinator", "rrl_rdma_txn_server")
     if not args.smoke and any(hashlib.sha256((root/p).read_bytes()).hexdigest()!=digest for p,digest in manifest.items()):
         raise SystemExit("source changed during build; discard this build")
     original_build=build
@@ -206,13 +220,16 @@ def main():
                    tpcc_items_per_order=config["tpcc_items"], order=config["order"],
                    tree_pages=config["tree_pages"], tree_records=config["tree_records"],
                    wait_policy=policy, max_attempts=config["max_attempts"], duration_seconds=duration,
+                   coroutines=config["coroutines"],coroutine_stack_bytes=config["coroutine_stack_bytes"],warmup_seconds=config["warmup_seconds"],
                    wait_timeout_ms=config["wait_timeout_ms"], tree_latch_timeout_ms=config["tree_latch_timeout_ms"], lock_budget=config["lock_budget"])
         path = logs / (label + ".json"); path.write_text(json.dumps(cfg, indent=2))
         flags = ["--index", "v2", "--cc", cc, "--workload", workload, "--keys", str(config["keys"]),
                  "--txns", str(config["transactions"]), "--ops", str(config["operations"]), "--range", str(length),
                  "--threads", str(threads), "--seed", str(cfg["seed"]), "--zipf", str(config["zipf"]),
                  "--items", str(config["tpcc_items"]), "--order", str(config["order"]),
-                 "--duration", str(duration), "--format", "csv"]
+                 "--duration", str(duration), "--format", "csv",
+                 "--coroutines",str(config["coroutines"]),"--coroutine-stack-bytes",str(config["coroutine_stack_bytes"]),
+                 "--warmup",str(config["warmup_seconds"])]
         if bucket: flags += ["--bucket", str(bucket)]
         if mode=="cross-host" and str(config["rdma_connections"])!="auto":
             flags += ["--rdma-connections", str(config["rdma_connections"])]
@@ -220,13 +237,15 @@ def main():
                                     "--wait-timeout-ms",str(config["wait_timeout_ms"]),"--lock-budget",str(config["lock_budget"])]
         if mode == "cross-host":
             flags[1] = "rdma"
-            with SharedServices(build, path, logs / label, env) as service:
+            with SharedServices(build, path, logs / label, env, native=config["coordination_backend"]=="native-rdma-state") as service:
                 flags += ["--tree-latch-timeout-ms",str(config["tree_latch_timeout_ms"]),"--data-port", str(service.data_port), "--rdma-port", str(service.lock_port),
-                          "--coordinator-port", str(service.coordinator_port), "--rdma-host", config["server_roce"]]
-                output = command([remote_dir + "/rrl_workload_runner"] + flags, label, True, duration+180)
+                          ("--txn-state-port" if config["coordination_backend"]=="native-rdma-state" else "--coordinator-port"),
+                          str(service.txn_state_port if config["coordination_backend"]=="native-rdma-state" else service.coordinator_port), "--rdma-host", config["server_roce"]]
+                output = command([remote_dir + "/rrl_workload_runner"] + flags, label, True, duration+config["warmup_seconds"]+180)
                 service.check()
-        else: output = command([str(build / "rrl_workload_runner")] + flags, label, timeout=duration+180)
-        row = validate_row(output, duration, mode == "cross-host")
+        else: output = command([str(build / "rrl_workload_runner")] + flags, label, timeout=duration+config["warmup_seconds"]+180)
+        row = validate_row(output, duration, mode == "cross-host", config["coordination_backend"] if mode=="cross-host" else None)
+        if cc=="none":row["wait_policy"]="none"
         return dict(source_commit=commit, result_kind=kind, transport="rdma-cross-host-shared" if mode=="cross-host" else "local-no-rdma",
                     run=run+1, seed=cfg["seed"], range=length, bucket=bucket, zipf=config["zipf"], **row)
     try:
@@ -235,6 +254,9 @@ def main():
             checks=["python3",str(root/"scripts/check_shared_rdma.py"),"--build",str(original_build)]
             if "cross-host" in modes:checks.append("--cross-host")
             command(checks,"correctness",timeout=900)
+            native_checks=["python3",str(root/"scripts/check_native_runtime.py"),"--build",str(original_build)]
+            if "cross-host" in modes:native_checks.append("--cross-host")
+            command(native_checks,"native-correctness",timeout=900)
             if any(hashlib.sha256((original_build/n).read_bytes()).hexdigest()!=binary_hashes[n] for n in binaries):
                 raise RuntimeError("build outputs changed during correctness gate; discard campaign")
         if "cross-host" in modes:
@@ -270,6 +292,12 @@ def main():
                 wrong=[r for r in previous if r.get("transport")!=wanted]
                 if wrong: raise SystemExit("resume file holds %d %s rows, not %s"
                                            % (len(wrong),wrong[0].get("transport"),mode))
+                for row in previous:
+                    if row.get("source_commit")!=commit or row.get("result_kind")!=kind:
+                        raise SystemExit("resume source/kind differs from this campaign")
+                    expected_backend=config["coordination_backend"] if mode=="cross-host" else "local"
+                    if row.get("coordination")!=expected_backend or int(row.get("coroutines",1))!=config["coroutines"] or int(row.get("warmup_seconds",0))!=config["warmup_seconds"]:
+                        raise SystemExit("resume runtime/backend differs from this campaign")
                 rows=list(previous)
                 done={(r["workload"],str(r["range"]),r["cc"],str(r["bucket"]),
                        str(r["threads"]),r["wait_policy"],str(r["seed"])) for r in previous}

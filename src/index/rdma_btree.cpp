@@ -1,3 +1,4 @@
+#include "common/execution_context.h"
 #include "index/rdma_btree.h"
 #include "rdma/rdma_transport.h"
 #include "rdma_btree_core.h"
@@ -48,8 +49,8 @@ struct Session {
     std::uint64_t point_value{0},wait_ns{0};
     bool attached{false};
 };
-thread_local const void* attached_tree=nullptr;
-thread_local Session* attached_session=nullptr;
+const void*& attached_tree(){return execution_index_owner();}
+Session* attached_session(){return static_cast<Session*>(execution_index_session());}
 }
 std::uint64_t tree_seed_fingerprint(const TreeSeed& seed) {
     std::uint64_t hash=1469598103934665603ULL;
@@ -82,7 +83,7 @@ struct BTreeRdma::Impl {
     std::uint64_t timeout_ms{10000};
     mutable std::atomic<bool> failed{false};
     Session& session() const {
-        if(attached_tree==this && attached_session)return *attached_session;
+        if(attached_tree()==this && attached_session())return *attached_session();
         throw TreeFault("RDMA index worker not prepared before Begin");
     }
     void poison(Session& s) const noexcept {
@@ -110,7 +111,7 @@ struct BTreeRdma::Impl {
                 } else current=previous;
             } else if(!s.io.read(0,&current,sizeof(current))) {failed=true;throw TreeFault("structure latch read failed");}
             if(Clock::now()>=deadline){poison(s);throw TreeFault("structure latch deadline; cohort stopped");}
-            std::this_thread::yield();
+            cooperative_yield();
         }
         s.wait_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now()-start).count();
         OffsetBTreeHeader h;
@@ -165,15 +166,15 @@ bool BTreeRdma::connect(const std::string& host,std::uint16_t port,std::size_t w
 }
 RC BTreeRdma::init(std::size_t order){return !impl_->failed && !impl_->workers.empty() && order==impl_->initial.order?RCOK:ERROR;}
 void BTreeRdma::prepare_thread(std::size_t worker,std::size_t capacity) {
-    if(attached_tree || worker>=impl_->workers.size())throw TreeFault("invalid worker attachment");
+    if(attached_tree() || worker>=impl_->workers.size())throw TreeFault("invalid worker attachment");
     auto& s=*impl_->workers[worker];
     if(s.attached)throw TreeFault("worker already attached");
     s.values.resize(std::min<std::size_t>(capacity,impl_->initial.record_capacity));
-    s.attached=true;attached_tree=impl_.get();attached_session=&s;
+    s.attached=true;attached_tree()=impl_.get();execution_index_session()=&s;
 }
 void BTreeRdma::finish_thread() noexcept {
-    if(attached_tree==impl_.get()) {
-        attached_session->attached=false;attached_session=nullptr;attached_tree=nullptr;
+    if(attached_tree()==impl_.get()) {
+        attached_session()->attached=false;execution_index_session()=nullptr;attached_tree()=nullptr;
     }
 }
 bool BTreeRdma::healthy() const{return !impl_->failed;}

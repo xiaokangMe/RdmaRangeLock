@@ -28,22 +28,26 @@ def free_ports(count):
 
 
 class SharedServices:
-    def __init__(self, build, config, logdir, env):
+    def __init__(self, build, config, logdir, env, native=None):
         self.build, self.config, self.logdir = Path(build), Path(config), Path(logdir)
-        self.env = env
+        self.env, self.native = env, native
         cfg=json.loads(self.config.read_text())
         self.lock_budget=int(cfg.get("lock_budget",16384))
         if not 1<=self.lock_budget<=1048576:raise ValueError("lock_budget out of bounds")
         self.processes, self.logs = [], []
-        self.data_port, self.lock_port, self.coordinator_port = free_ports(3)
-        if len({self.data_port, self.lock_port, self.coordinator_port}) != 3:
+        self.data_port, self.lock_port, self.coordinator_port, self.txn_state_port = free_ports(4)
+        if len({self.data_port, self.lock_port, self.coordinator_port, self.txn_state_port}) != 4:
             raise RuntimeError("ephemeral service port collision; no case started")
 
     def __enter__(self):
         self.logdir.mkdir(parents=True, exist_ok=True)
         specs = [("rrl_rdma_data_server", ["--config", str(self.config), "--port", str(self.data_port)]),
                  ("rrl_rdma_lock_server", [str(self.lock_port)]),
-                 ("rrl_wait_coordinator", [str(self.coordinator_port), str(self.lock_budget), "600000"])]
+                 ]
+        if self.native is not True:
+            specs.append(("rrl_wait_coordinator", [str(self.coordinator_port), str(self.lock_budget), "600000"]))
+        if self.native is not False:
+            specs.append(("rrl_rdma_txn_server", [str(self.txn_state_port)]))
         try:
             for name, args in specs:
                 log = (self.logdir / (name + ".log")).open("w")
@@ -69,7 +73,8 @@ class SharedServices:
 
     def test_env(self, host="127.0.0.1"):
         return dict(self.env, RRL_TEST_RDMA_HOST=host, RRL_TEST_RDMA_PORT=str(self.lock_port),
-                    RRL_TEST_DATA_PORT=str(self.data_port), RRL_TEST_COORDINATOR_PORT=str(self.coordinator_port))
+                    RRL_TEST_DATA_PORT=str(self.data_port), RRL_TEST_COORDINATOR_PORT=str(self.coordinator_port),
+                    RRL_TEST_TXN_STATE_PORT=str(self.txn_state_port))
 
     def __exit__(self, *args):
         for p in reversed(self.processes):

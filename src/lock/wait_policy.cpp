@@ -1,4 +1,5 @@
 #include "lock/wait_policy.h"
+#include "common/execution_context.h"
 #include <algorithm>
 #include <condition_variable>
 #include <map>
@@ -122,7 +123,9 @@ PolicyReply TransactionCoordinator::acquire(std::uint64_t session, txnid_t id, L
             return {TxnResult::Conflict,id,waited ? static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now()-start).count()) : 0};
         }
         waited=true;txn->waiting=true;
-        impl_->changed.wait_until(guard,txn->deadline);
+        if(coroutine_active()) {
+            guard.unlock();cooperative_yield();guard.lock();
+        } else impl_->changed.wait_until(guard,txn->deadline);
     }
 }
 PolicyReply TransactionCoordinator::check(std::uint64_t session,txnid_t id) {

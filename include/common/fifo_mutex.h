@@ -1,18 +1,26 @@
 #pragma once
 #include <condition_variable>
+#include "common/execution_context.h"
 #include <cstdint>
 #include <mutex>
 
 namespace rrl {
 // FIFO admission for local transport resources, not a transaction lock policy.
-// No polling, delay or retry. A finite set of earlier operations cannot be
+// FIFO admission; coroutine callers yield so the resource owner can run.
+// A finite set of earlier operations cannot be
 // overtaken by newcomers while a transaction is trying to execute or release.
 class FifoMutex {
 public:
     void lock() {
         std::unique_lock<std::mutex> guard(mutex_);
         const auto ticket = next_++;
-        ready_.wait(guard, [&] { return serving_ == ticket; });
+        if(coroutine_active()) {
+            while(serving_!=ticket) {
+                guard.unlock();
+                cooperative_yield();
+                guard.lock();
+            }
+        } else ready_.wait(guard, [&] { return serving_ == ticket; });
     }
     bool try_lock() {
         std::lock_guard<std::mutex> guard(mutex_);

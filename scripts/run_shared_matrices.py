@@ -105,6 +105,8 @@ def main():
     parser.add_argument("--keep-geometry", action="store_true", help="smoke timing with configured key/trace/thread/range geometry")
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--preflight-only", action="store_true")
+    parser.add_argument("--resume", default=None,
+                        help="existing result CSV to finish; cases already present are skipped")
     args = parser.parse_args()
     def interrupted(signum, frame):
         raise SystemExit(128+signum)
@@ -259,10 +261,28 @@ def main():
             publish("preflight-complete");return
         for mode in modes:
             rows=[]; outpath=results/(kind+"-"+mode+"-"+stamp+".csv")
+            done=set()
+            if args.resume:
+                source=Path(args.resume)
+                if not source.is_file(): raise SystemExit("resume file missing: "+str(source))
+                previous=list(csv.DictReader(source.open(newline="")))
+                wanted={"local":"local-no-rdma","cross-host":"rdma-cross-host-shared"}[mode]
+                wrong=[r for r in previous if r.get("transport")!=wanted]
+                if wrong: raise SystemExit("resume file holds %d %s rows, not %s"
+                                           % (len(wrong),wrong[0].get("transport"),mode))
+                rows=list(previous)
+                done={(r["workload"],str(r["range"]),r["cc"],str(r["bucket"]),
+                       str(r["threads"]),r["wait_policy"],str(r["seed"])) for r in previous}
+                print("resume: keeping %d rows from %s" % (len(rows),source),flush=True)
             state["result_files"][mode]=str(outpath)
             allpoints=list(cases(config,mode));state[mode+"_expected"]=len(allpoints)
             for index,point in enumerate(allpoints):
                 label=mode+"-"+str(index)+"-"+point[0]+"-"+point[2]
+                key=(point[0],str(point[1]),point[2],str(point[3]),str(point[4]),
+                     point[6],str(config["seeds"][point[5]]))
+                if key in done:
+                    state["local_completed" if mode=="local" else "cross_host_completed"] += 1
+                    publish(mode);continue
                 state["current_case"]=dict(mode=mode,index=index,point=point);publish(mode)
                 rows.append(execute(mode,point,label))
                 if rows[-1]["progress_status"]=="no-commits":state["no_progress_cases"]+=1

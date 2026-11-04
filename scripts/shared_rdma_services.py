@@ -7,10 +7,24 @@ import socket
 import subprocess
 
 
-def free_port():
-    with socket.socket() as s:
-        s.bind(("0.0.0.0", 0))
-        return s.getsockname()[1]
+def free_ports(count):
+    """Claim `count` distinct ephemeral ports in one shot.
+
+    Binding and closing one socket at a time lets the kernel hand the same
+    number back for the next request, which is how one case ended up with two
+    services on the same port. Keep every guard socket open until all ports are
+    known, so the numbers are guaranteed to differ.
+    """
+    guards = []
+    try:
+        for _ in range(count):
+            guard = socket.socket()
+            guard.bind(("0.0.0.0", 0))
+            guards.append(guard)
+        return [guard.getsockname()[1] for guard in guards]
+    finally:
+        for guard in guards:
+            guard.close()
 
 
 class SharedServices:
@@ -21,7 +35,7 @@ class SharedServices:
         self.lock_budget=int(cfg.get("lock_budget",16384))
         if not 1<=self.lock_budget<=1048576:raise ValueError("lock_budget out of bounds")
         self.processes, self.logs = [], []
-        self.data_port, self.lock_port, self.coordinator_port = free_port(), free_port(), free_port()
+        self.data_port, self.lock_port, self.coordinator_port = free_ports(3)
         if len({self.data_port, self.lock_port, self.coordinator_port}) != 3:
             raise RuntimeError("ephemeral service port collision; no case started")
 

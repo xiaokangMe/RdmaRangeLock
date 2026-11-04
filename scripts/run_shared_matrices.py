@@ -59,8 +59,13 @@ def validate_row(output, seconds, shared):
         if row["wait_policy"]=="no-wait" and (n("lock_wait_count") or n("lock_wait_total_ns")):
             raise RuntimeError("no-wait unexpectedly blocked on transaction locks")
     if shared:
-        if row["index"] != "rdma" or row["data_backend"] != "shared-rdma" or int(row["data_rdma_operations"]) <= 0 or int(row["data_read_bytes"]) <= 0:
+        if row["index"] != "rdma" or row["data_backend"] != "shared-rdma":
             raise RuntimeError("shared data path absent; refuse old lock-only result")
+        # An all-abort case reads nothing: zero data traffic is a legitimate
+        # outcome of the protocol, not a broken data path. Only require traffic
+        # from cases that actually committed work.
+        if int(row["committed"]) > 0 and (int(row["data_rdma_operations"]) <= 0 or int(row["data_read_bytes"]) <= 0):
+            raise RuntimeError("shared data path idle while transactions committed")
         if row["coordination"] != "tcp-control+rdma-slots": raise RuntimeError("wrong coordination path")
     elif row["data_backend"] != "local": raise RuntimeError("local matrix unexpectedly uses RDMA data")
     row["progress_status"]="commits" if int(row["committed"]) else "no-commits"

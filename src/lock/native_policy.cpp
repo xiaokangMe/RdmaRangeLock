@@ -6,6 +6,7 @@
 #include "rdma/rdma_transport.h"
 #include "common/execution_context.h"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <iostream>
@@ -217,6 +218,161 @@ PolicyReply NativePolicyClient::acquire(txnid_t id,LockMode mode,const KeyRangeE
 std::uint64_t NativePolicyClient::rdma_operations() const{return impl_->connection.operation_count();}
 bool NativePolicyClient::has_physical_locks() const{return impl_->held;}
 RC NativePolicyClient::last_lock_result() const{return impl_->lock_result;}
+
+struct LocalNativePolicyState::Impl {
+    struct AtomicSlot {
+        std::atomic<std::uint64_t> control{0};
+        std::atomic<std::uint64_t> age{0};
+    };
+    const std::size_t slots;
+    std::unique_ptr<AtomicSlot[]> table;
+    std::atomic<std::uint64_t> allocated{0};
+    std::atomic<std::uint64_t> next_age{0};
+    std::atomic<std::uint64_t> policy{0};
+    std::atomic<std::uint64_t> poison{0};
+    explicit Impl(std::size_t n):slots(n),table(new AtomicSlot[n]){}
+};
+
+LocalNativePolicyState::LocalNativePolicyState(std::size_t slots) {
+    if(!slots || slots>1048576)throw std::invalid_argument("local transaction slots must be 1..1048576");
+    impl_.reset(new Impl(slots));
+}
+LocalNativePolicyState::~LocalNativePolicyState()=default;
+
+struct LocalNativePolicyClient::Impl {
+    LocalNativePolicyState::Impl& state;
+    IRangeLockManager& physical;
+    std::size_t slot{0};
+    std::uint64_t generation{0},age{0},last_control{0},active{0};
+    WaitPolicy policy{WaitPolicy::NoWait};
+    Clock::time_point deadline;
+    bool failed{false},held{false};
+    std::vector<txnid_t> conflicts;
+    Impl(LocalNativePolicyState::Impl& s,IRangeLockManager& p):state(s),physical(p) {
+        const auto n=state.allocated.fetch_add(1,std::memory_order_acq_rel);
+        if(n>=state.slots)throw std::runtime_error("local transaction session capacity exhausted");
+        slot=static_cast<std::size_t>(n);
+        conflicts.reserve(state.slots);
+    }
+    static std::uint64_t control(txnid_t id,native_detail::State state) {
+        return native_detail::control(id,state);
+    }
+    bool healthy() const {
+        return !failed && state.poison.load(std::memory_order_acquire)==0;
+    }
+    void poison() noexcept {
+        failed=true;
+        state.poison.store(1,std::memory_order_release);
+    }
+    std::uint64_t offset_slot(txnid_t id) const {return id%state.slots;}
+    TxnResult status(txnid_t id) const {
+        if(!active || id!=active || !healthy())return TxnResult::Error;
+        const auto word=state.table[slot].control.load(std::memory_order_acquire);
+        if((word>>3)!=id)return TxnResult::Error;
+        const auto status=word&7;
+        if(status==native_detail::Wounded)return TxnResult::Wounded;
+        if(status!=native_detail::Running && status!=native_detail::Committing)return TxnResult::Error;
+        return Clock::now()>=deadline?TxnResult::Deadline:TxnResult::Ok;
+    }
+    bool holder(txnid_t id,std::uint64_t& holder_age,std::uint64_t& word,bool& current) const {
+        current=false;holder_age=0;word=0;
+        if(!id || id>native_detail::max_id)return false;
+        auto& slot_ref=state.table[offset_slot(id)];
+        for(;;) {
+            const auto first=slot_ref.control.load(std::memory_order_acquire);
+            const auto observed_age=slot_ref.age.load(std::memory_order_acquire);
+            const auto second=slot_ref.control.load(std::memory_order_acquire);
+            if(first!=second) {
+                if(Clock::now()>=deadline)return true;
+                cooperative_yield();continue;
+            }
+            word=first;holder_age=observed_age;
+            if((first>>3)!=id || (first&7)==native_detail::Idle)return true;
+            current=true;return observed_age!=0;
+        }
+    }
+};
+
+LocalNativePolicyClient::LocalNativePolicyClient(LocalNativePolicyState& state,IRangeLockManager& physical)
+    :impl_(new Impl(*state.impl_,physical)){}
+LocalNativePolicyClient::~LocalNativePolicyClient() {
+    if(impl_->active || impl_->failed)impl_->poison();
+}
+PolicyReply LocalNativePolicyClient::begin(WaitPolicy policy,std::uint64_t age,std::uint64_t budget_ns) {
+    auto& p=*impl_;
+    if(p.active || policy>WaitPolicy::WoundWait || !budget_ns || budget_ns>600000000000ULL ||
+       (age && age!=p.age) || !p.healthy())return {};
+    std::uint64_t expected=0;
+    const auto wanted=static_cast<std::uint64_t>(policy)+1;
+    if(!p.state.policy.compare_exchange_strong(expected,wanted,std::memory_order_acq_rel) && expected!=wanted)return {};
+    p.deadline=Clock::now()+std::chrono::nanoseconds(budget_ns);
+    if(!age)age=p.state.next_age.fetch_add(1,std::memory_order_acq_rel)+1;
+    if(!age || age==std::numeric_limits<std::uint64_t>::max())return {};
+    if(++p.generation>(native_detail::max_id-p.slot)/p.state.slots)return {};
+    const auto id=p.generation*p.state.slots+p.slot;
+    auto& slot=p.state.table[p.slot];
+    slot.age.store(age,std::memory_order_release);
+    expected=p.last_control;
+    const auto desired=Impl::control(id,native_detail::Running);
+    if(!slot.control.compare_exchange_strong(expected,desired,std::memory_order_acq_rel)) {
+        p.poison();return {};
+    }
+    p.age=age;p.active=id;p.policy=policy;p.held=false;
+    return {TxnResult::Ok,id,0,age};
+}
+PolicyReply LocalNativePolicyClient::check(txnid_t id) {return {impl_->status(id),id,0};}
+PolicyReply LocalNativePolicyClient::prepare_commit(txnid_t id) {
+    auto& p=*impl_;const auto result=p.status(id);
+    if(result!=TxnResult::Ok)return {result,id,0};
+    auto& slot=p.state.table[p.slot];auto expected=Impl::control(id,native_detail::Running);
+    if(slot.control.compare_exchange_strong(expected,Impl::control(id,native_detail::Committing),std::memory_order_acq_rel))
+        return {TxnResult::Ok,id,0};
+    return {expected==Impl::control(id,native_detail::Wounded)?TxnResult::Wounded:TxnResult::Error,id,0};
+}
+PolicyReply LocalNativePolicyClient::end(txnid_t id) {
+    auto& p=*impl_;
+    if(!p.active || id!=p.active || !p.healthy())return {};
+    auto& slot=p.state.table[p.slot];
+    for(;;) {
+        auto word=slot.control.load(std::memory_order_acquire);
+        if((word>>3)!=id || !(word&7) || (word&7)>native_detail::Committing)return {};
+        if(slot.control.compare_exchange_weak(word,Impl::control(id,native_detail::Idle),std::memory_order_acq_rel)) {
+            p.last_control=Impl::control(id,native_detail::Idle);p.active=0;p.held=false;
+            return {TxnResult::Ok,id,0};
+        }
+    }
+}
+bool LocalNativePolicyClient::has_physical_locks() const {return impl_->held;}
+
+PolicyReply LocalNativePolicyClient::acquire(txnid_t id,LockMode mode,const KeyRangeEnt& range,LockKind kind) {
+    auto& p=*impl_;const auto start=Clock::now();bool waited=false;
+    auto reply=[&](TxnResult result){return PolicyReply{result,id,waited?nanos(Clock::now()-start):0};};
+    for(;;) {
+        const auto status=p.status(id);if(status!=TxnResult::Ok)return reply(status);
+        p.conflicts.clear();
+        const auto rc=p.physical.lock(id,mode,range,kind,&p.conflicts);
+        if(rc==RCOK){p.held=true;return reply(p.status(id));}
+        if(rc==AbortCapacity || rc==AbortGate || p.policy==WaitPolicy::NoWait)return reply(TxnResult::Conflict);
+        if(rc!=Abort && rc!=AbortConflict)return reply(TxnResult::Error);
+        if(p.conflicts.empty())return reply(TxnResult::Error);
+        for(const auto other:p.conflicts) {
+            std::uint64_t holder_age=0,word=0;bool current=false;
+            if(!p.holder(other,holder_age,word,current))return reply(TxnResult::Error);
+            if(!current)continue;
+            if(p.policy==WaitPolicy::WaitDie && p.age>holder_age)return reply(TxnResult::Conflict);
+            if(p.policy==WaitPolicy::WoundWait && p.age<holder_age && (word&7)==native_detail::Running) {
+                auto expected=word;
+                if(!p.state.table[p.offset_slot(other)].control.compare_exchange_strong(expected,Impl::control(other,native_detail::Wounded),std::memory_order_acq_rel)) {
+                    const auto observed=p.state.table[p.offset_slot(other)].control.load(std::memory_order_acquire);
+                    if((observed>>3)==other && (observed&7)!=native_detail::Idle)continue;
+                    return reply(TxnResult::Error);
+                }
+            }
+        }
+        waited=true;cooperative_yield();
+    }
+}
+
 int run_native_txn_server(std::uint16_t port,std::size_t slots) {
     NativeTxnMemory memory(slots);
     RdmaListener listener(port);

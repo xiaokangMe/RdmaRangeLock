@@ -44,20 +44,32 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
     const auto count=std::min(trace.config().threads*cfg.coroutines,total);
     const auto os_workers=std::min(trace.config().threads,count);
     const bool warmup=cfg.warmup_seconds!=0;
-    TransactionCoordinator local(cfg.lock_budget,cfg.leaf_hierarchy);
+    LocalNativePolicyState local_native_state(std::max<std::size_t>(count, 1));
     std::vector<std::unique_ptr<PolicyClient>> clients;
     std::vector<std::unique_ptr<NativePolicyClient>> native;
+    std::vector<std::unique_ptr<LocalNativePolicyClient>> local_native;
     std::vector<Worker> parts(count);
     std::vector<std::vector<detail::HierarchyRequest>> plans;
     if(cfg.protocol==PolicyProtocol::Hierarchy && !cfg.leaf_hierarchy)for(const auto& t:trace.transactions())
         plans.push_back(detail::hierarchy_plan(t,trace.config().hierarchy_bucket_width));
     for(std::size_t w=0;w<count;++w) {
-        if(cfg.protocol==PolicyProtocol::None)clients.emplace_back(nullptr);
-        else if(cfg.txn_state_port) {
-            native.emplace_back(new NativePolicyClient(cfg.coordinator_host,cfg.txn_state_port,physical));
+        if(cfg.protocol==PolicyProtocol::None) {
             clients.emplace_back(nullptr);
-        } else if(cfg.coordinator_host.empty())clients.emplace_back(new PolicyClient(local,w+1));
-        else clients.emplace_back(new PolicyClient(cfg.coordinator_host,cfg.coordinator_port,cfg.wait_timeout_ms+5000));
+            native.emplace_back(nullptr);
+            local_native.emplace_back(nullptr);
+        } else if(cfg.txn_state_port) {
+            native.emplace_back(new NativePolicyClient(cfg.coordinator_host,cfg.txn_state_port,physical));
+            local_native.emplace_back(nullptr);
+            clients.emplace_back(nullptr);
+        } else if(cfg.coordinator_host.empty()) {
+            local_native.emplace_back(new LocalNativePolicyClient(local_native_state,physical));
+            native.emplace_back(nullptr);
+            clients.emplace_back(nullptr);
+        } else {
+            local_native.emplace_back(nullptr);
+            native.emplace_back(nullptr);
+            clients.emplace_back(new PolicyClient(cfg.coordinator_host,cfg.coordinator_port,cfg.wait_timeout_ms+5000));
+        }
     }
     if(cfg.deneva_insert_behavior && (!cfg.leaf_hierarchy || cfg.protocol!=PolicyProtocol::Hierarchy || !cfg.txn_state_port))
         throw std::invalid_argument("Deneva insert behavior requires native RDMA leaf hierarchy");
@@ -94,16 +106,17 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
     auto work=[&](std::size_t worker) {
         auto& p=parts[worker];auto& s=p.stats;auto& m=s.policy;
         auto* nc=cfg.txn_state_port && cfg.protocol!=PolicyProtocol::None ? native[worker].get() : nullptr;
+        auto* lc=!cfg.txn_state_port && cfg.coordinator_host.empty() && cfg.protocol!=PolicyProtocol::None ? local_native[worker].get() : nullptr;
         auto begin=[&](WaitPolicy policy,std::uint64_t age,std::uint64_t budget) {
             if(cfg.protocol==PolicyProtocol::None)return PolicyReply{TxnResult::Ok,worker+1,0,worker+1};
-            return nc ? nc->begin(policy,age,budget) : clients[worker]->begin(policy,age,budget);
+            return nc ? nc->begin(policy,age,budget) : lc ? lc->begin(policy,age,budget) : clients[worker]->begin(policy,age,budget);
         };
         auto lock=[&](txnid_t id,LockMode mode,const KeyRangeEnt& r,LockKind kind) {
-            return nc ? nc->acquire(id,mode,r,kind) : clients[worker]->acquire(id,mode,r,kind);
+            return nc ? nc->acquire(id,mode,r,kind) : lc ? lc->acquire(id,mode,r,kind) : clients[worker]->acquire(id,mode,r,kind);
         };
-        auto check=[&](txnid_t id){return nc ? nc->check(id) : clients[worker]->check(id);};
-        auto prepare=[&](txnid_t id){if(cfg.protocol==PolicyProtocol::None)return PolicyReply{TxnResult::Ok,id,0};return nc ? nc->prepare_commit(id) : clients[worker]->prepare_commit(id);};
-        auto end=[&](txnid_t id){if(cfg.protocol==PolicyProtocol::None)return PolicyReply{TxnResult::Ok,id,0};return nc ? nc->end(id) : clients[worker]->end(id);};
+        auto check=[&](txnid_t id){return nc ? nc->check(id) : lc ? lc->check(id) : clients[worker]->check(id);};
+        auto prepare=[&](txnid_t id){if(cfg.protocol==PolicyProtocol::None)return PolicyReply{TxnResult::Ok,id,0};return nc ? nc->prepare_commit(id) : lc ? lc->prepare_commit(id) : clients[worker]->prepare_commit(id);};
+        auto end=[&](txnid_t id){if(cfg.protocol==PolicyProtocol::None)return PolicyReply{TxnResult::Ok,id,0};return nc ? nc->end(id) : lc ? lc->end(id) : clients[worker]->end(id);};
         auto arrive=[&](unsigned target) {
             {std::lock_guard<std::mutex> guard(start_mutex);++ready;start_cv.notify_all();}
             while(phase.load(std::memory_order_acquire)<target)cooperative_yield();
@@ -160,6 +173,7 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                     // Always release its physical locks even on that outcome.
                     const auto r=lock(id,mode,range,kind);
                     if(nc)touched=nc->has_physical_locks();
+                    else if(lc)touched=lc->has_physical_locks();
                     if(nc && nc->last_lock_result()==AbortCapacity)++s.lock_capacity_aborts;
                     if(nc && nc->last_lock_result()==AbortGate)++s.lock_gate_aborts;
                     if(r.wait_ns)p.wait.add(r.wait_ns);

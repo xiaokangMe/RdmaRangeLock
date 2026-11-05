@@ -33,7 +33,7 @@ class SharedServices:
         self.env, self.native = env, native
         self.data_binary=data_binary
         cfg=json.loads(self.config.read_text())
-        self.leaf_objects=cfg.get("hierarchy_layout")=="leaf"
+        self.leaf_objects=cfg.get("hierarchy_layout")=="leaf" or bool(cfg.get("native_object_locks",False))
         if self.leaf_objects and native is not True:raise ValueError("leaf object services require native mode")
         self.lock_budget=int(cfg.get("lock_budget",16384))
         if not 1<=self.lock_budget<=1048576:raise ValueError("lock_budget out of bounds")

@@ -197,6 +197,11 @@ def main():
         raise SystemExit("Deneva source behavior requires native leaf objects")
     if config["hierarchy_layout"]=="leaf" and config["coordination_backend"]!="native-rdma-state":
         raise SystemExit("leaf layout requires native-rdma-state")
+    config.setdefault("native_object_locks", 0)
+    if config["native_object_locks"] not in (0, 1):
+        raise SystemExit("native_object_locks must be 0 or 1")
+    if config["native_object_locks"] and config["coordination_backend"]!="native-rdma-state":
+        raise SystemExit("native object locks require native-rdma-state")
     config.setdefault("coroutines",1);config.setdefault("coroutine_stack_bytes",262144);config.setdefault("warmup_seconds",10)
     if config["coordination_backend"] not in ("native-rdma-state","tcp-control+rdma-slots"):
         raise SystemExit("invalid coordination backend")
@@ -308,7 +313,8 @@ def main():
                    tree_pages=config["tree_pages"], tree_records=config["tree_records"],
                    wait_policy=policy, max_attempts=config["max_attempts"], duration_seconds=duration,
                    coroutines=config["coroutines"],coroutine_stack_bytes=config["coroutine_stack_bytes"],warmup_seconds=config["warmup_seconds"],
-                   wait_timeout_ms=config["wait_timeout_ms"], tree_latch_timeout_ms=config["tree_latch_timeout_ms"], lock_budget=config["lock_budget"])
+                   wait_timeout_ms=config["wait_timeout_ms"], tree_latch_timeout_ms=config["tree_latch_timeout_ms"], lock_budget=config["lock_budget"],
+                   native_object_locks=(config["native_object_locks"] if mode=="cross-host" and cc=="rdma-record-2pl" else 0))
         layout=hierarchy_layout(config,cc)
         behavior=hierarchy_behavior(config,cc)
         if layout!="none":cfg["hierarchy_layout"]=layout

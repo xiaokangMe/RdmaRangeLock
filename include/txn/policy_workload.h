@@ -10,6 +10,9 @@ struct PolicyRunConfig {
     std::uint64_t max_attempts{1000}, wait_timeout_ms{5000};
     std::size_t lock_budget{16384};
     bool leaf_hierarchy{false};
+    // Deneva-style per-record object metadata. This is an explicit native
+    // path for rdma-record-2pl; range protocols keep the range-table fallback.
+    bool native_object_locks{false};
     // Explicit source compatibility; default strict keeps transactional locks.
     bool deneva_insert_behavior{false};
     std::string coordinator_host;

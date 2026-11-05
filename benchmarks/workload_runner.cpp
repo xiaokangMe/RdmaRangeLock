@@ -119,6 +119,11 @@ void load_config(const std::string& path, WorkloadConfig& config,
         } else if (key == "hierarchy_layout") {
             if(value.kind!=ConfigScalar::String || (value.text!="leaf" && value.text!="bucket"))throw std::invalid_argument("hierarchy_layout must be leaf or bucket");
             policy.leaf_hierarchy=value.text=="leaf";measured=true;
+        } else if (key == "native_object_locks") {
+            if (value.kind != ConfigScalar::Number) throw std::invalid_argument("native_object_locks: expected 0 or 1");
+            const auto enabled = parse_unsigned(value.text, key);
+            if (enabled > 1) throw std::invalid_argument("native_object_locks must be 0 or 1");
+            policy.native_object_locks = enabled != 0; measured = true;
         } else if (key == "ycsb_unique_keys") {
             if (value.kind != ConfigScalar::Number) throw std::invalid_argument("ycsb_unique_keys: expected 0 or 1");
             const auto n = parse_unsigned(value.text,key);
@@ -195,6 +200,11 @@ int run(int argc, char** argv) {
             if(value!="leaf" && value!="bucket")throw std::invalid_argument("hierarchy-layout must be leaf or bucket");
             policy.leaf_hierarchy=value=="leaf";measured=true;
         }
+        else if (option == "--native-object-locks") {
+            const auto enabled = parse_unsigned(value, option);
+            if (enabled > 1) throw std::invalid_argument("native-object-locks must be 0 or 1");
+            policy.native_object_locks = enabled != 0; measured = true;
+        }
         else if (option == "--wait-policy") { policy.wait_policy = parse_wait_policy(value); measured = true; }
         else if (option == "--lock-budget") { policy.lock_budget = parse_unsigned(value,option); measured = true; }
         else if (option == "--max-attempts") { policy.max_attempts = parse_unsigned(value,option); measured = true; }
@@ -269,6 +279,8 @@ int run(int argc, char** argv) {
     const std::set<std::string> protocols{"none", "record-2pl", "gap-lock", "next-key", "hierarchical", "rdma-next-key", "rdma-hierarchical", "predicate", "rdma-predicate", "rdma-record-2pl", "rdma-gap-lock"};
     if (index_name != "v1" && index_name != "v2" && index_name != "rdma") throw std::invalid_argument("unknown index: " + index_name);
     if(policy.deneva_insert_behavior && (!policy.leaf_hierarchy || cc!="rdma-hierarchical" || index_name!="rdma" || !policy.txn_state_port))throw std::invalid_argument("deneva behavior requires native RDMA leaf hierarchy");
+    if(policy.native_object_locks && (cc!="rdma-record-2pl" || index_name!="rdma" || !policy.txn_state_port || policy.leaf_hierarchy))
+        throw std::invalid_argument("native object locks require rdma-record-2pl, shared RDMA data, native txn state, and no leaf hierarchy");
     if(policy.leaf_hierarchy && cc!="hierarchical" && cc!="rdma-hierarchical")throw std::invalid_argument("leaf layout requires hierarchical protocol");
     if(policy.leaf_hierarchy && policy.coordinator_port)throw std::invalid_argument("leaf layout requires local or native coordination");
     if (!protocols.count(cc)) throw std::invalid_argument("unknown cc: " + cc);
@@ -355,7 +367,7 @@ int run(int argc, char** argv) {
         const auto plain = cc.rfind("rdma-",0) == 0 ? cc.substr(5) : cc;
         policy.protocol = plain == "none" ? PolicyProtocol::None : plain == "record-2pl" ? PolicyProtocol::Record : plain == "gap-lock" ? PolicyProtocol::Gap :
             plain == "next-key" ? PolicyProtocol::NextKey : plain == "predicate" ? PolicyProtocol::Predicate : PolicyProtocol::Hierarchy;
-        if(policy.leaf_hierarchy) {
+        if(policy.leaf_hierarchy || policy.native_object_locks) {
             ObjectLockManager locks;
             const auto keys=detail::object_record_keys(trace);
             const auto contexts=std::min(config.threads*policy.coroutines,config.transaction_count);
@@ -457,7 +469,7 @@ int run(int argc, char** argv) {
         if (measured) std::cout << ",metrics_schema,wait_policy,coordination,logical_started,logical_unfinished,logical_failed,retries,max_retries,wound_aborts,deadline_aborts,retry_exhausted,completed_retries,unfinished_retries";
         if (measured) for (const char* name : {"successful_attempt","logical_completion","lock_wait","lock_call","release"})
             for (const char* field : {"count","total_ns","p50_ns","p95_ns","p99_ns","p999_ns","max_ns"}) std::cout << "," << name << "_" << field;
-        std::cout << ",data_backend,data_rdma_operations,data_read_bytes,data_write_bytes,data_latch_wait_ns,coroutines,active_contexts,warmup_seconds,warmup_committed,warmup_aborted,warmup_elapsed_ns,coroutine_switches_total,state_rdma_operations,hierarchy_layout,hierarchy_behavior,isolation_semantics,deneva_early_inserts,deneva_early_unlocks,deneva_split_aborts,deneva_partial_write_aborts\n";
+        std::cout << ",data_backend,data_rdma_operations,data_read_bytes,data_write_bytes,data_latch_wait_ns,coroutines,active_contexts,warmup_seconds,warmup_committed,warmup_aborted,warmup_elapsed_ns,coroutine_switches_total,state_rdma_operations,hierarchy_layout,native_object_locks,hierarchy_behavior,isolation_semantics,deneva_early_inserts,deneva_early_unlocks,deneva_split_aborts,deneva_partial_write_aborts\n";
         std::cout << WorkloadTrace::name(config.kind) << ',' << index_name << ',' << cc << ',' << config.threads << ','
                   << stats.transactions << ',' << stats.committed << ',' << stats.aborted << ',' << stats.operations << ','
                   << stats.reads << ',' << stats.updates << ',' << stats.inserts << ',' << stats.deletes << ','
@@ -505,6 +517,7 @@ int run(int argc, char** argv) {
                   << ',' << policy.warmup_seconds << ',' << stats.policy.warmup_committed << ',' << stats.policy.warmup_aborted
                   << ',' << stats.policy.warmup_elapsed_ns << ',' << stats.policy.coroutine_switches
                   << ',' << stats.policy.state_rdma_operations << ',' << ((cc=="hierarchical" || cc=="rdma-hierarchical")?(policy.leaf_hierarchy?"leaf":"bucket"):"none")
+                  << ',' << (policy.native_object_locks?1:0)
                   << ',' << (policy.deneva_insert_behavior?"deneva":"strict") << ',' << (policy.deneva_insert_behavior?"deneva-early-release":"strict-2pl")
                   << ',' << stats.policy.deneva_early_inserts << ',' << stats.policy.deneva_early_unlocks
                   << ',' << stats.policy.deneva_split_aborts << ',' << stats.policy.deneva_partial_write_aborts << '\n';

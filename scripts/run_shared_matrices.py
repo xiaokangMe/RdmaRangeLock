@@ -120,7 +120,7 @@ def config_fingerprint(config):
 
 
 def validate_resume_rows(rows, config, commit, kind, mode):
-    expected_backend=config["coordination_backend"] if mode=="cross-host" else "local"
+    expected_backend=config["coordination_backend"] if mode=="cross-host" else "native-local-state"
     expected_fingerprint=config_fingerprint(config)
     for row in rows:
         if row.get("hierarchy_behavior","strict")!=hierarchy_behavior(config,row["cc"]):

@@ -51,7 +51,7 @@ print("Matrix dimensions, backend identity, hard errors, count conservation and 
 runtime=dict(config,coordination_backend="native-rdma-state",coroutines=4,
              coroutine_stack_bytes=65536,warmup_seconds=1)
 saved=dict(row,source_commit="baseline",result_kind="smoke-not-formal",
-           coordination="local",coroutines="4",warmup_seconds="1",execution_stack_bytes="65536",
+           coordination="native-local-state",coroutines="4",warmup_seconds="1",execution_stack_bytes="65536",
            campaign_config_sha256=config_fingerprint(runtime),range="0",bucket="0",seed="8")
 validate_resume_rows([saved],runtime,"baseline","smoke-not-formal","local")
 for key,value in (("source_commit","old"),("coordination","native-rdma-state"),

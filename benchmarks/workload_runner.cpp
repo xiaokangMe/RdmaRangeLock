@@ -493,7 +493,7 @@ int run(int argc, char** argv) {
         std::cout << ',' << rdma_diag.txn_wait_ns;
         if (measured) {
             const auto& m=stats.policy;
-            std::cout << ",2," << wait_policy_name(policy.wait_policy) << ',' << (policy.txn_state_port?"native-rdma-state":policy.coordinator_host.empty()?"local":"tcp-control+rdma-slots")
+            std::cout << ",2," << wait_policy_name(policy.wait_policy) << ',' << (policy.txn_state_port?"native-rdma-state":policy.coordinator_host.empty()?"native-local-state":"tcp-control+rdma-slots")
                 << ',' << m.logical_started << ',' << m.unfinished << ',' << m.logical_failed << ',' << m.retries << ',' << m.max_retries
                 << ',' << m.wound_aborts << ',' << m.deadline_aborts << ',' << m.retry_exhausted << ',' << m.completed_retries << ',' << m.unfinished_retries;
             for (const auto* q : {&m.successful_attempt,&m.logical_completion,&m.lock_wait,&m.lock_call,&m.release})

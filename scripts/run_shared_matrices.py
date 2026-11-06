@@ -135,6 +135,9 @@ def validate_resume_rows(rows, config, commit, kind, mode):
             raise ValueError("resume source/kind differs from this campaign")
         if row.get("coordination")!=expected_backend or int(row.get("coroutines",1))!=config["coroutines"] or int(row.get("warmup_seconds",0))!=config["warmup_seconds"] or int(row.get("execution_stack_bytes",262144))!=config["coroutine_stack_bytes"]:
             raise ValueError("resume runtime/backend differs from this campaign")
+        expected_objects=1 if mode=="cross-host" and row.get("cc")=="rdma-record-2pl" and config.get("native_object_locks",1) else 0
+        if int(row.get("native_object_locks",0))!=expected_objects:
+            raise ValueError("resume native object-lock backend differs from this campaign")
         if row.get("campaign_config_sha256")!=expected_fingerprint:
             raise ValueError("resume resolved configuration differs or fingerprint is missing")
 

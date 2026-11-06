@@ -35,6 +35,12 @@ int main() {
     assert(manager.lock(4, LockMode::X, exact, LockKind::Predicate) == RCOK);
     assert(manager.snapshot().back().mode == LockMode::X);
 
+    const KeyRangeEnt precise = KeyRangeEnt::half_open(60, 80);
+    if (manager.lock(5, LockMode::S, precise, LockKind::ExactRange) != RCOK ||
+        manager.lock(6, LockMode::X, KeyRangeEnt::point(70), LockKind::ExactRange) != AbortConflict ||
+        manager.lock(6, LockMode::X, KeyRangeEnt::point(80), LockKind::ExactRange) != RCOK ||
+        manager.unlock_all(5) != RCOK || manager.unlock_all(6) != RCOK) return 1;
+
     KeyXidCache cache;
     cache.init();
     assert(cache.addReadXidWithMutex(100, 120, 10, 0) == RCOK);

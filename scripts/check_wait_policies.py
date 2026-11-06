@@ -87,7 +87,7 @@ def main():
         assert 'Skipped' not in r.stdout and '100% tests passed' in r.stdout
         info['ctest'] = 'all passed, no skips'
         for policy in ('no-wait', 'wait-die', 'wound-wait'):
-            for cc in ('record-2pl', 'gap-lock', 'next-key', 'hierarchical', 'predicate'):
+            for cc in ('record-2pl', 'gap-lock', 'next-key', 'hierarchical', 'predicate', 'exact-range'):
                 for workload in ('ycsb-a', 'ycsb-e'):
                     name = '-'.join(('local', cc, workload, policy))
                     cmd = [str(build / 'rrl_workload_runner'), '--cc', cc, '--workload', workload,
@@ -112,7 +112,7 @@ def main():
                 'RRL_TEST_RDMA_PORT=' + str(rdma_port), 'RRL_TEST_COORDINATOR_PORT=' + str(control_port),
                 remote + '/rrl_rdma_wait_policy_test'])], 'cross-contract')
             for policy in ('no-wait', 'wait-die', 'wound-wait'):
-                for cc in ('rdma-next-key', 'rdma-hierarchical', 'rdma-predicate'):
+                for cc in ('rdma-next-key', 'rdma-hierarchical', 'rdma-predicate', 'rdma-exact-range'):
                     for workload in ('ycsb-a', 'ycsb-e'):
                         name = '-'.join(('cross', cc, workload, policy))
                         cmd = [remote + '/rrl_workload_runner', '--rdma-lock-only', '1', '--cc', cc, '--workload', workload,

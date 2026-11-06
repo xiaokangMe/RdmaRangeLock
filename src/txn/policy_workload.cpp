@@ -241,7 +241,8 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                         ++s.range_reads;
                         if(op.end_key<=op.key)continue;
                         const auto range=KeyRangeEnt::half_open(op.key,op.end_key);
-                        if(cfg.protocol==PolicyProtocol::Predicate && !acquire(LockMode::S,range,LockKind::Predicate))break;
+                        if((cfg.protocol==PolicyProtocol::Predicate && !acquire(LockMode::S,range,LockKind::Predicate)) ||
+                           (cfg.protocol==PolicyProtocol::ExactRange && !acquire(LockMode::S,range,LockKind::ExactRange))) break;
                         if(cfg.protocol==PolicyProtocol::Gap) {
                             const std::vector<KeyRangeEnt> gaps{KeyRangeEnt::open(op.key,op.end_key),
                                 KeyRangeEnt::point(op.key),KeyRangeEnt::point(op.end_key)};
@@ -279,6 +280,7 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                     } else {
                         const bool read=op.kind==OperationKind::Read;
                         const auto kind=cfg.protocol==PolicyProtocol::Predicate ? LockKind::Predicate :
+                            cfg.protocol==PolicyProtocol::ExactRange ? LockKind::ExactRange :
                             cfg.protocol==PolicyProtocol::NextKey ? LockKind::NextKey :
                             cfg.protocol==PolicyProtocol::Gap && op.kind==OperationKind::Insert ? LockKind::Gap : LockKind::Record;
                         if(cfg.protocol!=PolicyProtocol::Hierarchy && cfg.protocol!=PolicyProtocol::None && !acquire(read?LockMode::S:LockMode::X,KeyRangeEnt::point(op.key),kind))break;

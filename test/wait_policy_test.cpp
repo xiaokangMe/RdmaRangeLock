@@ -157,7 +157,7 @@ int main() {
         ok(a.end(t.id),"capacity cleanup");
     }
     for(auto policy:{WaitPolicy::NoWait,WaitPolicy::WaitDie,WaitPolicy::WoundWait})
-    for(auto protocol:{PolicyProtocol::Record,PolicyProtocol::Gap,PolicyProtocol::NextKey,PolicyProtocol::Hierarchy,PolicyProtocol::Predicate}) {
+    for(auto protocol:{PolicyProtocol::Record,PolicyProtocol::Gap,PolicyProtocol::NextKey,PolicyProtocol::Hierarchy,PolicyProtocol::Predicate,PolicyProtocol::ExactRange}) {
         WorkloadConfig c;c.key_count=16;c.transaction_count=80;c.operations_per_transaction=4;c.threads=4;
         const auto trace=WorkloadTrace::generate(c);BTreeLatch index;index.init(8);LockManager physical;
         PolicyRunConfig cfg;cfg.wait_policy=policy;cfg.protocol=protocol;

@@ -37,6 +37,10 @@ enum class LockKind : std::uint8_t {
     NextKey,
     Predicate,
     Node,
+    // A single lock for the exact logical query interval.  Kept distinct
+    // from Predicate so experiments can compare the two representations and
+    // unlock/cache matching never aliases them accidentally.
+    ExactRange,
 };
 
 // Multiple-granularity compatibility matrix. IS/IX are intention modes;

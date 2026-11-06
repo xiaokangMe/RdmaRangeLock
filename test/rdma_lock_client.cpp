@@ -147,6 +147,14 @@ int main(int argc, char** argv) {
         locks.unlock_all(12) != RCOK ||
         locks.lock(13, LockMode::X, KeyRangeEnt::point(80), LockKind::NextKey) != RCOK ||
         locks.unlock_all(13) != RCOK) return 17;
-    std::cout << "RDMA batch transport, grouped next-key publication and remote lock: OK\n";
+    // Exact-range uses one physical interval per logical query. Its kind is
+    // carried through the remote slot so it cannot alias predicate/next-key
+    // entries during upgrade or release.
+    const auto precise = KeyRangeEnt::half_open(100, 120);
+    if (locks.lock(20, LockMode::S, precise, LockKind::ExactRange) != RCOK ||
+        locks.lock(21, LockMode::X, KeyRangeEnt::point(110), LockKind::ExactRange) != AbortConflict ||
+        locks.lock(21, LockMode::X, KeyRangeEnt::point(120), LockKind::ExactRange) != RCOK ||
+        locks.unlock_all(20) != RCOK || locks.unlock_all(21) != RCOK) return 18;
+    std::cout << "RDMA batch transport, grouped next-key, exact-range publication and remote lock: OK\n";
     return 0;
 }

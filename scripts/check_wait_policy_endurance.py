@@ -67,7 +67,7 @@ def main():
         state['config']=json.loads(config.read_text())
         tasks=[]
         for policy in ('wait-die','wound-wait'):
-            for cc in ('hierarchical','predicate'):
+            for cc in ('hierarchical','predicate','exact-range'):
                 name='local-'+cc+'-'+policy
                 argv=[str(build/'rrl_workload_runner'),'--config',str(config),'--cc',cc,'--wait-policy',policy,
                       '--duration',str(args.seconds),'--latency-histogram',str(logs/(name+'.hist.json')),'--format','csv']

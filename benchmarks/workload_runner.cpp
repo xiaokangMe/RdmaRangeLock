@@ -276,7 +276,7 @@ int run(int argc, char** argv) {
     if (index_name == "btree_latch_coupling") index_name = "v2";
     if (index_name == "btree_single") index_name = "v1";
     if (cc == "record-level-strict-2pl") cc = "record-2pl";
-    const std::set<std::string> protocols{"none", "record-2pl", "gap-lock", "next-key", "hierarchical", "rdma-next-key", "rdma-hierarchical", "predicate", "rdma-predicate", "rdma-record-2pl", "rdma-gap-lock"};
+    const std::set<std::string> protocols{"none", "record-2pl", "gap-lock", "next-key", "hierarchical", "predicate", "exact-range", "rdma-next-key", "rdma-hierarchical", "rdma-predicate", "rdma-exact-range", "rdma-record-2pl", "rdma-gap-lock"};
     if (index_name != "v1" && index_name != "v2" && index_name != "rdma") throw std::invalid_argument("unknown index: " + index_name);
     if(policy.deneva_insert_behavior && (!policy.leaf_hierarchy || cc!="rdma-hierarchical" || index_name!="rdma" || !policy.txn_state_port))throw std::invalid_argument("deneva behavior requires native RDMA leaf hierarchy");
     if(policy.native_object_locks && (cc!="rdma-record-2pl" || index_name!="rdma" || !policy.txn_state_port || policy.leaf_hierarchy))
@@ -284,7 +284,7 @@ int run(int argc, char** argv) {
     if(policy.leaf_hierarchy && cc!="hierarchical" && cc!="rdma-hierarchical")throw std::invalid_argument("leaf layout requires hierarchical protocol");
     if(policy.leaf_hierarchy && policy.coordinator_port)throw std::invalid_argument("leaf layout requires local or native coordination");
     if (!protocols.count(cc)) throw std::invalid_argument("unknown cc: " + cc);
-    if (cc == "predicate" || cc == "rdma-predicate" || policy.warmup_seconds || policy.coroutines>1) measured = true;
+    if (cc == "predicate" || cc == "rdma-predicate" || cc == "exact-range" || cc == "rdma-exact-range" || policy.warmup_seconds || policy.coroutines>1) measured = true;
     if(!policy.coroutines || policy.coroutines>4096 || config.threads>4096/policy.coroutines ||
        policy.coroutine_stack_bytes<65536 || policy.coroutine_stack_bytes>16777216 || policy.warmup_seconds>600000)
         throw std::invalid_argument("runtime geometry bounds");
@@ -366,7 +366,8 @@ int run(int argc, char** argv) {
     if (measured) {
         const auto plain = cc.rfind("rdma-",0) == 0 ? cc.substr(5) : cc;
         policy.protocol = plain == "none" ? PolicyProtocol::None : plain == "record-2pl" ? PolicyProtocol::Record : plain == "gap-lock" ? PolicyProtocol::Gap :
-            plain == "next-key" ? PolicyProtocol::NextKey : plain == "predicate" ? PolicyProtocol::Predicate : PolicyProtocol::Hierarchy;
+            plain == "next-key" ? PolicyProtocol::NextKey : plain == "predicate" ? PolicyProtocol::Predicate :
+            plain == "exact-range" ? PolicyProtocol::ExactRange : PolicyProtocol::Hierarchy;
         if(policy.leaf_hierarchy || policy.native_object_locks) {
             ObjectLockManager locks;
             const auto keys=detail::object_record_keys(trace);

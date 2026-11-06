@@ -151,7 +151,7 @@ def main():
                 e=service.test_env();e["RRL_TEST_CONFIG"]=str(cfg)
                 run(actual("rrl_native_shared_data_test",["--read","400"],e,False),policy+"-exact-sum",e)
                 service.check()
-        for cc in ("rdma-record-2pl","rdma-gap-lock","rdma-next-key","rdma-hierarchical","rdma-predicate"):
+        for cc in ("rdma-record-2pl","rdma-gap-lock","rdma-next-key","rdma-hierarchical","rdma-predicate","rdma-exact-range"):
             for workload in ("ycsb-a","ycsb-e","tpcc-payment","tpcc-new-order"):
                 label="-".join((policy,cc,workload))
                 if args.only and args.only!=label:continue

@@ -3,7 +3,7 @@
 #include "common/latency_histogram.h"
 #include <functional>
 namespace rrl {
-enum class PolicyProtocol { Record, Gap, NextKey, Hierarchy, Predicate, None };
+enum class PolicyProtocol { Record, Gap, NextKey, Hierarchy, Predicate, None, ExactRange };
 struct PolicyRunConfig {
     WaitPolicy wait_policy{WaitPolicy::NoWait};
     PolicyProtocol protocol{PolicyProtocol::Hierarchy};

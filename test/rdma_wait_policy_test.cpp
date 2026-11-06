@@ -67,6 +67,15 @@ int main() {
     check(b.acquire(writer.id,LockMode::X,KeyRangeEnt::point(15),LockKind::Predicate).result==TxnResult::Conflict,"empty predicate protects insertion");
     check(pa.unlock_all(reader.id)==RCOK,"predicate physical cleanup");
     check(a.end(reader.id).result==TxnResult::Ok && b.end(writer.id).result==TxnResult::Ok,"predicate metadata cleanup");
+    auto exact_reader=a.begin(WaitPolicy::NoWait,0,5000000000ULL), exact_writer=b.begin(WaitPolicy::NoWait,0,5000000000ULL);
+    const auto exact_range=KeyRangeEnt::half_open(10,20);
+    check(exact_reader.result==TxnResult::Ok && exact_writer.result==TxnResult::Ok,"exact-range metadata");
+    check(a.acquire(exact_reader.id,LockMode::S,exact_range,LockKind::ExactRange).result==TxnResult::Ok,"exact-range metadata grant");
+    check(pa.lock(exact_reader.id,LockMode::S,exact_range,LockKind::ExactRange)==RCOK,"exact-range RDMA lock");
+    check(b.acquire(exact_writer.id,LockMode::X,KeyRangeEnt::point(15),LockKind::ExactRange).result==TxnResult::Conflict,"exact-range metadata conflict");
+    check(pb.lock(exact_writer.id,LockMode::X,KeyRangeEnt::point(15),LockKind::ExactRange)==AbortConflict,"exact-range RDMA conflict");
+    check(pa.unlock_all(exact_reader.id)==RCOK && pb.unlock_all(exact_writer.id)==RCOK,"exact-range cleanup");
+    check(a.end(exact_reader.id).result==TxnResult::Ok && b.end(exact_writer.id).result==TxnResult::Ok,"exact-range metadata cleanup");
     check(pa.get_lock_count()==0 && pb.get_lock_count()==0,"all physical locks removed");
     check(!pa.rdma_timeouts() && !pb.rdma_timeouts() && !pa.rdma_completion_errors() && !pb.rdma_completion_errors(),"no transport errors");
     std::cout<<"Independent-session RDMA wait-die/wound-wait, commit fence and predicate: OK\n";

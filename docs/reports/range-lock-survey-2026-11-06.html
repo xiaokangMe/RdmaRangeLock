@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>范围查询锁协议谱系（调研报告 2026-11-06）</title>
+<style>
+  :root {
+    --ink: #1A2230; --ink-soft: #4A5568; --ink-mute: #8B97A8;
+    --line: #D6DCE5; --line-soft: #E8ECF2;
+    --blue: #1E4FA8; --blue-soft: #E8EFF8; --red: #D9534F; --bg-soft: #F7F9FC;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #FFFFFF; color: var(--ink);
+    font-family: "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 15px; line-height: 1.78; -webkit-font-smoothing: antialiased;
+  }
+  .page { max-width: 920px; margin: 0 auto; padding: 56px 40px 96px; }
+  .cover { border-bottom: 3px solid var(--blue); padding-bottom: 28px; margin-bottom: 44px; }
+  .cover .kicker { font-size: 13px; letter-spacing: .18em; color: var(--blue); font-weight: 700; text-transform: uppercase; }
+  .cover h1 { font-size: 33px; line-height: 1.35; margin: 14px 0 10px; letter-spacing: -.01em; }
+  .cover .sub { font-size: 16px; color: var(--ink-soft); margin: 0; }
+  .meta { display: flex; flex-wrap: wrap; gap: 26px; margin-top: 22px; font-size: 13px; color: var(--ink-mute); }
+  .meta b { color: var(--ink); font-weight: 600; }
+  h2 { font-size: 22px; margin: 54px 0 6px; padding-left: 14px; border-left: 4px solid var(--blue); line-height: 1.4; }
+  h2 .num { color: var(--blue); font-variant-numeric: tabular-nums; margin-right: 10px; }
+  h3 { font-size: 17px; margin: 30px 0 4px; }
+  h4 { font-size: 15px; margin: 20px 0 2px; color: var(--ink); }
+  p { margin: 12px 0; color: var(--ink-soft); }
+  p strong { color: var(--ink); font-weight: 600; }
+  ul, ol { margin: 12px 0; padding-left: 22px; color: var(--ink-soft); }
+  li { margin: 6px 0; }
+  code { font-family: "SF Mono", Consolas, monospace; font-size: 13px; background: var(--bg-soft);
+    border: 1px solid var(--line-soft); border-radius: 3px; padding: 1px 5px; color: var(--blue); }
+  pre { background: var(--bg-soft); border: 1px solid var(--line-soft); border-radius: 5px;
+    padding: 14px 16px; overflow-x: auto; font-family: "SF Mono", Consolas, monospace;
+    font-size: 12.5px; line-height: 1.65; color: var(--ink); }
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 26px 0 10px; }
+  .kpi { background: var(--bg-soft); border: 1px solid var(--line-soft); border-radius: 6px; padding: 18px 16px 16px; }
+  .kpi .v { font-size: 24px; font-weight: 700; color: var(--blue); line-height: 1.25; font-variant-numeric: tabular-nums; }
+  .kpi .v.red { color: var(--red); }
+  .kpi .l { font-size: 12.5px; color: var(--ink-mute); margin-top: 6px; line-height: 1.5; }
+  .note { border-left: 3px solid var(--blue); background: var(--blue-soft); padding: 14px 18px; margin: 22px 0; border-radius: 0 4px 4px 0; }
+  .note.warn { border-left-color: var(--red); background: #FCF0EF; }
+  .note .t { font-weight: 700; font-size: 14px; margin-bottom: 4px; color: var(--blue); }
+  .note.warn .t { color: var(--red); }
+  .note p { margin: 4px 0; font-size: 14px; }
+  table { width: 100%; border-collapse: collapse; margin: 18px 0 8px; font-size: 13px; }
+  caption { caption-side: top; text-align: left; font-size: 13px; color: var(--ink-mute); padding-bottom: 8px; }
+  th, td { padding: 7px 8px; border-bottom: 1px solid var(--line-soft); text-align: left; vertical-align: top; }
+  thead th { background: var(--bg-soft); border-bottom: 1.5px solid var(--line); font-weight: 600; color: var(--ink); font-size: 12.5px; }
+  tbody tr:hover { background: #FAFBFD; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+  td.hi { color: var(--blue); font-weight: 700; }
+  td.bad { color: var(--red); font-weight: 600; }
+  .unit { color: var(--ink-mute); font-size: 11.5px; }
+  .toc { background: var(--bg-soft); border: 1px solid var(--line-soft); border-radius: 6px; padding: 18px 24px; margin: 28px 0 0; font-size: 14px; }
+  .toc ol { margin: 6px 0 0; padding-left: 20px; color: var(--ink-soft); }
+  .tag { display: inline-block; font-size: 11.5px; padding: 0 7px; border-radius: 10px; border: 1px solid var(--line);
+    color: var(--ink-soft); background: #fff; margin-left: 6px; vertical-align: 1px; }
+  .tag.a { border-color: #C7D3E8; color: #3B5F9E; background: #F2F6FC; }
+  .tag.b { border-color: #CBE0CB; color: #3C6B3C; background: #F3FAF3; }
+  .tag.c { border-color: #E8D3C7; color: #8A5A34; background: #FCF6F1; }
+  .tag.d { border-color: #E1C9CE; color: #8C3B47; background: #FCF2F4; }
+  .refs { font-size: 13.5px; color: var(--ink-soft); }
+  .refs li { margin: 8px 0; }
+  .foot { margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--line-soft); font-size: 12.5px; color: var(--ink-mute); }
+  @media print { .page { max-width: none; padding: 0; } h2 { break-after: avoid; } table { break-inside: avoid; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+<div class="cover">
+  <div class="kicker">Survey · Range Locking on B-Trees</div>
+  <h1>范围查询锁协议谱系<br>从记录锁到单边 RDMA 区间锁</h1>
+  <p class="sub">四类判据 · 十五个命名方案 · 一个骨架 · 一份实现落点</p>
+  <div class="meta">
+    <span><b>日期</b> 2026-11-06</span>
+    <span><b>范围</b> 单版本 · 纯封锁 · B+ 树</span>
+    <span><b>排除</b> MVCC / 快照隔离 / SSI</span>
+    <span><b>落点</b> RdmaRangeLock 的五个实现</span>
+  </div>
+</div>
+
+<div class="toc">
+  <b>目录</b>
+  <ol>
+    <li>问题的形状：谓词不是对象</li>
+    <li>分类学：一条判据分出四类</li>
+    <li>完整谱系：十五个命名方案</li>
+    <li>逐类拆解（A 点锁 / B 半开区间 / C 任意区间 / D 谓词）</li>
+    <li>骨架与非锁机制：多粒度意向锁、B-link、页 latch</li>
+    <li>一条判据的四个连锁后果</li>
+    <li>我们落在哪：五个实现与三处偏差</li>
+    <li>Citron 深读：静态线段树上的单边范围锁</li>
+    <li>横向总表</li>
+    <li>开放问题与下一步</li>
+    <li>参考文献</li>
+  </ol>
+</div>
+
+<h2><span class="num">摘要</span></h2>
+
+<p>范围查询的并发控制只有一句话的难点：<strong>要保证的不只是"这一行别被同时改"，而是"这一段区间里不会凭空出现新行"</strong>。新行在事务开始时不存大，没有对象可锁——这就是幻读，也是范围锁全部复杂性的来源。</p>
+
+<p>把 1976 年以来的方案摊开看，它们的差别并不在"谁更新、谁更先进"，而在一个判据上：<strong>锁对象的边界是由数据决定的，还是由查询决定的</strong>。按这一条判据，十五个命名方案收敛成四类，其余全是配套细节。</p>
+
+<div class="kpis">
+  <div class="kpi"><div class="v">4 类</div><div class="l">点锁 / 半开区间 / 任意区间 / 谓词<br>另有 1 个骨架：多粒度意向锁</div></div>
+  <div class="kpi"><div class="v">15</div><div class="l">单版本纯封锁下的命名方案<br>其中 5 个已在本项目落地</div></div>
+  <div class="kpi"><div class="v">55×</div><div class="l">同一负载的锁数量差（r=128）<br>next-key 1 234.8 对桶锁 22.4</div></div>
+  <div class="kpi"><div class="v red">781.4</div><div class="l">Citron 的锁操作吞吐（kops/s）<br>p99 59.6 µs，单边 RDMA</div></div>
+</div>
+
+<p>四句话概括：</p>
+<p><strong>第一，四类不是四个时代，是四个取值。</strong>record-2PL、System R、ARIES/IM 都在 A 类；next-key、prior-key、gap-lock 都在 B 类，只是"洞归谁"不同；Lomet 的多粒度 key range、SQL Server 的 RangeS-S、桶锁、精确区间锁、Citron 全在 C 类；谓词锁与 precision locking 在 D 类。所谓"新协议"，多数是同一类的另一个取值。</p>
+<p><strong>第二，B 与 C 的差别只有一个词：边界来源。</strong>B 的边界是现存键，所以冲突判定退化成"键相等"，一次哈希就够；C 的边界是任意值，必须维护区间索引做相交判定。桶锁之所以快，正是因为它把 C 的任意边界量化到对齐格子上，硬生生把"相交"变成了"相等"。</p>
+<p><strong>第三，我们缺的不是第六个协议，是三个工程细节。</strong>独立的插入意向模式、删除路径的洞保护、以及精确区间锁。前两个是几天的活，第三个已经落地（<code>1022bc6</code>），而它恰好是唯一能回答"桶宽是必要妥协还是设计缺陷"的对照点。</p>
+<p><strong>第四，Citron 是 C 类的极值点，也是唯一把这件事搬到单边 RDMA 上的公开工作。</strong>它用静态四叉线段树把任意区间分解成 O(log N) 个节点，最好情况 2 个 RTT。它没有开源。</p>
+
+<div class="note">
+  <div class="t">本文的口径</div>
+  <p><strong>只讨论单版本、纯封锁、B+ 树。</strong>MVCC、快照隔离、SSI、PostgreSQL 的 SIREAD 一律不计入——它们用版本和依赖追踪解决区间问题，不靠锁，混进来会让分类失去意义。</p>
+  <p><strong>性能数字标明来源。</strong>锁数量取自本项目 10 000 键正式矩阵（commit <code>8511d5b</code>，YCSB-E，单线程），<em>只用于说明协议之间的数量关系</em>，不代表当前实现的绝对吞吐——本地授权后端已在 11-06 换掉，同一格快了 21–153 倍，正在重测。</p>
+</div>
+
+<h2><span class="num">1</span>问题的形状：谓词不是对象</h2>
+
+<p>范围查询在语义上是一个谓词 <code>P</code>（如 <code>k BETWEEN 20 AND 30</code>）。事务 T1 在 t1 读到满足 P 的集合 S1，T2 在中间插入一条也满足 P 的记录并提交，T1 在 t2 再读得到 S2 ⊋ S1——两次读到的东西不一样，这就是幻读。</p>
+
+<p>锁要做的事是把"P 覆盖的范围"变成一个<strong>可枚举、可比较、可存放</strong>的对象集合。这条链上有三次映射，每一次都失真一次：</p>
+
+<pre>谓词 P（age BETWEEN 20 AND 30）
+  │  ① 依赖索引结构：只有能由索引顺序判定的谓词才能落到区间上
+  ▼
+索引上的连续对象（若干 key + 若干空隙）
+  │  ② 选择粒度：记录 / 间隙 / 半开区间 / 整段区间 / 子树
+  ▼
+锁集合（一事务 1 把 ... 1235 把）
+  │  ③ 选择存放位置：本地哈希、本地有序表、远端静态数组
+  ▼
+锁表条目</pre>
+
+<p>第 ① 步失真的后果是"索引依赖"：换成哈希索引，或者查询带非索引谓词，next-key 这套机制直接失效，只能退化成全表锁。第 ② 步决定锁数量与冲突面——这是我们在实验里能测的那根轴。第 ③ 步决定每把锁的单价，在远程场景下它是 5 次单边往返。</p>
+
+<p>还有一个不变式必须先立起来，否则后面所有讨论都没有判据：<strong>一个正确的范围锁集合，必须覆盖查询区间上所有"可能插入新键的位置"，而不只是已存在的行</strong>。record-2PL 违反它，因为插入点落在两条记录之间时没有对象可锁；next-key 满足它，因为 <code>(prev, cur]</code> 首尾相接、不留空隙；桶锁也满足它，只是用"整桶"这种更粗的覆盖，方向是保守的（只会多锁，不会漏）。</p>
+
+<h2><span class="num">2</span>分类学：一条判据分出四类</h2>
+
+<p>判据只有一个：<strong>锁对象的边界从哪里来</strong>。</p>
+
+<table>
+  <caption>表 2-1　按"边界来源"划分的四类，以及每类的技术后果</caption>
+  <thead>
+    <tr><th>类</th><th>边界来源</th><th>冲突判定</th><th>锁表结构</th><th>锁数量随扫描</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><span class="tag a">A</span> 点锁</td><td>只有键，不含洞</td><td>键相等</td><td>哈希</td><td>线性增长</td></tr>
+    <tr><td><span class="tag b">B</span> 半开区间锁</td><td><strong>现存键</strong>（prev / cur / next）</td><td>键相等（相邻即覆盖）</td><td>哈希即可</td><td>线性增长</td></tr>
+    <tr><td><span class="tag c">C</span> 任意区间锁</td><td><strong>查询给的任意值</strong></td><td>区间相交</td><td>区间树 / 线段树 / 有序表</td><td>常数或 O(log N)</td></tr>
+    <tr><td><span class="tag d">D</span> 谓词锁</td><td>逻辑条件</td><td>可满足性（NP 完全）</td><td>无定式</td><td>理论 1，工程不可用</td></tr>
+  </tbody>
+</table>
+
+<p>B 和 C 都在"锁一段"，为什么必须分开？因为边界的<strong>来源</strong>决定了实现的一切：</p>
+
+<ul>
+  <li><strong>B 的端点就是 B+ 树里真实存在的键。</strong>锁 <code>(1174, 1180]</code> 时，右端点是真实记录、左端点是它的前一条记录。锁表按 key 直接查，一次哈希判冲突，不必知道"这两条记录之间还有多少空间"。</li>
+  <li><strong>C 的端点由查询指定。</strong>锁 <code>[1000, 1008)</code> 时，两个端点可能都不是现存键。没有键可查，只能维护"谁锁了哪些区间"的索引，用相交判断冲突。</li>
+</ul>
+
+<p>这一个差别带出三个连锁后果，后面第 6 节展开：冲突判定的复杂度、锁能不能渐进地装、锁数量是否随扫描线性增长。</p>
+
+<h2><span class="num">3</span>完整谱系：十五个命名方案</h2>
+
+<p>按 Graefe 的综述（TODS 2010）梳理，B+ 树 + 单版本 + 纯封锁这条线上的命名方案如下。"落点"一列指本项目当前状态。</p>
+
+<table>
+  <caption>表 3-1　B+ 树上的范围锁方案谱系</caption>
+  <thead>
+    <tr><th class="n">#</th><th>方案</th><th>锁的对象</th><th>类</th><th>出处</th><th>落点</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="n">1</td><td>谓词锁 predicate lock</td><td>谓词（布尔条件）</td><td><span class="tag d">D</span></td><td>Eswaran 等，CACM 1976</td><td>—</td></tr>
+    <tr><td class="n">2</td><td>多粒度意向锁 IS/IX/SIX</td><td>层级上的任意粒度</td><td>骨架</td><td>Gray 等，IFIP 1976</td><td>用模式，未建层级</td></tr>
+    <tr><td class="n">3</td><td>B* 树锁定协议</td><td>节点，自顶向下判"安全"</td><td>结构式</td><td>Bayer &amp; Schkolnick，1977</td><td>—</td></tr>
+    <tr><td class="n">4</td><td>System R key lock + index lock</td><td>索引项 + 索引级兜底</td><td><span class="tag a">A</span></td><td>Astrahan 等，TODS 1979</td><td>record-2PL 近似</td></tr>
+    <tr><td class="n">5</td><td>B-link 树</td><td>右指针 + 高键</td><td>结构式</td><td>Lehman &amp; Yao，TODS 1981</td><td>未做</td></tr>
+    <tr><td class="n">6</td><td>precision locking（惰性谓词）</td><td>不预锁，读时用别人的谓词过滤</td><td><span class="tag d">D</span></td><td>Jordan 等，1981</td><td>—</td></tr>
+    <tr><td class="n">7</td><td>next-key / key-range lock</td><td><code>(prev, cur]</code>，含 <code>+∞</code> 哨兵</td><td><span class="tag b">B</span></td><td>ARIES/KVL，Mohan，VLDB 1990</td><td class="hi">已实现</td></tr>
+    <tr><td class="n">8</td><td>ARIES/IM</td><td>record + 页 latch，不锁 key</td><td><span class="tag a">A</span></td><td>Mohan &amp; Levine，SIGMOD 1992</td><td>仅页 latch（v2）</td></tr>
+    <tr><td class="n">9</td><td>多粒度 key range locking</td><td>半开区间 + 独立 range insert 模式</td><td><span class="tag c">C</span></td><td>Lomet，VLDB 1993</td><td>未做</td></tr>
+    <tr><td class="n">10</td><td>prior-key locking</td><td><code>[cur, next)</code>，next-key 的对偶</td><td><span class="tag b">B</span></td><td>Graefe 综述列为并列方案</td><td>—</td></tr>
+    <tr><td class="n">11</td><td>hole lock</td><td>未提交删除留下的洞</td><td><span class="tag b">B</span> 配套</td><td>Gray &amp; Reuter 教科书</td><td>未做</td></tr>
+    <tr><td class="n">12</td><td>ghost / 伪删除记录</td><td>删除留标记，让洞变成实记录</td><td><span class="tag b">B</span> 配套</td><td>Gray &amp; Reuter；Graefe 综述</td><td>—</td></tr>
+    <tr><td class="n">13</td><td>增量锁 increment lock</td><td>可组合的语义锁</td><td>配套</td><td>Graefe 综述</td><td>—</td></tr>
+    <tr><td class="n">14</td><td>谓词附着到树节点 + NSN</td><td>GiST/R 树的节点</td><td><span class="tag d">D</span></td><td>Kornacker &amp; Banks 1995；Kornacker 等 1997</td><td>不适用</td></tr>
+    <tr><td class="n">15</td><td>商业实现</td><td>SQL Server <code>RangeS-S</code>/<code>RangeI-N</code>；InnoDB next-key + insert intention；DB2 type-2</td><td><span class="tag b">B</span>/<span class="tag c">C</span></td><td>产品文档</td><td>部分（gap-lock / next-key）</td></tr>
+  </tbody>
+</table>
+
+<h2><span class="num">4</span>逐类拆解</h2>
+
+<h3>4.1　A 类：点锁——正确性的天花板是定义决定的</h3>
+
+<p><strong>record-2PL（严格 2PL）</strong>：范围读对每一行加 S 点锁，点写加 X 点锁，写入挂进写集合，事务结束先应用写集合再一次性解锁。严格性不是可选项：写是延迟应用的，X 锁必须持有到落地之后，否则会读到脏数据、产生级联回滚。</p>
+
+<p>它在 A 类里是"最正确"的实现，但幻读是<strong>定义上的失效</strong>，不是实现 bug：插入的行在事务开始时还不存在，没有对象可锁。任何"只锁已有对象"的方案都躲不开这一条。</p>
+
+<p><strong>System R 的 key lock</strong> 是这条线上最早的工程化答案：把锁挂在索引项上，并用 index-level lock 兜底（没有可用索引时退化成表级）。<strong>ARIES/IM</strong> 走了另一条路：不锁 key，只锁 record 并配合页 latch，把"结构一致性"和"逻辑隔离"彻底分开。这两者的对比说明一件事——<strong>锁对象的选择首先取决于"你能不能为谓词找到一个稳定的枚举单位"</strong>，键、记录、页都是候选，代价各不相同。</p>
+
+<h3>4.2　B 类：半开区间——三种切法，一个不变式</h3>
+
+<p>B 类的共同点是：区间端点一定是现存键。三种切法只是"洞归谁"不同：</p>
+
+<table>
+  <caption>表 4-1　B 类内部的三种切法</caption>
+  <thead><tr><th>方案</th><th>区间</th><th>记录是否一起锁</th><th>特点</th></tr></thead>
+  <tbody>
+    <tr><td>next-key</td><td><code>(prev, cur]</code>，往左看</td><td>锁（含右端点）</td><td>一行一把，最精确</td></tr>
+    <tr><td>prior-key</td><td><code>[cur, next)</code>，往右看</td><td>锁（含左端点）</td><td>无需构造 <code>+∞</code> 哨兵</td></tr>
+    <tr><td>gap-lock</td><td>洞本身</td><td>不锁记录（可另加）</td><td>锁更少，边界更粗</td></tr>
+  </tbody>
+</table>
+
+<p><strong>next-key 为什么能防幻读</strong>：一次扫描从 <code>s</code> 到 <code>e</code>，装的是 <code>point(s)</code> 起点锁 + 每行的 <code>(prev, cur]</code> + 尾区间 <code>(last, e]</code>。这些区间<strong>首尾相接、不留空隙</strong>，任何落进 <code>[s, e]</code> 的新键都必然落进某一段 <code>(prev, cur]</code>，从而与已有锁冲突。这一句就是它的正确性证明，也是它锁数量的来源：扫 8 行要 10 把，扫 1 215 行要 1 235 把。</p>
+
+<p>prior-key 是它的对偶，有一个实现上的便利：<code>[cur, next)</code> 的右端点如果越过末尾就是 <code>+∞</code>，而 next-key 需要显式造这个人造键来覆盖"最后一条记录之后"的空间。</p>
+
+<p><strong>三个配套细节，缺一个都会漏</strong>：</p>
+
+<ul>
+  <li><strong>插入意向模式</strong>（SQL Server 的 <code>RangeI-N</code>，InnoDB 的 insert intention）。插入要问的是"这个洞里有没有人在扫"，而不是"这个洞能不能读"。把它做成独立模式（与所有模式兼容，只在插入前做测试）可以避免用 S/X 硬扛带来的过度阻塞。Lomet 1993 把它形式化为 <code>range insert</code> 模式。</li>
+  <li><strong>hole lock</strong>：删除事务已经删掉一行但还没提交时，那个位置由谁来挡？做法是删除也要拿 next-key 锁并持有到提交。</li>
+  <li><strong>ghost record</strong>：另一种做法——不物理删除，只打标记，让洞变成一条实实在在的记录，从而始终被锁覆盖。</li>
+</ul>
+
+<h3>4.3　C 类：任意区间——精确与近似的分水岭</h3>
+
+<p>C 类的锁对象是查询给的区间 <code>[lo, hi)</code>，端点不必是现存键。它的收益是<strong>锁数量与扫描宽度脱钩</strong>，代价是必须维护区间索引、必须做相交判定。</p>
+
+<h4>精确派</h4>
+
+<ul>
+  <li><strong>Lomet 1993 的多粒度 key range locking</strong>：半开区间 + 独立 <code>range insert</code> 模式，把"锁什么"和"插入可行性测试"拆成两件事。</li>
+  <li><strong>SQL Server 的 RangeS-S / RangeS-U / RangeX-X / RangeI-N</strong>：把区间当单一锁对象注册进锁表，键是 <code>(index, lo, hi)</code>，而不是每行一把。</li>
+  <li><strong>我们的 exact-range</strong>（<code>1022bc6</code>）：一个独立的 <code>LockKind::ExactRange</code>，一次范围查询发布一条 <code>[lo, hi)</code>，端点开闭由 <code>KeyRangeEnt</code> 精确表示，与 next-key 共用同一张锁表，可直接做锁数量与冲突的隔离实验。</li>
+  <li><strong>Citron</strong>：把区间分解到静态四叉线段树上，用单边 RDMA 原子操作完成加解锁，第 8 节详述。</li>
+  <li><strong>文件系统的老本行</strong>：POSIX 字节范围锁（<code>fcntl</code>）、Lustre LDLM 的 extent lock（可以授予比请求更大的区间以减少请求次数）。它们和数据库的区间锁是同一个数学问题，只是键空间是字节偏移。</li>
+</ul>
+
+<h4>近似派</h4>
+
+<p><strong>层级桶锁</strong>是 C 类的一个量化近似：把键空间按 <code>key / b</code> 切成定宽桶，锁对象是桶号，冲突判定从"区间相交"退化成"桶号相等"。这一步退化换来的是 O(1) 定位——桶号算出来就是数组下标，一次 CAS 挂上，这在远程场景下是决定性的优势。</p>
+
+<p>代价是<strong>假冲突</strong>：桶里 256 个键在锁表中是同一个对象，A 读第 10 个键、B 改第 200 个键，明明不相干也要冲突。所以桶锁在宽扫描上锁数量少一个数量级，在点写上却把相邻键绑在一起互相踩。</p>
+
+<div class="note">
+  <div class="t">一句话把 B / C / 近似三者的关系说清</div>
+  <p>next-key 用"现存键"切区间，精确区间锁用"查询值"切区间，桶锁用"对齐格子"切区间。<strong>三者解决的是同一个问题——一次扫描别拿上千把锁——区别只在切法精确到什么程度。</strong>桶锁不是另一个思路，它是 C 类的一个可行但失真的实现。</p>
+</div>
+
+<h3>4.4　D 类：谓词——理论上正确，工程上不可直接判定</h3>
+
+<p><strong>谓词锁</strong>是 1976 年那篇论文的原点：锁的不是数据，是条件本身。问题是"两个谓词是否可同时满足"是 NP 完全的，运行时无法判定，所以单版本系统里没有独立实现——所有工程方案都是在做"如何用键上的锁去近似谓词"。</p>
+
+<p><strong>precision locking</strong> 是个巧妙的折中：不预锁谓词，而是记录别人正在执行的谓词，读取时把返回的每一行拿去和这些谓词比对，命中就冲突。它绕开了可满足性判定，代价是<strong>只能事后发现、不能事前预防</strong>，因此从未进入主流产品。</p>
+
+<p><strong>GiST / R 树上的谓词附着</strong>（Kornacker 等）解决的是另一个前提问题：多维索引没有线性键序，next-key 的"前驱/后继"根本不成立，只能把谓词挂到树节点上并用 NSN（node sequence number）做版本校验。这条线说明：<strong>B 类的整套机制建立在"键空间全序"这个假设上</strong>，换索引形态，假设就没了。</p>
+
+<h2><span class="num">5</span>骨架与非锁机制</h2>
+
+<h3>5.1　多粒度意向锁：它不定义锁对象，只定义如何组合</h3>
+
+<p>Gray 1976 的 IS/IX/SIX/S/X 不是"一种范围锁"，而是一个<strong>组合规则</strong>：任何事务在子节点加锁前，必须在所有祖先节点持有兼容的意向锁，顺序自顶向下。它把"我要读这一整棵子树"压缩成祖先节点上的一个 IS，从而让锁数量与"子树高度"而不是"叶子条数"相关。</p>
+
+<p>我们的层级桶锁借用了这套模式（根 IS/IX、桶 S/X、记录兜底），但层级是<strong>键空间的三层</strong>（表 → 桶 → 记录），不是 B+ 树的树层。这两件事经常被混淆：桶的边界由 <code>key / b</code> 算出来，与树怎么分裂无关。</p>
+
+<h3>5.2　非锁机制：结构一致性与逻辑隔离是两件事</h3>
+
+<ul>
+  <li><strong>B-link 树</strong>（Lehman &amp; Yao 1981）：不靠范围锁解决幻读，靠右指针 + 高键，扫描时沿着 <code>next</code> 走，分裂期间通过 link 跟上，因此不需要锁间隙。它回答的是"能不能不用范围锁"，比再多一个范围锁变体更有说服力。</li>
+  <li><strong>ARIES/IM 的页 latch</strong>：每页一把读写锁 + crabbing（先持父页再拿子页，拿到就放父页）。latch 是微秒级、只保护"这次遍历时页结构不被撕坏"，<strong>不提供任何事务隔离</strong>，也不防幻读。它和事务锁是两个维度，名字里的 lock 容易误导。</li>
+  <li><strong>B* 树锁定</strong>（Bayer &amp; Schkolnick 1977）：自顶向下判断节点是否"安全"（不会分裂），安全就不必锁子树，是结构式的另一种解法。</li>
+</ul>
+
+<h2><span class="num">6</span>一条判据的四个连锁后果</h2>
+
+<p>"边界由谁决定"这一条判据，直接决定了四件工程上的事。这张表是整篇报告最该记住的部分。</p>
+
+<table>
+  <caption>表 6-1　B 类与 C 类的四个后果（近似实现单列）</caption>
+  <thead><tr><th>维度</th><th>B 半开区间（next-key）</th><th>C 精确区间</th><th>C 近似（桶锁）</th></tr></thead>
+  <tbody>
+    <tr><td>冲突判定</td><td>O(1)，键相等</td><td>O(log N) 或 O(N)，区间相交</td><td class="hi">O(1)，桶号相等</td></tr>
+    <tr><td>加锁时机</td><td><strong>渐进</strong>：扫到哪锁到哪</td><td><strong>一次性</strong>：必须整段一起装</td><td>需预规划（整事务的桶）</td></tr>
+    <tr><td>锁数量</td><td>随扫描行数线性</td><td>常数（1 把）或 O(log N) 分解</td><td>随跨桶数，近似常数</td></tr>
+    <tr><td>假冲突</td><td>无</td><td>无</td><td class="bad">有（桶内不可区分）</td></tr>
+    <tr><td>前置条件</td><td>键空间全序</td><td>需要区间索引结构</td><td>键空间可量化</td></tr>
+  </tbody>
+</table>
+
+<p>"渐进性"是 B 类最被低估的优点：next-key 可以边扫边锁，因为它知道当前行的前驱；C 类必须先把范围算清楚再装锁。反过来，C 类一把锁覆盖整段，不需要边扫边加，也就不需要"扫描后再重查"那个补丁。</p>
+
+<p>这张表还能解释一个具体的数字：<strong>为什么桶锁在窄范围上不如 next-key</strong>（YCSB-A 点写上桶锁慢一倍）。点查只碰一个键，next-key 拿一两把锁；桶锁要锁整桶，假冲突 + 更宽的元数据，全部是净损失。同一张表里，"假冲突"那一行就是答案。</p>
+
+<h2><span class="num">7</span>我们落在哪：五个实现与三处偏差</h2>
+
+<p>项目里现在有五个范围锁实现，按上面的分类落位如下。锁数量取自 10 000 键正式矩阵（YCSB-E，单线程，三次重复取中位数），按"每返回一行付出多少把锁"与"每事务总锁数"两种口径给出。</p>
+
+<table>
+  <caption>表 7-1　五个实现的分类落点与锁数量（YCSB-E，10 000 键）</caption>
+  <thead>
+    <tr><th>实现</th><th>类</th><th>锁对象</th><th class="n">range=8</th><th class="n">range=32</th><th class="n">range=128</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>record-2PL</td><td><span class="tag a">A</span></td><td>匹配到的每条记录</td><td class="n">76.5</td><td class="n">304.6</td><td class="n">1 215.0</td></tr>
+    <tr><td>gap-lock</td><td><span class="tag b">B</span>/<span class="tag c">C</span> 混合</td><td>整段区间 + 两端点 + 每条记录</td><td class="n">105.0</td><td class="n">332.9</td><td class="n">1 244.3</td></tr>
+    <tr><td>next-key</td><td><span class="tag b">B</span></td><td>逐行 <code>(prev, cur]</code> + 起点 + 尾区间</td><td class="n">95.5</td><td class="n">323.6</td><td class="n">1 234.8</td></tr>
+    <tr><td>层级桶锁 b=256</td><td><span class="tag c">C</span> 近似</td><td>表 / 桶（定宽）/ 记录 三层</td><td class="n hi">20.1</td><td class="n hi">20.5</td><td class="n hi">22.4</td></tr>
+    <tr><td>exact-range</td><td><span class="tag c">C</span></td><td>一条 <code>[lo, hi)</code></td><td class="n hi">1–2</td><td class="n hi">1–2</td><td class="n hi">1–2</td></tr>
+  </tbody>
+</table>
+
+<p class="unit">前四行是实测；exact-range 是理论值，代码已落地（<code>1022bc6</code>，ctest 45/45），尚未进入正式矩阵。</p>
+
+<h3>三处偏差，都值得修</h3>
+
+<p><strong>偏差一：gap-lock 是 B/C 混合，两头都不占。</strong>名义上它是 B 类（锁间隙），但实现是"一把 <code>open(s, e)</code> 整段 + 两个端点 + 每条记录"，边界取自扫描端点而非现存键，装锁方式按 C 类来，同时还顺带拿了一整套 A 类的记录锁。结果是：<strong>既付了 C 类的判定代价，又没拿到 C 类的锁数量优势</strong>——它在 range=8 上有 105 把锁，比 next-key 的 95.5 还多 10%。这大概是它在同负载上比 next-key 更慢的直接原因。</p>
+
+<p><strong>偏差二：桶锁把"相交"退化成了"相等"。</strong>这是它能 O(1) 定位的原因，也是它假冲突的来源。它属于 C 类，只是失真。这一点以前被我描述成"另一条思路"，不准确——它和精确区间锁是同一类里的两个精度。</p>
+
+<p><strong>偏差三：缺少独立的插入意向模式。</strong>gap-lock 用 S/X 硬扛插入测试，语义上能做到（不会漏），但会过度阻塞（不该挡的也挡）。SQL Server 用 <code>RangeI-N</code>、InnoDB 用 insert intention，都是把这件事拆成独立模式。</p>
+
+<div class="note warn">
+  <div class="t">关于本表的吞吐：不作结论</div>
+  <p>同一批矩阵里 YCSB-E t=1 的吞吐是 record-2PL 32 403、gap-lock 26 195、next-key 40 666、桶锁 138 971 txn/s。<strong>这些数字来自 11-02 的旧授权后端</strong>（全局协调器 + 线性冲突扫描），锁多的协议被额外惩罚；11-06 换成本地原子状态槽后同格快了 21–153 倍，其中 next-key 的中止率从 58% 掉到 3.6%。所以这张表里的锁数量可用（它由协议决定），吞吐只能当"旧实现的相对关系"看。</p>
+</div>
+
+<h2><span class="num">8</span>Citron 深读：静态线段树上的单边范围锁</h2>
+
+<p>Citron（Gao、Lu 等，清华，FAST'23，<em>Citron: Distributed Range Lock Management with One-sided RDMA</em>）是 C 类里唯一把问题搬到单边 RDMA 上的公开工作，也是我们最该对着做的那篇。</p>
+
+<h3>8.1　它要解决的瓶颈</h3>
+
+<p>已有的分布式范围锁管理器（DRLM，如 Lustre 的 interval tree）都靠服务端 CPU 中转：客户端发 RPC → 服务端 CPU 遍历动态结构 → 回包。两个代价：服务端 CPU 成为吞吐瓶颈；一次加锁要排 4–5 个 RTT 的队。Citron 的答案是<strong>让服务端 CPU 完全不参与</strong>，只用单边 RDMA 改对端内存里的静态结构。</p>
+
+<h3>8.2　三个数据结构选择，全是为了压 RTT</h3>
+
+<table>
+  <caption>表 8-1　Citron 的三个设计选择</caption>
+  <thead><tr><th>选择</th><th>常规做法</th><th>Citron</th><th>理由</th></tr></thead>
+  <tbody>
+    <tr><td>树的叉数</td><td>二叉线段树</td><td><strong>四叉</strong></td><td>树高减半，每层一次 RDMA，RTT 直接减半</td></tr>
+    <tr><td>叶子粒度</td><td>1 个单位</td><td><strong>64 个单位（一个 8 字节位图）</strong></td><td>一个原子操作覆盖 64 个单位</td></tr>
+    <tr><td>节点寻址</td><td>指针</td><td><strong>按层序放进平坦数组，用下标算</strong></td><td>RDMA 不能用指针：<code>Child(x,i)=4x-2+i</code>，<code>Parent(x)=⌊(x+2)/4⌋</code></td></tr>
+  </tbody>
+</table>
+
+<p>N = 2²⁸ 时共 560 万个节点、占 42.7 MB——相当于 1 TB 空间按 4 KB 页切分的 0.004%。</p>
+
+<h3>8.3　节点格式：每个都是 8 字节，两类语义完全不同</h3>
+
+<pre>叶子：64 位位图，每一位对应一个存储单位；置位 = 被占用。用 masked-CAS 置位/清位。
+
+内部：六个字段塞进 64 位
+  Exp 1b | Occ 1b | TCnt 15b | TMax 15b | DCnt 16b | DMax 16b
+        └── 两组面包店算法（Lamport bakery）票号：Max 发号、Cnt 叫号
+            TCnt 管本节点，DCnt 管后代</pre>
+
+<p>15 位的计数器把并发客户端限制在 32 767 以内。这一段是它最"不通用"的地方——字段布局是把并发控制算法硬编码进 8 字节，换一个字段宽度就要重排全部原子操作。</p>
+
+<h3>8.4　加锁协议：一步本地计算，四段网络动作</h3>
+
+<ol>
+  <li><strong>步 1（零网络流量）</strong>：把 <code>[l, r)</code> 拆成若干树节点。它既不锁"覆盖范围的最小节点"（那样 <code>[N/2-1, N/2+1)</code> 会锁住根，造成全库冲突），也不锁 Θ(log N) 个节点（那要串行做很多次 RDMA），而是把它归结成<strong>树上的背包问题</strong>：最多用 k 个节点覆盖区间，目标是多余覆盖最小。实现里固定 <strong>k = 2</strong>，求解 &lt; 0.5 µs，纯本地计算。</li>
+  <li><strong>(a) 拿票</strong>：内部节点先用 masked-FAA 对 <code>TMax</code> 取号，再轮询 <code>TCnt</code> 等叫号。</li>
+  <li><strong>(b) 查祖先</strong>：反复读祖先，若有 <code>Occ</code> 就等它释放；读到 <code>Exp</code>（扩容）就放弃重来。</li>
+  <li><strong>(c) 占位</strong>：内部节点置 <code>Occ</code>；叶子用 masked-CAS 置位。CAS 连续失败太久则<strong>升级到父节点重来</strong>（避免饥饿）。</li>
+  <li><strong>(d) 通知祖先</strong>：每 m 级通知一次，并等 m 层内的后代。</li>
+</ol>
+
+<h3>8.5　两个关键技巧</h3>
+
+<p><strong>MITM 通知（m = 4）。</strong>问题是小范围请求（在叶子上）和大范围请求（在祖先上）互相不知道对方。全上溯到根代价太大，让大范围检查所有后代又是指数爆炸。Citron 取中点：<strong>小范围只通知每 m 级祖先，大范围只检查 m 层内后代</strong>，这样双方区间必然相交。大范围每次读 5 个节点，且这些节点在平坦数组里连续，5 次读可以合并成 4 次。</p>
+
+<p><strong>用本地时钟证明"通知已完成"。</strong>大范围在检查后代前要等 <code>T_wait</code>，但它无法确定小范围是否已通知完。解法是小范围用本地时钟验证：</p>
+
+<pre>t2 − t1 ≤ (1 − δ) · T_wait        δ = 10⁻⁴</pre>
+
+<p>其中 t1 是它最后一次读到"对方已占用"的时间、t2 是通知完成时间。只依赖<strong>时钟频率稳定</strong>（±100 ppm），<strong>不要求时钟同步</strong>，也不需要全局时钟。这条是整个设计里最精巧的一处，也是最难正确实现的一处。</p>
+
+<p><strong>优化到 2 个 RTT</strong>：同 QP 内单边操作不乱序（RC 保证），(a)(b) 可乐观合并提交、(c)(d) 也可合并（失败回滚 <code>DCnt</code>）；若节点的子节点全是叶子，直接 CAS 置 256 位，成功就跳过 (d)。最好情况两次往返拿到锁。</p>
+
+<h3>8.6　性能与复现现状</h3>
+
+<table>
+  <caption>表 8-2　Filebench OLTP 下的锁吞吐与尾延迟（Citron 论文 Table 2）</caption>
+  <thead><tr><th>方案</th><th class="n">吞吐（kops/s）</th><th class="n">读 p99（µs）</th><th>性质</th></tr></thead>
+  <tbody>
+    <tr><td class="hi">Citron</td><td class="n hi">781.4</td><td class="n hi">59.6</td><td>单边 RDMA + 静态线段树</td></tr>
+    <tr><td>IT（interval tree）</td><td class="n">503.1</td><td class="n">118.7</td><td>CPU 中转</td></tr>
+    <tr><td>LLC</td><td class="n">847.5</td><td class="n">430.9</td><td>CPU 中转，吞吐最高但尾延迟最差</td></tr>
+    <tr><td>LLD</td><td class="n">144.8</td><td class="n">442.0</td><td>单边 RDMA，但往返多</td></tr>
+    <tr><td>SS-4KB</td><td class="n">575.3</td><td class="n">56.1</td><td>单边 RDMA，固定 4 KB 粒度</td></tr>
+    <tr><td>MT</td><td class="n">220.6</td><td class="n">2043.4</td><td>多表</td></tr>
+    <tr><td>Mutex</td><td class="n">173.8</td><td class="n">295.2</td><td>单锁</td></tr>
+  </tbody>
+</table>
+
+<p>关键读法：<strong>Citron 的吞吐并不是最高</strong>（LLC 是 847.5），它主张的价值是<strong>尾延迟低 7 倍</strong>（59.6 对 430.9 µs）。所以引用它时不能说"Citron 最快"，要说"在吞吐接近的前提下，把 p99 压下一个数量级"。</p>
+
+<div class="note warn">
+  <div class="t">三条与复现直接相关的事实</div>
+  <p><strong>没有源码。</strong>全文 grep <code>open source</code> / <code>available at</code> / <code>github</code> / <code>artifact</code> 零命中，USENIX 页面只有论文与 slides，CitronFS 也未开源。要从零实现。</p>
+  <p><strong>masked atomic 不是 ConnectX-6 专属。</strong>论文 §2.1 明确写"从 Connect-IB 到 ConnectX-7 的商用 RNIC 都支持 masked atomic verbs"。我此前判断"ConnectX-5 不支持、必须换卡"是错的。本机（ConnectX-5，fw 16.31）的 <code>mlx5dv.h</code> 已导出 <code>MLX5_OPCODE_ATOMIC_MASKED_CS</code>/<code>FA</code>，说明该能力在 provider 层可达。</p>
+  <p><strong>真正的障碍是 API 形态。</strong>当前 rdma-core（25.10）不再导出 <code>ibv_exp_*</code> 实验接口，masked 原子只能通过 <code>mlx5dv</code> 的 direct-verb 自己拼 WQE。这是工程量，不是硬件缺失——结论从"要换机器"改成"要写一层 direct-verb 封装"。</p>
+</div>
+
+<h3>8.7　复现路径</h3>
+
+<table>
+  <caption>表 8-3　Citron 复现的六个里程碑</caption>
+  <thead><tr><th>阶段</th><th>内容</th><th>验收</th><th class="n">估时</th></tr></thead>
+  <tbody>
+    <tr><td>M0</td><td>平坦数组线段树 + 树上背包拆分 k=2</td><td>10 万随机区间：覆盖完整、无重叠、多余覆盖 &lt; 5%、拆分 &lt; 1 µs</td><td class="n">2–3 天</td></tr>
+    <tr><td>M1</td><td>单机多线程协议（共享内存 + <code>__atomic</code> 替代单边操作）</td><td>4/8/16 线程无死锁、无饥饿，冲突计数与理论一致</td><td class="n">1 周</td></tr>
+    <tr><td>M2</td><td>探测 masked atomic 可达性，定 direct-verb 路线</td><td>20 行 probe：masked-CAS 置位/清位成功</td><td class="n">2 天</td></tr>
+    <tr><td>M3</td><td>RDMA 单边移植（.66/.67）</td><td>单客户端 200 万次加解锁无泄漏；双客户端交错 100 万次正确</td><td class="n">1–2 周</td></tr>
+    <tr><td>M4</td><td>接入 YCSB-E，替换桶锁</td><td>与 next-key / 桶锁 / exact-range 同框</td><td class="n">3–4 天</td></tr>
+    <tr><td>M5</td><td>补 CPU 中转 baseline（interval tree 或单锁）</td><td>至少一个对照，能复现"吞吐接近、尾延迟差 7 倍"的形状</td><td class="n">1 周</td></tr>
+  </tbody>
+</table>
+
+<p>一个必须先想清楚的实验设计问题：<strong>Citron 的价值来自 O(log N) 分解，而我们的键空间只有 2×10⁶。</strong>N = 2¹⁴ 时四叉树只有 4 层，一次扫 128 行可能只覆盖 1–2 个叶子（叶子管 64 个键）。在这种规模下它的锁数量是 1–2 把、桶锁是 12–16 把，差异已经不是论文里"5 次往返 vs 1 次"的量级。</p>
+
+<p>所以定位要选清楚：<strong>把它当作"C 类的精确代表"，用来回答"桶宽是必要妥协还是设计缺陷"，而不是"Citron 比桶锁快多少倍"。</strong>这个定位下，M0–M1 + M3 就够，不需要为它重建整套存储。</p>
+
+<h2><span class="num">9</span>横向总表</h2>
+
+<table>
+  <caption>表 9-1　十一类方案的正面对比（锁数量按 range=128 的量级）</caption>
+  <thead>
+    <tr><th>方案</th><th>类</th><th>锁对象</th><th>判定</th><th class="n">锁/事务</th><th>幻读</th><th>远程可搬性</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>record-2PL</td><td><span class="tag a">A</span></td><td>记录</td><td>键相等</td><td class="n">~1 215</td><td class="bad">不防</td><td class="hi">易（O(1) 哈希）</td></tr>
+    <tr><td>System R key lock</td><td><span class="tag a">A</span></td><td>索引项 + 索引级</td><td>键相等</td><td class="n">~1 215</td><td class="bad">部分</td><td>易</td></tr>
+    <tr><td>ARIES/IM</td><td><span class="tag a">A</span></td><td>记录 + 页 latch</td><td>键/页</td><td class="n">~1 215</td><td class="bad">不防</td><td>中（页须在对端）</td></tr>
+    <tr><td>next-key</td><td><span class="tag b">B</span></td><td><code>(prev, cur]</code></td><td>键相等</td><td class="n">~1 235</td><td class="hi">防</td><td>中（要取前驱）</td></tr>
+    <tr><td>prior-key</td><td><span class="tag b">B</span></td><td><code>[cur, next)</code></td><td>键相等</td><td class="n">~1 235</td><td class="hi">防</td><td>中</td></tr>
+    <tr><td>gap-lock</td><td><span class="tag b">B</span></td><td>洞（+记录）</td><td>键相等</td><td class="n">~1 244</td><td class="hi">防</td><td>中</td></tr>
+    <tr><td>Lomet 多粒度 key range</td><td><span class="tag c">C</span></td><td><code>[lo, hi)</code> + insert 模式</td><td>区间相交</td><td class="n">常数</td><td class="hi">防</td><td>难（需区间索引）</td></tr>
+    <tr><td>SQL Server RangeS-S</td><td><span class="tag c">C</span></td><td>区间索引项</td><td>区间相交</td><td class="n">常数</td><td class="hi">防</td><td>难（服务端结构）</td></tr>
+    <tr><td>exact-range（本项）</td><td><span class="tag c">C</span></td><td>一条 <code>[lo, hi)</code></td><td>区间相交</td><td class="n hi">1–2</td><td class="hi">防</td><td class="hi">已实现（RDMA 路径）</td></tr>
+    <tr><td>层级桶锁 b=256</td><td><span class="tag c">C</span> 近似</td><td>桶号 + 层级意向</td><td>桶号相等</td><td class="n hi">22.4</td><td class="hi">防</td><td class="hi">易（O(1) 定址）</td></tr>
+    <tr><td>Citron</td><td><span class="tag c">C</span></td><td>线段树节点</td><td>占用位 / 票号</td><td class="n hi">1–2</td><td class="hi">防</td><td class="hi">原生单边</td></tr>
+    <tr><td>谓词锁</td><td><span class="tag d">D</span></td><td>谓词</td><td>可满足性</td><td class="n">1</td><td class="hi">防</td><td class="bad">不可实现</td></tr>
+    <tr><td>precision locking</td><td><span class="tag d">D</span></td><td>别人的谓词</td><td>逐行比对</td><td class="n">0（不预锁）</td><td>事后发现</td><td class="bad">不可实现</td></tr>
+  </tbody>
+</table>
+
+<p class="unit">"锁/事务"里 1 215 / 1 235 / 1 244 / 22.4 是本项目 10 000 键实测；其余为量级估计。</p>
+
+<h2><span class="num">10</span>开放问题与下一步</h2>
+
+<p>这份调研最实际的产出，是下面这张清单——按"能不能用现有数据验证"排序，而不是按理论重要性。</p>
+
+<h3>能立刻做的（已有代码或只差一组实验）</h3>
+
+<ol>
+  <li><strong>精确区间锁 vs 桶锁</strong>：exact-range 已实现，测同一格（YCSB-E r=128、θ=0.5、32 线程）看两件事——锁数是否真的从 16 把降到 1–2 把，中止率是否从桶锁的水平回落到 next-key 附近。这一格就能回答"桶宽是必要妥协还是设计缺陷"。</li>
+  <li><strong>把 gap-lock 清理成纯 B 或纯 C</strong>：现在是两头不占的混合体，range=8 上比 next-key 还多 10% 的锁。清理后它的定位才清楚。</li>
+  <li><strong>补插入意向模式</strong>：让插入测试独立于 S/X，减少"该放行的被挡"这一类过度阻塞。</li>
+</ol>
+
+<h3>需要新代码的</h3>
+
+<ol start="4">
+  <li><strong>删除路径的洞保护</strong>：现在 <code>(last, e]</code> 尾区间有处理，但"删除—回滚—重插"这条路径的语义没有专门验证。hole lock 或 ghost record 二选一。</li>
+  <li><strong>B-link 结构式方案</strong>：用右指针 + 高键替代范围锁，回答"能不能不用范围锁"。这比再加一个范围锁变体更有说服力。</li>
+  <li><strong>Citron 的 M0/M1</strong>：平坦数组 + 背包拆分 + 单机协议，先验证拆分策略在我们的键空间上是否划算，再决定要不要碰 RDMA。</li>
+</ol>
+
+<h3>已知但短期不做的</h3>
+
+<ul>
+  <li><strong>多维索引</strong>（GiST/R 树）：B 类整套机制依赖键空间全序，换形态假设就没了，属于综述里的一节而不是实验。</li>
+  <li><strong>跨分片范围锁</strong>：范围跨节点时如何组合，是分布式的事务问题，不是锁对象问题。</li>
+  <li><strong>MVCC / SSI</strong>：不在本文范围内；需要说明的是"快照隔离不是范围锁的替代品，而是把冲突推迟到提交时刻"，写偏斜依然存在。</li>
+</ul>
+
+<h2><span class="num">11</span>参考文献</h2>
+
+<ol class="refs">
+  <li>K. P. Eswaran, J. N. Gray, R. A. Lorie, I. L. Traiger. <em>The Notions of Consistency and Predicate Locks in a Database System</em>. CACM 19(11), 1976.</li>
+  <li>J. N. Gray, R. A. Lorie, G. R. Putzolu, I. L. Traiger. <em>Granularity of Locks and Degrees of Consistency in a Shared Data Base</em>. IFIP Working Conference on Modelling in Data Base Management Systems, 1976.</li>
+  <li>R. Bayer, M. Schkolnick. <em>Concurrency of Operations on B-Trees</em>. Acta Informatica 9(1), 1977.</li>
+  <li>M. M. Astrahan et al. <em>System R: Relational Approach to Database Management</em>. ACM TODS 4(2), 1979.</li>
+  <li>P. L. Lehman, S. B. Yao. <em>Efficient Locking for Concurrent Operations on B-Trees</em>. ACM TODS 6(4), 1981.</li>
+  <li>J. R. Jordan et al. <em>Precision Locks</em>. IBM Research Report, 1981.</li>
+  <li>C. Mohan. <em>ARIES/KVL: A Key-Value Locking Method for Concurrency Control of Multiaction Transactions Operating on B-Tree Indexes</em>. VLDB 1990.</li>
+  <li>C. Mohan, F. Levine. <em>ARIES/IM: An Efficient and High Concurrency Index Management Method Using Write-Ahead Logging</em>. SIGMOD 1992.</li>
+  <li>D. B. Lomet. <em>Key Range Locking Strategies for Improved Concurrency</em>. VLDB 1993.</li>
+  <li>J. Gray, A. Reuter. <em>Transaction Processing: Concepts and Techniques</em>. Morgan Kaufmann, 1993.（hole lock / ghost record）</li>
+  <li>M. Kornacker, D. Banks. <em>High-Concurrency Locking in R-Trees</em>. VLDB 1995.</li>
+  <li>M. Kornacker, C. Mohan, J. M. Hellerstein. <em>Concurrency and Recovery in Generalized Search Trees</em>. SIGMOD 1997.</li>
+  <li>G. Graefe. <em>A Survey of B-Tree Locking Techniques</em>. ACM TODS 35(3), 2010.（谱系与 prior-key / ghost / increment 的主要依据）</li>
+  <li>J. Gao, Y. Lu, M. Xie, Q. Wang, J. Shu. <em>Citron: Distributed Range Lock Management with One-sided RDMA</em>. USENIX FAST 2023.</li>
+  <li>Microsoft. <em>Key-Range Locking</em>（<code>RangeS-S</code> / <code>RangeS-U</code> / <code>RangeX-X</code> / <code>RangeI-N</code>）；MySQL. <em>InnoDB Locking</em>（next-key / gap / insert intention）。产品文档。</li>
+</ol>
+
+<div class="foot">
+  <p>本报告为文献与实现对照调研，不含新的实验结论。锁数量来自 <code>formal-local-20261102-225727.csv</code>（commit <code>8511d5b</code>，10 000 键，YCSB-E，10 s 窗口 × 3 次取中位数）；Citron 数据取自其论文 Table 2；跨主机与 2 M 键批次因授权后端变更，未在本文引用。</p>
+  <p>RdmaRangeLock · docs/survey 对应章节 04 / 05 / 06 · 2026-11-06</p>
+</div>
+
+</div>
+</body>
+</html>

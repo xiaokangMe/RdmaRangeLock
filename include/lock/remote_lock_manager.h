@@ -12,6 +12,7 @@
 #include "common/range.h"
 #include "common/fifo_mutex.h"
 #include "lock/lock_manager.h"
+#include "lock/range_batch.h"
 #include "lock/remote_lock_slot.h"
 #include "lock/txn_lock_cache.h"
 #include "lock/slot_index.h"
@@ -26,7 +27,7 @@ constexpr std::size_t kRemoteTxnCacheShards = TxnLockCache::kShards;
 // request without falling back to a second round trip.
 constexpr std::size_t kRemoteBatchLimit = 128;
 
-class RemoteLockManager final : public IRangeLockManager {
+class RemoteLockManager final : public IRangeLockManager, public IRangeLockBatch {
 public:
     RemoteLockManager();
     ~RemoteLockManager() override;
@@ -84,6 +85,9 @@ public:
               LockKind kind = LockKind::Predicate) override;
     RC unlock_all(txnid_t txn_id) override;
     std::size_t get_lock_count(txnid_t txn_id = 0) const override;
+    RC lock_batch(txnid_t txn_id, LockMode mode,
+                  const std::vector<KeyRangeEnt>& ranges, LockKind kind,
+                  std::vector<txnid_t>* conflicts = nullptr) override;
 
 private:
     friend struct RemoteLockManagerTestPeer;
@@ -105,6 +109,8 @@ private:
     class LocalGateGuard;
     class RemoteGateGuard;
     RC lock_impl(txnid_t, LockMode, const KeyRangeEnt&, LockKind, std::vector<txnid_t>*);
+    RC lock_batch_impl(txnid_t, LockMode, const std::vector<KeyRangeEnt>&, LockKind,
+                       std::vector<txnid_t>*);
     RC release_impl(txnid_t, const KeyRangeEnt*, LockKind);
     std::size_t count_impl(txnid_t) const;
     void invalidate(ConnectionSlot* slot) const noexcept;

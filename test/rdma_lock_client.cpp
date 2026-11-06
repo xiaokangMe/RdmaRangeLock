@@ -136,6 +136,17 @@ int main(int argc, char** argv) {
         locks.get_lock_count() != 1 || locks.unlock_all(10) != RCOK ||
         locks.get_lock_count() != 0) return 14;
     if (locks.rdma_timeouts() != 0 || locks.rdma_completion_errors() != 0) return 15;
-    std::cout << "RDMA batch transport and remote next-key lock: OK\n";
+    // A next-key range read can publish several intervals with one gate/read
+    // round. Keep the ranges on different shards to exercise the union path.
+    auto* batch = dynamic_cast<IRangeLockBatch*>(&locks);
+    if (!batch) return 16;
+    const std::vector<KeyRangeEnt> grouped{KeyRangeEnt::point(30), KeyRangeEnt::open(70, 90)};
+    if (batch->lock_batch(12, LockMode::S, grouped, LockKind::NextKey) != RCOK ||
+        locks.get_lock_count(12) != grouped.size() ||
+        locks.lock(13, LockMode::X, KeyRangeEnt::point(80), LockKind::NextKey) != AbortConflict ||
+        locks.unlock_all(12) != RCOK ||
+        locks.lock(13, LockMode::X, KeyRangeEnt::point(80), LockKind::NextKey) != RCOK ||
+        locks.unlock_all(13) != RCOK) return 17;
+    std::cout << "RDMA batch transport, grouped next-key publication and remote lock: OK\n";
     return 0;
 }

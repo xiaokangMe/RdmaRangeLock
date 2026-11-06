@@ -1,5 +1,6 @@
 #include "txn/workload.h"
 #include "hierarchical_plan.h"
+#include "lock/range_batch.h"
 #include <iostream>
 
 #include <algorithm>
@@ -550,18 +551,17 @@ RunStats run_next_key_lock(BTreeIndex& index, IRangeLockManager& locks,
                         a.scanned += rows.size();
                         a.found += rows.size();
                         idx_key_t previous = op.key;
+                        std::vector<KeyRangeEnt> next_ranges;
+                        next_ranges.reserve(rows.size() + 2);
                         // The lower-bound point covers an empty leading gap;
                         // the following (prev,curr] intervals retain next-key semantics.
-                        if (!acquire(tid, LockMode::S, KeyRangeEnt::point(op.key))) {
-                            ok = false;
-                        }
+                        next_ranges.push_back(KeyRangeEnt::point(op.key));
                         for (const auto& row : rows) {
                             if (timed && std::chrono::steady_clock::now() >= deadline) { stop_after_txn = true; ok = false; break; }
-                            if (!ok) break;
                             const KeyRangeEnt interval = row.key == previous
                                 ? KeyRangeEnt::point(row.key)
                                 : right_closed(previous, row.key);
-                            if (!acquire(tid, LockMode::S, interval)) { ok = false; break; }
+                            next_ranges.push_back(interval);
                             previous = row.key;
                         }
                         if (ok) {
@@ -570,7 +570,16 @@ RunStats run_next_key_lock(BTreeIndex& index, IRangeLockManager& locks,
                             const KeyRangeEnt tail = (previous == op.end_key)
                                 ? KeyRangeEnt::point(previous)
                                 : right_closed(previous, op.end_key);
-                            if (!acquire(tid, LockMode::S, tail)) ok = false;
+                            next_ranges.push_back(tail);
+                            if (auto* batch = dynamic_cast<IRangeLockBatch*>(&locks)) {
+                                a.acquires += next_ranges.size();
+                                const RC rc = batch->lock_batch(tid, LockMode::S, next_ranges, LockKind::NextKey);
+                                if (rc == RCOK) a.held += next_ranges.size();
+                                else ok = record_lock_result(a, stopped, rc);
+                            } else {
+                                for (const auto& interval : next_ranges)
+                                    if (!acquire(tid, LockMode::S, interval)) { ok = false; break; }
+                            }
                             if (ok) {
                                 // Recheck after installing locks so a writer
                                 // that committed in the scan-to-lock window

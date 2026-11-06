@@ -64,6 +64,7 @@ struct RemoteLockManager::Workspace {
     std::vector<RdmaCompareSwapRequest> swaps;
     std::vector<RdmaReadRequest> reads;
     std::vector<RdmaWriteRequest> writes, chunk;
+    std::vector<RemoteLockSlot> batch_payload;
     std::vector<txnid_t> conflicts;
     std::array<std::uint64_t, kRemoteLockShards> counts{};
     std::array<RemoteLockSlot, kRemoteLockShards> payload{};
@@ -81,6 +82,7 @@ struct RemoteLockManager::Workspace {
         // at most one count. Sources remain stable across write chunks.
         writes.reserve(kRemoteLockShards * (kRemoteLockSlotsPerShard + 1));
         chunk.reserve(kRemoteBatchLimit);
+        batch_payload.reserve(kRemoteLockShards * 64);
         conflicts.reserve(kRemoteLockShards * kRemoteLockSlotsPerShard);
     }
 };
@@ -591,6 +593,23 @@ RC RemoteLockManager::lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& ran
     } catch (...) { invalidate(nullptr); return ERROR; }
 }
 
+RC RemoteLockManager::lock_batch(txnid_t txn_id, LockMode mode,
+                                  const std::vector<KeyRangeEnt>& ranges, LockKind kind,
+                                  std::vector<txnid_t>* conflicts) {
+    try {
+        if (!connected()) return ERROR;
+        const auto txn_queued = profile_start(profile_enabled_);
+        std::unique_lock<FifoMutex> operation(txn_operation_mutexes_[txn_id % kRemoteTxnCacheShards]);
+        profile_add(profile_enabled_, txn_queued, txn_wait_ns_);
+        auto& slot = current_slot();
+        const auto queued = profile_start(profile_enabled_);
+        std::unique_lock<FifoMutex> io(slot.io_mutex);
+        profile_add(profile_enabled_, queued, io_wait_ns_);
+        try { return lock_batch_impl(txn_id, mode, ranges, kind, conflicts); }
+        catch (...) { invalidate(&slot); return ERROR; }
+    } catch (...) { invalidate(nullptr); return ERROR; }
+}
+
 RC RemoteLockManager::release(txnid_t txn_id, const KeyRangeEnt* range, LockKind kind) {
     try {
         if (!connected()) return ERROR;
@@ -741,6 +760,159 @@ RC RemoteLockManager::lock_impl(txnid_t txn_id, LockMode mode, const KeyRangeEnt
     if (before_cache_test_hook_) before_cache_test_hook_();
     txn_cache_.remember_shards(txn_id, ids);
     txn_cache_.remember(txn_id, mode, range, kind);
+    return RCOK;
+}
+
+RC RemoteLockManager::lock_batch_impl(txnid_t txn_id, LockMode mode,
+                                           const std::vector<KeyRangeEnt>& ranges,
+                                           LockKind kind, std::vector<txnid_t>* conflicts) {
+    if (!connected() || !txn_id || mode > LockMode::X || ranges.empty()) return ERROR;
+    if (conflicts) conflicts->clear();
+    if (profile_enabled_) lock_calls_.fetch_add(ranges.size(), std::memory_order_relaxed);
+
+    // Remove exact duplicates and already-satisfied requests before touching the
+    // remote table. This preserves the ordinary cache semantics while making a
+    // range scan's lower-bound and tail requests one publication round.
+    std::vector<KeyRangeEnt> pending;
+    pending.reserve(ranges.size());
+    for (const auto& range : ranges) {
+        if (range.empty() || !range.valid()) return ERROR;
+        if (txn_cache_.satisfies(txn_id, mode, range, kind)) {
+            if (profile_enabled_) cache_hits_.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
+        if (std::none_of(pending.begin(), pending.end(), [&](const KeyRangeEnt& other) {
+                return same_range(other, range);
+            })) pending.push_back(range);
+    }
+    if (pending.empty()) return RCOK;
+
+    std::vector<std::size_t> ids;
+    for (const auto& range : pending) {
+        const auto part = shard_ids(range, kind, mode);
+        ids.insert(ids.end(), part.begin(), part.end());
+    }
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    const auto queued_gate = profile_start(profile_enabled_);
+    LocalGateGuard local(gate_mutexes_, ids, local_gate_enabled_);
+    profile_add(profile_enabled_, queued_gate, local_gate_wait_ns_);
+    RemoteGateGuard gate(*this);
+    switch (gate.acquire(ids)) {
+        case GateOutcome::Acquired: break;
+        case GateOutcome::Busy: return AbortGate;
+        case GateOutcome::TransportError: return ERROR;
+    }
+    if (after_gates_test_hook_) after_gates_test_hook_();
+
+    auto& workspace = *current_slot().workspace;
+    auto& tables = workspace.tables;
+    if (!load_tables(ids, tables)) {
+        gate.release();
+        return ERROR;
+    }
+    const txnid_t id = wire_txn(txn_id);
+    const auto build_start = profile_start(profile_enabled_);
+    for (std::size_t n = 0; n < ids.size(); ++n)
+        tables[n].index.build(tables[n].slots, slot_lookup_linear_);
+    profile_add(profile_enabled_, build_start, index_build_ns_);
+    std::array<std::size_t, kRemoteLockShards> added{};
+    std::uint64_t checks = 0;
+    workspace.conflicts.clear();
+    std::vector<std::vector<std::size_t>> request_shards;
+    request_shards.reserve(pending.size());
+    for (const auto& range : pending) request_shards.push_back(shard_ids(range, kind, mode));
+    const auto lookup_start = profile_start(profile_enabled_);
+    for (std::size_t r = 0; r < pending.size(); ++r) {
+        RangeLock request{id, mode, kind, pending[r]};
+        for (std::size_t n = 0; n < ids.size(); ++n) {
+            if (!std::binary_search(request_shards[r].begin(), request_shards[r].end(), ids[n])) continue;
+            const auto& table = tables[n];
+            table.index.for_each_candidate(table.slots, pending[r], [&](const RemoteLockSlot& slot) {
+                ++checks;
+                const RangeLock held = decode(slot);
+                if (!request.conflicts(held)) return;
+                if (std::find(workspace.conflicts.begin(), workspace.conflicts.end(), held.txn_id) == workspace.conflicts.end())
+                    workspace.conflicts.push_back(held.txn_id);
+            });
+        }
+    }
+    if (profile_enabled_) {
+        slot_checks_.fetch_add(checks, std::memory_order_relaxed);
+        profile_add(profile_enabled_, lookup_start, lookup_ns_);
+    }
+    if (!workspace.conflicts.empty()) {
+        if (!gate.release()) return ERROR;
+        local.release();
+        if (conflicts) conflicts->assign(workspace.conflicts.begin(), workspace.conflicts.end());
+        return AbortConflict;
+    }
+
+    // Determine upgrades and new-slot counts without publishing anything until
+    // every request has passed conflict and capacity checks.
+    std::vector<std::array<std::size_t, kRemoteLockShards>> owned(pending.size());
+    for (auto& row : owned) row.fill(kNoSlot);
+    for (std::size_t r = 0; r < pending.size(); ++r) {
+        for (std::size_t n = 0; n < ids.size(); ++n) {
+            if (!std::binary_search(request_shards[r].begin(), request_shards[r].end(), ids[n])) continue;
+            std::size_t found = kNoSlot;
+            if (tables[n].index.find_owned(tables[n].slots, id, kind, pending[r], found))
+                owned[r][n] = found;
+            else ++added[n];
+        }
+    }
+    for (std::size_t n = 0; n < ids.size(); ++n) {
+        if (added[n] > kRemoteLockSlotsPerShard ||
+            tables[n].slots.size() > kRemoteLockSlotsPerShard - added[n]) {
+            if (!gate.release()) return ERROR;
+            local.release();
+            return AbortCapacity;
+        }
+    }
+
+    auto& connection = current_connection();
+    const auto owner = current_owner_token();
+    const auto rkey = current_shards_rkey();
+    auto& payload = workspace.batch_payload;
+    auto& writes = workspace.writes;
+    payload.clear();
+    payload.reserve(pending.size() * ids.size());
+    writes.clear();
+    std::array<std::size_t, kRemoteLockShards> next_new{};
+    for (std::size_t r = 0; r < pending.size(); ++r) {
+        for (std::size_t n = 0; n < ids.size(); ++n) {
+            if (!std::binary_search(request_shards[r].begin(), request_shards[r].end(), ids[n])) continue;
+            std::size_t slot_index = owned[r][n];
+            RemoteLockSlot value{};
+            if (slot_index != kNoSlot) {
+                value = tables[n].slots[slot_index];
+                value.mode = static_cast<std::uint8_t>(lock_mode_join(static_cast<LockMode>(value.mode), mode));
+            } else {
+                slot_index = tables[n].slots.size() + next_new[n]++;
+                encode_remote_slot(value, owner, id, mode, kind, pending[r]);
+            }
+            payload.push_back(value);
+            writes.push_back({shard_base(ids[n]) + offsetof(RemoteLockShard, slots) +
+                                  slot_index * sizeof(RemoteLockSlot), rkey,
+                              &payload.back(), sizeof(RemoteLockSlot)});
+        }
+    }
+    auto& counts = workspace.counts;
+    for (std::size_t n = 0; n < ids.size(); ++n) {
+        if (!added[n]) continue;
+        counts[n] = tables[n].slots.size() + added[n];
+        writes.push_back({shard_base(ids[n]) + offsetof(RemoteLockShard, active_slots), rkey,
+                          &counts[n], sizeof(std::uint64_t)});
+    }
+    (void)connection;
+    if (!write_chunks(writes)) {
+        gate.release();
+        return ERROR;
+    }
+    if (!gate.release()) return ERROR;
+    local.release();
+    txn_cache_.remember_shards(txn_id, ids);
+    for (const auto& range : pending) txn_cache_.remember(txn_id, mode, range, kind);
     return RCOK;
 }
 

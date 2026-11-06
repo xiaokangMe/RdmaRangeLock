@@ -51,6 +51,10 @@ def validate_row(output, seconds, shared, expected_coordination=None, expected_l
     layout=row.get("hierarchy_layout", "bucket" if row.get("cc") in ("hierarchical","rdma-hierarchical") else "none")
     behavior=row.get("hierarchy_behavior","strict")
     isolation=row.get("isolation_semantics","strict-2pl")
+    native_objects=int(row.get("native_object_locks", "0"))
+    expected_native_objects=1 if shared and row.get("cc")=="rdma-record-2pl" else 0
+    if native_objects not in (0, 1) or native_objects != expected_native_objects:
+        raise RuntimeError("native object-lock marker differs from the RDMA protocol path")
     if behavior not in ("strict","deneva") or isolation!={"strict":"strict-2pl","deneva":"deneva-early-release"}[behavior]:
         raise RuntimeError("hierarchy behavior/isolation mismatch")
     if expected_behavior is not None and behavior!=expected_behavior:raise RuntimeError("hierarchy behavior differs from configuration")
@@ -197,7 +201,7 @@ def main():
         raise SystemExit("Deneva source behavior requires native leaf objects")
     if config["hierarchy_layout"]=="leaf" and config["coordination_backend"]!="native-rdma-state":
         raise SystemExit("leaf layout requires native-rdma-state")
-    config.setdefault("native_object_locks", 0)
+    config.setdefault("native_object_locks", 1)
     if config["native_object_locks"] not in (0, 1):
         raise SystemExit("native_object_locks must be 0 or 1")
     if config["native_object_locks"] and config["coordination_backend"]!="native-rdma-state":

@@ -26,4 +26,4 @@
 
 ## 后续
 
-下一阶段再为 Gap/Next-Key 设计有序远端区间索引；在此之前不删除 `RemoteLockManager` 的 gate 回退，也不修改 `RemoteLockRegion` 的注册布局。
+正式矩阵脚本的 native 配置默认将 `rdma-record-2pl` 标记为对象路径；验证器要求该列与协议一致，防止新旧后端结果混组。下一阶段再为 Gap/Next-Key 设计有序远端区间索引；在此之前不删除 `RemoteLockManager` 的 gate 回退，也不修改 `RemoteLockRegion` 的注册布局。

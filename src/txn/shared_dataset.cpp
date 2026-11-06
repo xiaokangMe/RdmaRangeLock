@@ -41,7 +41,7 @@ void load_shared_dataset_config(const std::string& path,WorkloadConfig& c,RdmaTr
     const std::set<std::string> ignored{"name","index","cc","threads","duration","duration_seconds",
         "hierarchy_bucket_width","bucket","rdma_host","rdma_port","lock_server_port","rdma_connections",
         "coordinator_port","txn_state_port","coroutines","coroutine_stack_bytes","warmup_seconds","wait_policy","wait_timeout_ms","max_attempts","lock_budget","latency",
-        "latency_histogram","hierarchy_diagnostics","hierarchy_layout","hierarchy_behavior"};
+        "latency_histogram","hierarchy_diagnostics","hierarchy_layout","hierarchy_behavior","native_object_locks"};
     std::set<std::size_t*> assigned;
     bool zipf=false;
     for(const auto& e:entries) {

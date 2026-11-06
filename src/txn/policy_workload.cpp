@@ -3,6 +3,7 @@
 #include "txn/coroutine.h"
 #include "common/execution_context.h"
 #include "lock/native_policy.h"
+#include "lock/range_batch.h"
 #include "hierarchical_plan.h"
 #include "leaf_hierarchy.h"
 #include <atomic>
@@ -188,6 +189,26 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                     if(rc!=RCOK){outcome=TxnResult::Error;return false;}
                     return true;
                 };
+                auto acquire_batch=[&](LockMode mode,const std::vector<KeyRangeEnt>& ranges,LockKind kind) {
+                    if(ranges.empty())return true;
+                    if(Clock::now()>=deadline){outcome=TxnResult::Deadline;return false;}
+                    const auto began=Clock::now();
+                    if(nc || lc) {
+                        s.lock_acquires+=ranges.size();
+                        const auto r=nc ? nc->acquire_batch(id,mode,ranges,kind) : lc->acquire_batch(id,mode,ranges,kind);
+                        if(nc)touched=nc->has_physical_locks();
+                        else if(lc)touched=lc->has_physical_locks();
+                        if(nc && nc->last_lock_result()==AbortCapacity)++s.lock_capacity_aborts;
+                        if(nc && nc->last_lock_result()==AbortGate)++s.lock_gate_aborts;
+                        if(r.wait_ns)p.wait.add(r.wait_ns);
+                        outcome=r.result;p.call.add(ns(Clock::now()-began));
+                        return outcome==TxnResult::Ok;
+                    }
+                    // Legacy TCP coordination has no batch RPC. Keep its
+                    // established per-range path and accounting.
+                    for(const auto& range:ranges)if(!acquire(mode,range,kind))return false;
+                    return true;
+                };
                 if(cfg.protocol==PolicyProtocol::Hierarchy) {
                     if(cfg.leaf_hierarchy && !cfg.deneva_insert_behavior) {
                         if(!detail::leaf_plan(index,txn,leaf_scratch[worker],leaf_plans[worker]))outcome=TxnResult::Error;
@@ -222,19 +243,21 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                         const auto range=KeyRangeEnt::half_open(op.key,op.end_key);
                         if(cfg.protocol==PolicyProtocol::Predicate && !acquire(LockMode::S,range,LockKind::Predicate))break;
                         if(cfg.protocol==PolicyProtocol::Gap) {
-                            if(!acquire(LockMode::S,KeyRangeEnt::open(op.key,op.end_key),LockKind::Gap) ||
-                               !acquire(LockMode::S,KeyRangeEnt::point(op.key),LockKind::Gap) ||
-                               !acquire(LockMode::S,KeyRangeEnt::point(op.end_key),LockKind::Gap))break;
+                            const std::vector<KeyRangeEnt> gaps{KeyRangeEnt::open(op.key,op.end_key),
+                                KeyRangeEnt::point(op.key),KeyRangeEnt::point(op.end_key)};
+                            if(!acquire_batch(LockMode::S,gaps,LockKind::Gap))break;
                         }
                         auto& rows=scans[worker];index.scan_range_into(range,rows);s.rows_scanned+=rows.size();
                         if(cfg.protocol==PolicyProtocol::NextKey) {
-                            if(!acquire(LockMode::S,KeyRangeEnt::point(op.key),LockKind::NextKey))break;
+                            std::vector<KeyRangeEnt> next_ranges;next_ranges.reserve(rows.size()+2);
+                            next_ranges.push_back(KeyRangeEnt::point(op.key));
                             auto previous=op.key;
                             for(const auto& row:rows) {
-                                if(!acquire(LockMode::S,row.key==previous ? KeyRangeEnt::point(row.key) : right_closed(previous,row.key),LockKind::NextKey))break;
+                                next_ranges.push_back(row.key==previous ? KeyRangeEnt::point(row.key) : right_closed(previous,row.key));
                                 previous=row.key;
                             }
-                            if(outcome!=TxnResult::Ok || !acquire(LockMode::S,right_closed(previous,op.end_key),LockKind::NextKey))break;
+                            next_ranges.push_back(previous==op.end_key ? KeyRangeEnt::point(previous) : right_closed(previous,op.end_key));
+                            if(!acquire_batch(LockMode::S,next_ranges,LockKind::NextKey))break;
                             auto& verified=rechecks[worker];index.scan_range_into(range,verified);s.rows_rechecked+=verified.size();
                             if(verified.size()!=rows.size()){outcome=TxnResult::Conflict;break;}
                             for(std::size_t n=0;n<rows.size();++n)if(rows[n].key!=verified[n].key)outcome=TxnResult::Conflict;

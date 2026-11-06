@@ -2,6 +2,7 @@
 // and concurrency_control/rdma_maat.cpp RdmaTxnTable. Exact-width CAS,
 // generation fencing and cohort poison adapt that mechanism to range slots.
 #include "lock/native_policy.h"
+#include "lock/range_batch.h"
 #include "native_txn_layout.h"
 #include "rdma/rdma_transport.h"
 #include "common/execution_context.h"
@@ -215,6 +216,50 @@ PolicyReply NativePolicyClient::acquire(txnid_t id,LockMode mode,const KeyRangeE
         waited=true;cooperative_yield();
     }
 }
+PolicyReply NativePolicyClient::acquire_batch(txnid_t id, LockMode mode,
+                                                   const std::vector<KeyRangeEnt>& ranges,
+                                                   LockKind kind) {
+    auto& p=*impl_;const auto start=Clock::now();bool waited=false;
+    auto reply=[&](TxnResult result){return PolicyReply{result,id,waited?nanos(Clock::now()-start):0};};
+    if (ranges.empty() || mode > LockMode::X) return reply(TxnResult::Error);
+    for (const auto& range : ranges) if (range.empty() || !range.valid()) return reply(TxnResult::Error);
+    for (;;) {
+        const auto status=p.status(id);if(status!=TxnResult::Ok)return reply(status);
+        p.conflicts.clear();
+        RC rc=ERROR;
+        if (auto* batch=dynamic_cast<IRangeLockBatch*>(&p.physical))
+            rc=batch->lock_batch(id,mode,ranges,kind,&p.conflicts);
+        else {
+            rc=RCOK;
+            for (const auto& range:ranges) {
+                p.conflicts.clear();rc=p.physical.lock(id,mode,range,kind,&p.conflicts);
+                if (rc!=RCOK) break;
+            }
+        }
+        p.lock_result=rc;
+        if(rc==RCOK){p.held=true;return reply(p.status(id));}
+        if(rc==AbortCapacity || rc==AbortGate)return reply(TxnResult::Conflict);
+        if(rc!=Abort && rc!=AbortConflict)return reply(TxnResult::Error);
+        if(p.policy==WaitPolicy::NoWait)return reply(TxnResult::Conflict);
+        if(p.conflicts.empty())return reply(TxnResult::Error);
+        for(const auto other:p.conflicts) {
+            Slot holder{};bool current=false;
+            if(!p.holder(other,holder,current))return reply(TxnResult::Error);
+            if(!current)continue;
+            if(p.policy==WaitPolicy::WaitDie && p.age>holder.age)return reply(TxnResult::Conflict);
+            if(p.policy==WaitPolicy::WoundWait && p.age<holder.age && (holder.control&7)==Running) {
+                std::uint64_t prior=0;
+                if(!p.cas(p.offset(other%p.header.slots),holder.control,control(other,Wounded),prior)) {
+                    const auto observed=p.status(other);
+                    if(observed==TxnResult::Ok || observed==TxnResult::Wounded)continue;
+                    return reply(TxnResult::Error);
+                }
+            }
+        }
+        waited=true;cooperative_yield();
+    }
+}
+
 std::uint64_t NativePolicyClient::rdma_operations() const{return impl_->connection.operation_count();}
 bool NativePolicyClient::has_physical_locks() const{return impl_->held;}
 RC NativePolicyClient::last_lock_result() const{return impl_->lock_result;}
@@ -351,6 +396,47 @@ PolicyReply LocalNativePolicyClient::acquire(txnid_t id,LockMode mode,const KeyR
         const auto status=p.status(id);if(status!=TxnResult::Ok)return reply(status);
         p.conflicts.clear();
         const auto rc=p.physical.lock(id,mode,range,kind,&p.conflicts);
+        if(rc==RCOK){p.held=true;return reply(p.status(id));}
+        if(rc==AbortCapacity || rc==AbortGate || p.policy==WaitPolicy::NoWait)return reply(TxnResult::Conflict);
+        if(rc!=Abort && rc!=AbortConflict)return reply(TxnResult::Error);
+        if(p.conflicts.empty())return reply(TxnResult::Error);
+        for(const auto other:p.conflicts) {
+            std::uint64_t holder_age=0,word=0;bool current=false;
+            if(!p.holder(other,holder_age,word,current))return reply(TxnResult::Error);
+            if(!current)continue;
+            if(p.policy==WaitPolicy::WaitDie && p.age>holder_age)return reply(TxnResult::Conflict);
+            if(p.policy==WaitPolicy::WoundWait && p.age<holder_age && (word&7)==native_detail::Running) {
+                auto expected=word;
+                if(!p.state.table[p.offset_slot(other)].control.compare_exchange_strong(expected,Impl::control(other,native_detail::Wounded),std::memory_order_acq_rel)) {
+                    const auto observed=p.state.table[p.offset_slot(other)].control.load(std::memory_order_acquire);
+                    if((observed>>3)==other && (observed&7)!=native_detail::Idle)continue;
+                    return reply(TxnResult::Error);
+                }
+            }
+        }
+        waited=true;cooperative_yield();
+    }
+}
+
+PolicyReply LocalNativePolicyClient::acquire_batch(txnid_t id, LockMode mode,
+                                                        const std::vector<KeyRangeEnt>& ranges,
+                                                        LockKind kind) {
+    auto& p=*impl_;const auto start=Clock::now();bool waited=false;
+    auto reply=[&](TxnResult result){return PolicyReply{result,id,waited?nanos(Clock::now()-start):0};};
+    if (ranges.empty() || mode > LockMode::X) return reply(TxnResult::Error);
+    for (const auto& range : ranges) if (range.empty() || !range.valid()) return reply(TxnResult::Error);
+    for (;;) {
+        const auto status=p.status(id);if(status!=TxnResult::Ok)return reply(status);
+        p.conflicts.clear();RC rc=ERROR;
+        if (auto* batch=dynamic_cast<IRangeLockBatch*>(&p.physical))
+            rc=batch->lock_batch(id,mode,ranges,kind,&p.conflicts);
+        else {
+            rc=RCOK;
+            for (const auto& range:ranges) {
+                p.conflicts.clear();rc=p.physical.lock(id,mode,range,kind,&p.conflicts);
+                if (rc!=RCOK) break;
+            }
+        }
         if(rc==RCOK){p.held=true;return reply(p.status(id));}
         if(rc==AbortCapacity || rc==AbortGate || p.policy==WaitPolicy::NoWait)return reply(TxnResult::Conflict);
         if(rc!=Abort && rc!=AbortConflict)return reply(TxnResult::Error);

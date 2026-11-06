@@ -1,6 +1,8 @@
 #pragma once
 #include "lock/wait_policy.h"
 #include <cstddef>
+#include <vector>
+#include "common/range.h"
 
 namespace rrl {
 // Registered passive state, corresponding to Deneva's RdmaTxnTableNode.
@@ -24,6 +26,7 @@ public:
     ~NativePolicyClient();
     PolicyReply begin(WaitPolicy, std::uint64_t age, std::uint64_t budget_ns);
     PolicyReply acquire(txnid_t, LockMode, const KeyRangeEnt&, LockKind);
+    PolicyReply acquire_batch(txnid_t, LockMode, const std::vector<KeyRangeEnt>&, LockKind);
     PolicyReply check(txnid_t);
     PolicyReply prepare_commit(txnid_t);
     // Caller MUST complete data writeback and physical unlock_all before end.
@@ -59,6 +62,7 @@ public:
     LocalNativePolicyClient& operator=(const LocalNativePolicyClient&) = delete;
     PolicyReply begin(WaitPolicy, std::uint64_t age, std::uint64_t budget_ns);
     PolicyReply acquire(txnid_t, LockMode, const KeyRangeEnt&, LockKind);
+    PolicyReply acquire_batch(txnid_t, LockMode, const std::vector<KeyRangeEnt>&, LockKind);
     PolicyReply check(txnid_t);
     PolicyReply prepare_commit(txnid_t);
     PolicyReply end(txnid_t);

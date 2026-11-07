@@ -98,7 +98,7 @@ bool is_point_range(const KeyRangeEnt& range) {
 
 RC LockManager::lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& range,
                      LockKind kind, std::vector<txnid_t>* conflicts) {
-    if (!txn_id || !valid_lock_mode(mode) || kind>LockKind::PriorKey || range.empty() || !range.valid()) return ERROR;
+    if (!txn_id || !valid_lock_mode(mode) || kind>LockKind::HierarchyPredicate || range.empty() || !range.valid()) return ERROR;
     if (conflicts) conflicts->clear();
     const auto ids = shard_ids(range, kind, mode);
     std::vector<std::unique_lock<std::mutex>> guards;
@@ -162,6 +162,37 @@ RC LockManager::lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& range,
         }
     }
     remember_shards(txn_id, ids);
+    return RCOK;
+}
+
+RC LockManager::convert_lock(txnid_t txn_id,LockMode mode,const KeyRangeEnt& range,
+                                 LockKind kind,std::vector<txnid_t>* conflicts) {
+    if(!txn_id || !valid_lock_mode(mode) || kind!=LockKind::Node ||
+       !range.has_start || !range.has_end || range.empty() || !range.valid())return ERROR;
+    const auto ids=shard_ids(range);
+    std::vector<std::unique_lock<std::mutex>> guards;guards.reserve(ids.size());
+    for(auto id:ids)guards.emplace_back(shards_[id].mutex);
+    if(conflicts)conflicts->clear();
+    RangeLock request{txn_id,mode,kind,range};bool owned=false,blocked=false;
+    for(auto id:ids) {
+        const auto inspect=[&](const RangeLock& held) {
+            if(held.txn_id==txn_id && held.kind==kind && same_range(held.range,range))owned=true;
+            if(!request.conflicts(held))return;
+            blocked=true;
+            if(conflicts && std::find(conflicts->begin(),conflicts->end(),held.txn_id)==conflicts->end())conflicts->push_back(held.txn_id);
+        };
+        for(const auto& entry:shards_[id].point_locks)for(const auto& held:entry.second)inspect(held);
+        for(const auto& held:shards_[id].range_locks)inspect(held);
+    }
+    if(!owned)return ERROR;
+    if(blocked)return AbortConflict;
+    for(auto id:ids) {
+        auto replace=[&](RangeLock& held) {
+            if(held.txn_id==txn_id && held.kind==kind && same_range(held.range,range))held.mode=mode;
+        };
+        for(auto& entry:shards_[id].point_locks)for(auto& held:entry.second)replace(held);
+        for(auto& held:shards_[id].range_locks)replace(held);
+    }
     return RCOK;
 }
 

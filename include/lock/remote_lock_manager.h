@@ -27,7 +27,7 @@ constexpr std::size_t kRemoteTxnCacheShards = TxnLockCache::kShards;
 // request without falling back to a second round trip.
 constexpr std::size_t kRemoteBatchLimit = 128;
 
-class RemoteLockManager final : public IRangeLockManager, public IRangeLockBatch {
+class RemoteLockManager final : public IRangeLockManager, public IRangeLockBatch, public ILockModeConversion {
 public:
     RemoteLockManager();
     ~RemoteLockManager() override;
@@ -93,6 +93,8 @@ public:
                   const std::vector<KeyRangeEnt>& ranges, LockKind kind,
                   std::vector<txnid_t>* conflicts = nullptr) override;
 
+    RC convert_lock(txnid_t,LockMode,const KeyRangeEnt&,LockKind,std::vector<txnid_t>* = nullptr) override;
+
 private:
     friend struct RemoteLockManagerTestPeer;
     void record_count_error(RC rc) const;
@@ -112,6 +114,7 @@ private:
     struct LoadedShard;
     class LocalGateGuard;
     class RemoteGateGuard;
+    RC convert_impl(txnid_t,LockMode,const KeyRangeEnt&,LockKind,std::vector<txnid_t>*);
     RC lock_impl(txnid_t, LockMode, const KeyRangeEnt&, LockKind, std::vector<txnid_t>*);
     RC lock_batch_impl(txnid_t, LockMode, const std::vector<KeyRangeEnt>&, LockKind,
                        std::vector<txnid_t>*);

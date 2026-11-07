@@ -37,9 +37,9 @@ struct alignas(64) RemoteLockShard {
     RemoteLockSlot slots[kRemoteLockSlotsPerShard]{};
 };
 
-constexpr std::uint64_t kRemoteLockMagic = 0x52524c524e473034ULL;
+constexpr std::uint64_t kRemoteLockMagic = 0x52524c524e473035ULL;
 struct alignas(64) RemoteLockHeader {
-    std::uint64_t magic{kRemoteLockMagic}, version{4}, shards{kRemoteLockShards};
+    std::uint64_t magic{kRemoteLockMagic}, version{5}, shards{kRemoteLockShards};
     std::uint64_t slots_per_shard{kRemoteLockSlotsPerShard};
     std::uint64_t shard_stride{sizeof(RemoteLockShard)};
     std::uint64_t bytes{64 + kRemoteLockShards * sizeof(RemoteLockShard)};
@@ -55,7 +55,7 @@ inline RemoteLockHeader remote_lock_layout(std::size_t slots) {
     return h;
 }
 inline bool valid_remote_lock_header(const RemoteLockHeader& h, std::uint64_t length) {
-    if (h.magic != kRemoteLockMagic || h.version != 4 || h.shards != kRemoteLockShards ||
+    if (h.magic != kRemoteLockMagic || h.version != 5 || h.shards != kRemoteLockShards ||
         !h.slots_per_shard || h.slots_per_shard > 1048576) return false;
     const auto expected = remote_lock_layout(h.slots_per_shard);
     return h.shard_stride == expected.shard_stride && h.bytes == expected.bytes &&

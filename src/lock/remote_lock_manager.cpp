@@ -675,9 +675,63 @@ std::size_t RemoteLockManager::get_lock_count(txnid_t txn_id) const {
     } catch (...) { invalidate(nullptr); record_count_error(ERROR); return 0; }
 }
 
+RC RemoteLockManager::convert_lock(txnid_t txn_id,LockMode mode,const KeyRangeEnt& range,
+                                       LockKind kind,std::vector<txnid_t>* conflicts) {
+    try {
+        if(!connected())return ERROR;
+        std::unique_lock<FifoMutex> operation(txn_operation_mutexes_[txn_id%kRemoteTxnCacheShards]);
+        auto& slot=current_slot();std::unique_lock<FifoMutex> io(slot.io_mutex);
+        try{return convert_impl(txn_id,mode,range,kind,conflicts);}
+        catch(...){invalidate(&slot);return ERROR;}
+    }catch(...){invalidate(nullptr);return ERROR;}
+}
+RC RemoteLockManager::convert_impl(txnid_t txn_id,LockMode mode,const KeyRangeEnt& range,
+                                       LockKind kind,std::vector<txnid_t>* conflicts) {
+    if(!txn_id || !valid_lock_mode(mode) || kind!=LockKind::Node ||
+       !range.has_start || !range.has_end || range.empty() || !range.valid())return ERROR;
+    if(conflicts)conflicts->clear();
+    const auto ids=shard_ids(range);
+    LocalGateGuard local(gate_mutexes_,ids,local_gate_enabled_);
+    RemoteGateGuard gate(*this);
+    switch(gate.acquire(ids)) {
+        case GateOutcome::Busy:return AbortGate;
+        case GateOutcome::TransportError:return ERROR;
+        case GateOutcome::Acquired:break;
+    }
+    auto& ws=*current_slot().workspace;auto& tables=ws.tables;
+    if(!load_tables(ids,tables)){gate.release();return ERROR;}
+    const auto id=wire_txn(txn_id);RangeLock request{id,mode,kind,range};
+    ws.owned.fill(kNoSlot);ws.conflicts.clear();
+    for(std::size_t n=0;n<ids.size();++n) {
+        auto& table=tables[n];table.index.build(table.slots,slot_lookup_linear_);
+        if(!table.index.find_owned(table.slots,id,kind,range,ws.owned[n])){gate.release();return ERROR;}
+        table.index.for_each_candidate(table.slots,range,[&](const RemoteLockSlot& slot) {
+            const auto held=decode(slot);if(!request.conflicts(held))return;
+            if(std::find(ws.conflicts.begin(),ws.conflicts.end(),held.txn_id)==ws.conflicts.end())ws.conflicts.push_back(held.txn_id);
+        });
+    }
+    if(!ws.conflicts.empty()) {
+        if(!gate.release())return ERROR;
+        local.release();if(conflicts)conflicts->assign(ws.conflicts.begin(),ws.conflicts.end());
+        return AbortConflict;
+    }
+    ws.writes.clear();const auto rkey=current_shards_rkey();
+    for(std::size_t n=0;n<ids.size();++n) {
+        ws.payload[n]=tables[n].slots[ws.owned[n]];
+        ws.payload[n].mode=static_cast<std::uint8_t>(mode);
+        ws.writes.push_back({shard_base(ids[n])+offsetof(RemoteLockShard,slots)+ws.owned[n]*sizeof(RemoteLockSlot),
+                             rkey,&ws.payload[n],sizeof(RemoteLockSlot)});
+    }
+    if(!write_chunks(ws.writes)){gate.release();return ERROR;}
+    if(!gate.release())return ERROR;
+    local.release();
+    if(!txn_cache_.replace_mode(txn_id,mode,range,kind)){invalidate(&current_slot());return ERROR;}
+    return RCOK;
+}
+
 RC RemoteLockManager::lock_impl(txnid_t txn_id, LockMode mode, const KeyRangeEnt& range,
                            LockKind kind, std::vector<txnid_t>* conflicts) {
-    if (!connected() || !txn_id || !valid_lock_mode(mode) || kind>LockKind::PriorKey || range.empty() || !range.valid()) return ERROR;
+    if (!connected() || !txn_id || !valid_lock_mode(mode) || kind>LockKind::HierarchyPredicate || range.empty() || !range.valid()) return ERROR;
     if (conflicts) conflicts->clear();
     if (profile_enabled_) lock_calls_.fetch_add(1, std::memory_order_relaxed);
     if (txn_cache_.satisfies(txn_id, mode, range, kind)) {
@@ -803,7 +857,7 @@ RC RemoteLockManager::lock_impl(txnid_t txn_id, LockMode mode, const KeyRangeEnt
 RC RemoteLockManager::lock_batch_impl(txnid_t txn_id, LockMode mode,
                                            const std::vector<KeyRangeEnt>& ranges,
                                            LockKind kind, std::vector<txnid_t>* conflicts) {
-    if (!connected() || !txn_id || !valid_lock_mode(mode) || kind>LockKind::PriorKey || ranges.empty()) return ERROR;
+    if (!connected() || !txn_id || !valid_lock_mode(mode) || kind>LockKind::HierarchyPredicate || ranges.empty()) return ERROR;
     if (conflicts) conflicts->clear();
     if (profile_enabled_) lock_calls_.fetch_add(ranges.size(), std::memory_order_relaxed);
 

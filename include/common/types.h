@@ -44,6 +44,7 @@ enum class LockKind : std::uint8_t {
     ExactRange,
     InsertIntent, // InnoDB-style insertion at one key, distinct from gap guard
     PriorKey,
+    HierarchyPredicate, // exact descendant predicate used during granularity conversion
 };
 
 // Gray1976 Table 1: IS/IX/S/SIX/X. Microsoft SQL Server locking guide,

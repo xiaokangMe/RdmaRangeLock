@@ -47,3 +47,11 @@ de-escalation：先恢复完整历史读写/phantom保护和后续操作所需�
 随机插入/删除模型在 BTreeSingle 第424步（key=66）触发 validate 失败。旧 refresh_separators 跳过空叶但保留子节点与旧 separator，破坏邻居导航与有序子树边界。现修正为移除空子树、修复叶链、重建分隔键、收缩空/单子根；保留原断言并增加删空树回归。BTreeLatch 原删除路径已维护这些结构。
 
 接口里程碑验证：真实 RDMA 回环完整 CTest 49/49 通过，无跳过；日志 experiments/logs/classic-mgl-check-20261107-080606/ctest.log。接口新增 key_neighbors/key_range_into，旧 IRangeLockManager 签名不变，旧算法尚未切换。key_neighbors 对保留的远端物理 ghost key 返回 present；它不表示用户可见记录存在。
+
+## 粒度转换接口细化
+
+实现采用可选 ILockModeConversion::convert_lock，而非全事务 lock-set replacement：同一 bounded Node 资源在持有其全部元数据分片期间原位改为指定模式。升级先检查最终模式，冲突保持原模式；降级在调用者恢复所有历史细粒度保护之后执行。没有 unlock-parent/acquire-child 空洞，IRangeLockManager 签名不变。支持固定桶 local/native RDMA；TCP 镜像协调模式拒绝启用该能力，避免元数据陈旧。
+
+细化扫描以独立 HierarchyPredicate S 保存原查询范围，桶的纯意向与该后代保护不直接冲突，所有层级点写仍取 Record X。它是固定桶资源树内对 phantom-safe 叶保护的一维谓词适配，不称物理叶节点降级。锁集合表示变化前后所有历史逻辑记录和谓词连续保护，只有额外过锁可释放；用户要求的粒度升降限定适用这一等价保护转换。
+
+DAG 的运行配置先支持 regular identity multi-index topology：root -> index root -> index bucket -> shared canonical record。扫描选一个索引路径，所有点写覆盖全部索引父路径。生成的拓扑天然无环且ID检查溢出；通用显式 DAG 校验和计划接口另加环/未知父节点测试。索引投影为同一权威键，不称已支持不同二级键的存储和原子维护。

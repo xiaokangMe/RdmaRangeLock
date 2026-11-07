@@ -125,15 +125,15 @@ struct RangeLock {
         // every record in that bucket. Bucket S/X versus record locks still
         // conflicts, as do bucket S versus bucket IX and record S versus X.
         const auto bucket_intention = [](const RangeLock& a, const RangeLock& b) {
-            return a.kind == LockKind::Node && b.kind == LockKind::Record &&
+            return a.kind == LockKind::Node && (b.kind == LockKind::Record || b.kind==LockKind::HierarchyPredicate) &&
                 lock_mode_is_intent(a.mode);
         };
         if (bucket_intention(*this, other) || bucket_intention(other, *this)) return false;
         // Composite parent intent is not an additional conflicting row
         // lock. Only its covering S/U/X component protects descendants.
-        if(kind==LockKind::Node && other.kind==LockKind::Record)
+        if(kind==LockKind::Node && (other.kind==LockKind::Record || other.kind==LockKind::HierarchyPredicate))
             return lock_modes_conflict(lock_mode_record_cover(mode),other.mode);
-        if(kind==LockKind::Record && other.kind==LockKind::Node)
+        if((kind==LockKind::Record || kind==LockKind::HierarchyPredicate) && other.kind==LockKind::Node)
             return lock_modes_conflict(mode,lock_mode_record_cover(other.mode));
         return true;
     }

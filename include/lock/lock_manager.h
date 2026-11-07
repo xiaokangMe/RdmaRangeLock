@@ -10,6 +10,7 @@
 
 #include "common/range.h"
 #include "common/types.h"
+#include "lock/mode_conversion.h"
 
 namespace rrl {
 
@@ -31,12 +32,13 @@ public:
 
 constexpr std::size_t kLocalLockShards = 16;
 
-class LockManager : public IRangeLockManager {
+class LockManager : public IRangeLockManager, public ILockModeConversion {
 public:
     RC lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& range,
             LockKind kind = LockKind::Predicate,
             std::vector<txnid_t>* conflicts = nullptr) override;
 
+    RC convert_lock(txnid_t,LockMode,const KeyRangeEnt&,LockKind,std::vector<txnid_t>* = nullptr) override;
     RC unlock(txnid_t txn_id, const KeyRangeEnt& range,
               LockKind kind = LockKind::Predicate) override;
     RC unlock_all(txnid_t txn_id) override;

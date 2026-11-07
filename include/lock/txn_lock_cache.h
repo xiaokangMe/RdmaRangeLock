@@ -85,6 +85,13 @@ public:
         saved.push_back(CachedLock{mode, kind, range});
     }
 
+    bool replace_mode(txnid_t txn_id,LockMode mode,const KeyRangeEnt& range,LockKind kind) {
+        auto& cache=shard_for(txn_id);std::lock_guard<std::mutex> guard(cache.mutex);
+        const auto it=cache.locks.find(txn_id);if(it==cache.locks.end())return false;
+        for(auto& held:it->second)if(held.kind==kind && same_range(held.range,range)){held.mode=mode;return true;}
+        return false;
+    }
+
     void forget(txnid_t txn_id, const KeyRangeEnt& range, LockKind kind) {
         auto& cache = shard_for(txn_id);
         std::lock_guard<std::mutex> guard(cache.mutex);

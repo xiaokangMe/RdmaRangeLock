@@ -157,7 +157,8 @@ def main():
                 if args.only and args.only!=label:continue
                 if args.endurance and (policy!="wound-wait" or cc!="rdma-next-key" or workload!="ycsb-e"):continue
                 cfg=dict(base,workload=workload,cc=cc,wait_policy=policy,threads=2,coroutines=2,
-                         warmup_seconds=1,duration_seconds=args.endurance or args.seconds)
+                         warmup_seconds=1,duration_seconds=args.endurance or args.seconds,
+                         native_object_locks=1 if cc=="rdma-record-2pl" else 0)
                 path=logs/(label+".json");path.write_text(json.dumps(cfg))
                 with SharedServices(build,path,logs/label,env,native=True) as service:
                     flags=["--index","rdma","--cc",cc,"--workload",workload,
@@ -169,6 +170,7 @@ def main():
                            "--data-port",str(service.data_port),"--rdma-port",str(service.lock_port),
                            "--txn-state-port",str(service.txn_state_port),"--rdma-host",
                            "10.0.0.3" if args.cross_host else "127.0.0.1","--format","csv"]
+                    if cc=="rdma-record-2pl": flags+=["--native-object-locks","1"]
                     row=validate_row(run(actual("rrl_workload_runner",flags,env,args.cross_host),label,
                                          timeout=cfg["duration_seconds"]+180),cfg["duration_seconds"],True,"native-rdma-state")
                     if int(row["warmup_committed"])<=0 or int(row["warmup_elapsed_ns"])<1000000000:

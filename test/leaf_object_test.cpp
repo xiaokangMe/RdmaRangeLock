@@ -1,4 +1,5 @@
 #include "lock/object_lock_manager.h"
+#include "full_mgl_contract.h"
 #include "lock/native_policy.h"
 #include "txn/shared_dataset.h"
 #include "../src/txn/leaf_hierarchy.h"
@@ -100,6 +101,7 @@ int main(int argc,char** argv){try {
   require(leaves[n].id>=2 && identities.insert(leaves[n].id).second,"real unique leaf identities");
   if(n)require(leaves[n-1].range.EndKey==leaves[n].range.StartKey,"contiguous routing fences");
  }
+ full_mgl_contract::check(locks);
  const auto first=leaves[0],other=leaves[1];
  require(locks.lock(1,LockMode::S,KeyRangeEnt::point(first.id),LockKind::Node)==RCOK,"scan leaf S");
  std::vector<txnid_t> conflicts;conflicts.reserve(16);
@@ -117,7 +119,7 @@ int main(int argc,char** argv){try {
  TransactionTrace mixed;mixed.operations={{OperationKind::RangeRead,first.range.StartKey,first.range.EndKey,0},{OperationKind::Update,first.range.StartKey,0,9}};
  require(detail::leaf_plan(*index,mixed,scratch,plan),"actual leaf mixed plan");
  auto found=std::find_if(plan.begin(),plan.end(),[&](const auto& r){return r.kind==LockKind::Node && r.range.StartKey==first.id;});
- require(found!=plan.end() && found->mode==LockMode::X,"scan/write final X with no upgrade");
+ require(found!=plan.end() && found->mode==LockMode::SIX,"scan/write final SIX with record X");
  std::vector<LeafSpan> point;point.reserve(8);require(index->leaf_cover_into(KeyRangeEnt::point(UINT64_MAX),point) && point.size()==1 && point[0].id==leaves.back().id,"max key belongs to real last leaf");
  index->finish_thread();if(remote)require(rdma.validate(),"remote invariants");else require(local.validate(),"local invariants");
  std::cout<<"Actual leaf IDs/fences, final modes, per-object authority, namespaces and exact object modes OK\n";

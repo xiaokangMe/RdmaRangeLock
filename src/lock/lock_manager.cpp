@@ -35,7 +35,7 @@ std::vector<std::size_t> LockManager::shard_ids(const KeyRangeEnt& range,
     // RangeLock::conflicts, so copying them to every shard only adds mutex
     // traffic.
     if (kind == LockKind::Node && range.is_unbounded() &&
-        (mode == LockMode::IS || mode == LockMode::IX)) return {0};
+        lock_mode_is_intent(mode)) return {0};
     return shard_ids(range);
 }
 
@@ -98,7 +98,7 @@ bool is_point_range(const KeyRangeEnt& range) {
 
 RC LockManager::lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& range,
                      LockKind kind, std::vector<txnid_t>* conflicts) {
-    if (range.empty() || !range.valid()) return ERROR;
+    if (!txn_id || !valid_lock_mode(mode) || kind>LockKind::PriorKey || range.empty() || !range.valid()) return ERROR;
     if (conflicts) conflicts->clear();
     const auto ids = shard_ids(range, kind, mode);
     std::vector<std::unique_lock<std::mutex>> guards;

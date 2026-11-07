@@ -17,7 +17,7 @@
 namespace rrl {
 namespace {
 enum Op : std::uint64_t { Begin=1,Acquire,Check,Prepare,End,Close };
-constexpr std::uint64_t magic=0x52524c5741495432ULL;
+constexpr std::uint64_t magic=0x52524c5741495433ULL;
 using Message=std::array<std::uint64_t,16>;
 bool transfer(int fd,void* data,std::size_t size,bool sending) {
     auto* p=static_cast<char*>(data);
@@ -127,7 +127,7 @@ int run_wait_coordinator(std::uint16_t port,std::size_t lock_budget,std::uint64_
                 else if(op==Acquire) {
                     KeyRangeEnt r;r.StartKey=m[5];r.EndKey=m[6];r.has_start=m[7]!=0;r.has_end=m[8]!=0;
                     r.start_bound=static_cast<Bound>(m[9]);r.end_bound=static_cast<Bound>(m[10]);
-                    if(m[3]<=static_cast<std::uint64_t>(LockMode::X) && m[4]<=static_cast<std::uint64_t>(LockKind::PriorKey) && m[7]<=1 && m[8]<=1 && m[9]<=1 && m[10]<=1)
+                    if(m[3]<=static_cast<std::uint64_t>(LockMode::UIX) && m[4]<=static_cast<std::uint64_t>(LockKind::PriorKey) && m[7]<=1 && m[8]<=1 && m[9]<=1 && m[10]<=1)
                         reply=engine->acquire(sid,m[2],static_cast<LockMode>(m[3]),r,static_cast<LockKind>(m[4]));
                 } else if(op==Check)reply=engine->check(sid,m[2]);
                 else if(op==Prepare)reply=engine->prepare_commit(sid,m[2]);

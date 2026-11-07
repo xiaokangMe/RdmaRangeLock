@@ -146,7 +146,7 @@ int main() {
         const auto bucket=KeyRangeEnt::closed(0,255);
         ok(a.acquire(x1.id,LockMode::S,bucket,LockKind::Node),"S conversion setup");
         ok(b.acquire(x2.id,LockMode::IS,bucket,LockKind::Node),"peer IS conversion setup");
-        check(a.acquire(x1.id,LockMode::IX,bucket,LockKind::Node).result==TxnResult::Conflict,"S+IX tests final X against IS");
+        check(a.acquire(x1.id,LockMode::IX,bucket,LockKind::Node).result==TxnResult::Ok,"S+IX is SIX compatible with IS");
         ok(a.end(x1.id),"conversion cleanup");ok(b.end(x2.id),"conversion peer cleanup");
     }
     {

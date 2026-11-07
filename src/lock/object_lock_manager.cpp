@@ -115,7 +115,7 @@ struct ObjectLockManager::Impl {
         if(off<header.holder_base || (off-header.holder_base)%sizeof(Holder) || off>header.bytes || sizeof(Holder)>header.bytes-off)
             throw std::runtime_error("invalid holder link");
         Holder h;
-        if(!c.io->read(off,&h,sizeof(h)) || !h.txn || h.mode>3)throw std::runtime_error("invalid holder");return h;
+        if(!c.io->read(off,&h,sizeof(h)) || !h.txn || h.mode>static_cast<std::uint64_t>(LockMode::UIX))throw std::runtime_error("invalid holder");return h;
     }
     void poison(Context& c) noexcept {
         failed=true;std::uint64_t prior=0;
@@ -158,7 +158,7 @@ bool ObjectLockManager::connect(const std::string& host,std::uint16_t port,const
     }catch(...){p.failed=true;return false;}
 }
 RC ObjectLockManager::lock(txnid_t txn,LockMode mode,const KeyRangeEnt& range,LockKind kind,std::vector<txnid_t>* conflicts) {
-    auto& p=*impl_;if(p.failed || !txn || mode>LockMode::X || p.contexts.empty())return ERROR;
+    auto& p=*impl_;if(p.failed || !txn || !valid_lock_mode(mode) || p.contexts.empty())return ERROR;
     auto& c=p.context();std::lock_guard<FifoMutex> guard(c.mutex);
     try {
         std::uint64_t poison=0;

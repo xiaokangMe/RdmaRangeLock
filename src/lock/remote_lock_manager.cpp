@@ -395,7 +395,7 @@ std::vector<std::size_t> RemoteLockManager::shard_ids(const KeyRangeEnt& range,
     // compatibility checks; copying them to every data shard only creates a
     // needless all-shards gate operation.
     if (kind == LockKind::Node && range.is_unbounded() &&
-        (mode == LockMode::IS || mode == LockMode::IX)) return {0};
+        lock_mode_is_intent(mode)) return {0};
     return shard_ids(range);
 }
 
@@ -677,7 +677,7 @@ std::size_t RemoteLockManager::get_lock_count(txnid_t txn_id) const {
 
 RC RemoteLockManager::lock_impl(txnid_t txn_id, LockMode mode, const KeyRangeEnt& range,
                            LockKind kind, std::vector<txnid_t>* conflicts) {
-    if (!connected() || range.empty() || !range.valid()) return ERROR;
+    if (!connected() || !txn_id || !valid_lock_mode(mode) || kind>LockKind::PriorKey || range.empty() || !range.valid()) return ERROR;
     if (conflicts) conflicts->clear();
     if (profile_enabled_) lock_calls_.fetch_add(1, std::memory_order_relaxed);
     if (txn_cache_.satisfies(txn_id, mode, range, kind)) {
@@ -803,7 +803,7 @@ RC RemoteLockManager::lock_impl(txnid_t txn_id, LockMode mode, const KeyRangeEnt
 RC RemoteLockManager::lock_batch_impl(txnid_t txn_id, LockMode mode,
                                            const std::vector<KeyRangeEnt>& ranges,
                                            LockKind kind, std::vector<txnid_t>* conflicts) {
-    if (!connected() || !txn_id || mode > LockMode::X || ranges.empty()) return ERROR;
+    if (!connected() || !txn_id || !valid_lock_mode(mode) || kind>LockKind::PriorKey || ranges.empty()) return ERROR;
     if (conflicts) conflicts->clear();
     if (profile_enabled_) lock_calls_.fetch_add(ranges.size(), std::memory_order_relaxed);
 
@@ -834,6 +834,7 @@ RC RemoteLockManager::lock_batch_impl(txnid_t txn_id, LockMode mode,
     std::vector<std::vector<std::size_t>> request_shards;
     request_shards.reserve(pending.size());
     for (const auto& range : pending) request_shards.push_back(shard_ids(range, kind, mode));
+    std::vector<LockMode> effective(pending.size(),mode);
     std::vector<std::array<std::size_t, kRemoteLockShards>> owned(pending.size());
     for (auto& row : owned) row.fill(kNoSlot);
     current_slot().workspace->batch_payload.reserve(pending.size()*ids.size());
@@ -863,8 +864,14 @@ RC RemoteLockManager::lock_batch_impl(txnid_t txn_id, LockMode mode,
     std::uint64_t checks = 0;
     workspace.conflicts.clear();
     const auto lookup_start = profile_start(profile_enabled_);
+    for(std::size_t r=0;r<pending.size();++r)for(std::size_t n=0;n<ids.size();++n) {
+        if(!std::binary_search(request_shards[r].begin(),request_shards[r].end(),ids[n]))continue;
+        std::size_t found=kNoSlot;
+        if(tables[n].index.find_owned(tables[n].slots,id,kind,pending[r],found))
+            effective[r]=lock_mode_join(effective[r],static_cast<LockMode>(tables[n].slots[found].mode));
+    }
     for (std::size_t r = 0; r < pending.size(); ++r) {
-        RangeLock request{id, mode, kind, pending[r]};
+        RangeLock request{id, effective[r], kind, pending[r]};
         for (std::size_t n = 0; n < ids.size(); ++n) {
             if (!std::binary_search(request_shards[r].begin(), request_shards[r].end(), ids[n])) continue;
             const auto& table = tables[n];
@@ -925,10 +932,10 @@ RC RemoteLockManager::lock_batch_impl(txnid_t txn_id, LockMode mode,
             RemoteLockSlot value{};
             if (slot_index != kNoSlot) {
                 value = tables[n].slots[slot_index];
-                value.mode = static_cast<std::uint8_t>(lock_mode_join(static_cast<LockMode>(value.mode), mode));
+                value.mode = static_cast<std::uint8_t>(effective[r]);
             } else {
                 slot_index = tables[n].slots.size() + next_new[n]++;
-                encode_remote_slot(value, owner, id, mode, kind, pending[r]);
+                encode_remote_slot(value, owner, id, effective[r], kind, pending[r]);
             }
             payload.push_back(value);
             writes.push_back({shard_base(ids[n]) + offsetof(RemoteLockShard, slots) +
@@ -952,7 +959,7 @@ RC RemoteLockManager::lock_batch_impl(txnid_t txn_id, LockMode mode,
     if (!gate.release()) return ERROR;
     local.release();
     txn_cache_.remember_shards(txn_id, ids);
-    for (const auto& range : pending) txn_cache_.remember(txn_id, mode, range, kind);
+    for(std::size_t r=0;r<pending.size();++r)txn_cache_.remember(txn_id,effective[r],pending[r],kind);
     return RCOK;
 }
 

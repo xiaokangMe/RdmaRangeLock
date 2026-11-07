@@ -225,7 +225,7 @@ PolicyReply NativePolicyClient::acquire_batch(txnid_t id, LockMode mode,
                                                    LockKind kind) {
     auto& p=*impl_;p.lock_result=RCOK;const auto start=Clock::now();bool waited=false;
     auto reply=[&](TxnResult result){return PolicyReply{result,id,waited?nanos(Clock::now()-start):0};};
-    if (ranges.empty() || mode > LockMode::X) return reply(TxnResult::Error);
+    if (ranges.empty() || !valid_lock_mode(mode)) return reply(TxnResult::Error);
     for (const auto& range : ranges) if (range.empty() || !range.valid()) return reply(TxnResult::Error);
     for (;;) {
         const auto status=p.status(id);if(status!=TxnResult::Ok)return reply(status);
@@ -433,7 +433,7 @@ PolicyReply LocalNativePolicyClient::acquire_batch(txnid_t id, LockMode mode,
                                                         LockKind kind) {
     auto& p=*impl_;const auto start=Clock::now();bool waited=false;
     auto reply=[&](TxnResult result){return PolicyReply{result,id,waited?nanos(Clock::now()-start):0};};
-    if (ranges.empty() || mode > LockMode::X) return reply(TxnResult::Error);
+    if (ranges.empty() || !valid_lock_mode(mode)) return reply(TxnResult::Error);
     for (const auto& range : ranges) if (range.empty() || !range.valid()) return reply(TxnResult::Error);
     for (;;) {
         const auto status=p.status(id);if(status!=TxnResult::Ok)return reply(status);

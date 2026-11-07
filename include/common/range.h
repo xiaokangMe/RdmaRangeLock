@@ -115,10 +115,10 @@ struct RangeLock {
             if(counterpart==LockKind::Record)return false;
         }
         const bool this_parent_intention = kind == LockKind::Node &&
-            range.is_unbounded() && (mode == LockMode::IS || mode == LockMode::IX);
+            range.is_unbounded() && lock_mode_is_intent(mode);
         const bool other_parent_intention = other.kind == LockKind::Node &&
             other.range.is_unbounded() &&
-            (other.mode == LockMode::IS || other.mode == LockMode::IX);
+            lock_mode_is_intent(other.mode);
         if (this_parent_intention && !other.range.is_unbounded()) return false;
         if (other_parent_intention && !range.is_unbounded()) return false;
         // A bucket intention announces descendant access; it does not lock
@@ -126,9 +126,15 @@ struct RangeLock {
         // conflicts, as do bucket S versus bucket IX and record S versus X.
         const auto bucket_intention = [](const RangeLock& a, const RangeLock& b) {
             return a.kind == LockKind::Node && b.kind == LockKind::Record &&
-                (a.mode == LockMode::IS || a.mode == LockMode::IX);
+                lock_mode_is_intent(a.mode);
         };
         if (bucket_intention(*this, other) || bucket_intention(other, *this)) return false;
+        // Composite parent intent is not an additional conflicting row
+        // lock. Only its covering S/U/X component protects descendants.
+        if(kind==LockKind::Node && other.kind==LockKind::Record)
+            return lock_modes_conflict(lock_mode_record_cover(mode),other.mode);
+        if(kind==LockKind::Record && other.kind==LockKind::Node)
+            return lock_modes_conflict(mode,lock_mode_record_cover(other.mode));
         return true;
     }
 };

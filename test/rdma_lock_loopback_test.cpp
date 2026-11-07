@@ -8,6 +8,7 @@
 #include "lock/remote_lock_manager.h"
 #include "locking_paper_contract.h"
 #include "classic_range_contract.h"
+#include "full_mgl_contract.h"
 
 #include <cstdint>
 #include <cstdlib>
@@ -48,6 +49,7 @@ int main() {
 
     paper_contract::check(locks);
     classic_contract::check(locks);
+    full_mgl_contract::check(locks);
 
     check(locks.unlock_all(987654)==RCOK && locks.unlock_all(987654)==RCOK,"empty cleanup is idempotent");
     check(locks.unlock(987654,KeyRangeEnt::point(1000))==Abort,"explicit missing unlock still aborts");

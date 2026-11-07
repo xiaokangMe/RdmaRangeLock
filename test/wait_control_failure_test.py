@@ -7,7 +7,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
-MAGIC = 0x52524C5741495432
+MAGIC = 0x52524C5741495433
 
 
 def request(sock, *values):

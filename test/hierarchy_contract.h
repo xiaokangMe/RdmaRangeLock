@@ -52,12 +52,14 @@ inline void contract(IRangeLockManager& m) {
     check(boundary_plan.size() == 2, "half-open endpoint does not cover next bucket");
     check(acquire(m, 11, boundary_plan) == RCOK && acquire(m, 12, point_plan(256,true)) == RCOK,
           "exclusive upper endpoint remains writable"); release(11); release(12);
-    // The four-mode API conservatively joins S+IX to X; check that final mode.
-    check(m.lock(20, LockMode::S, b, LockKind::Node) == RCOK, "upgrade S setup");
-    check(m.lock(21, LockMode::IS, b, LockKind::Node) == RCOK, "upgrade IS peer");
-    check(m.lock(20, LockMode::IX, b, LockKind::Node) == AbortConflict,
-          "effective X conversion cannot bypass IS holder"); release(21);
-    check(m.lock(20, LockMode::IX, b, LockKind::Node) == RCOK, "conversion after peer release"); release(20);
+    // S+IX is SIX, which is compatible with a peer's IS but not S/IX.
+    check(m.lock(20,LockMode::S,b,LockKind::Node)==RCOK,"upgrade S setup");
+    check(m.lock(21,LockMode::IS,b,LockKind::Node)==RCOK,"upgrade IS peer");
+    check(m.lock(20,LockMode::IX,b,LockKind::Node)==RCOK,"S to SIX preserves IS peer concurrency");
+    check(m.lock(22,LockMode::S,b,LockKind::Node)==AbortConflict,"SIX excludes peer covering S");
+    check(m.lock(22,LockMode::IX,b,LockKind::Node)==AbortConflict,"SIX excludes peer IX");
+    check(m.lock(21,LockMode::S,KeyRangeEnt::point(11),LockKind::Record)==RCOK,"SIX subtree S allows child S");
+    release(20);release(21);release(22);
     check(m.get_lock_count() == 0, "no leaked hierarchy locks");
     // Width-one bucket identity and record identity have equal ranges but
     // different kinds. IX must still allow a distinct record's S/X.
@@ -80,8 +82,8 @@ inline void plan_contract() {
           "strongest modes, deduplication, root/bucket/record order");
     txn.operations={{K::RangeRead,10,20,0},{K::Update,15,15,1}};
     const auto mixed=detail::hierarchy_plan(txn,256);
-    check(mixed.size()==2 && mixed[1].mode==LockMode::X,
-          "mixed scan/write requests bucket X upfront without conversion");
+    check(mixed.size()==3 && mixed[1].mode==LockMode::SIX && mixed[2].mode==LockMode::X && mixed[2].kind==LockKind::Record,
+          "mixed scan/write requests SIX plus actual record X");
     txn.operations={{K::RangeRead,20,20,0}};
     check(detail::hierarchy_plan(txn,256).size()==1, "empty interval takes no data bucket");
     const auto max=std::numeric_limits<idx_key_t>::max();

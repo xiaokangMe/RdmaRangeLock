@@ -29,7 +29,7 @@ enum RC {
 enum access_t { RD, WR, XP, SCAN };
 enum lock_t { DLOCK_EX = 0, DLOCK_SH, LOCK_NONE };
 
-enum class LockMode : std::uint8_t { IS, IX, S, X };
+enum class LockMode : std::uint8_t { IS, IX, S, X, SIX, U, IU, SIU, UIX };
 
 enum class LockKind : std::uint8_t {
     Record,
@@ -46,26 +46,43 @@ enum class LockKind : std::uint8_t {
     PriorKey,
 };
 
-// Gray et al. (1976), Table 1 / requesting-node rules (PDF pp.4-5),
-// restricted to IS/IX/S/X. IS and IX coexist; IX conflicts with S.
-// Without SIX, S+IX conservatively joins to X (less concurrency, still safe).
-// This is a resource-tree protocol, not necessarily the physical B+ tree.
-// See docs/notes/paper-reproduction-audit-2026-11-07.md.
-inline bool lock_modes_conflict(LockMode lhs, LockMode rhs) {
-    if (lhs == LockMode::X || rhs == LockMode::X) return true;
-    if ((lhs == LockMode::IX && rhs == LockMode::S) ||
-        (lhs == LockMode::S && rhs == LockMode::IX)) return true;
-    return false;
+// Gray1976 Table 1: IS/IX/S/SIX/X. Microsoft SQL Server locking guide,
+// full compatibility chart: U/IU/SIU/UIX extensions (IU is page/bucket intent).
+// Preserve the original four wire values; all new modes are appended.
+inline bool valid_lock_mode(LockMode mode) {return mode<=LockMode::UIX;}
+inline bool lock_mode_is_intent(LockMode mode) {
+    return mode==LockMode::IS || mode==LockMode::IX || mode==LockMode::IU;
 }
-
+inline bool lock_modes_conflict(LockMode lhs, LockMode rhs) {
+    // Rows and columns: IS IX S X SIX U IU SIU UIX.
+    static constexpr bool compatible[9][9]={
+        {1,1,1,0,1,1,1,1,1},
+        {1,1,0,0,0,0,1,0,0},
+        {1,0,1,0,0,1,1,1,0},
+        {0,0,0,0,0,0,0,0,0},
+        {1,0,0,0,0,0,1,0,0},
+        {1,0,1,0,0,0,0,0,0},
+        {1,1,1,0,1,0,1,1,0},
+        {1,0,1,0,0,0,1,1,0},
+        {1,0,0,0,0,0,0,0,0}
+    };
+    return !valid_lock_mode(lhs) || !valid_lock_mode(rhs) ||
+        !compatible[static_cast<unsigned>(lhs)][static_cast<unsigned>(rhs)];
+}
 inline LockMode lock_mode_join(LockMode held, LockMode requested) {
-    if (held == requested) return held;
-    if (held == LockMode::X || requested == LockMode::X) return LockMode::X;
-    if ((held == LockMode::S && requested == LockMode::IX) ||
-        (held == LockMode::IX && requested == LockMode::S)) return LockMode::X;
-    if (held == LockMode::S || requested == LockMode::S) return LockMode::S;
-    if (held == LockMode::IX || requested == LockMode::IX) return LockMode::IX;
-    return LockMode::IS;
+    // Capability lattice: SIU=S+IU, SIX=S+IX, UIX=U+IX. This is a
+    // permission join, not an ordering of enum values or compatibility rows.
+    static constexpr unsigned capabilities[9]={1,7,9,63,15,27,3,11,31};
+    if(!valid_lock_mode(held) || !valid_lock_mode(requested))return LockMode::X;
+    const auto combined=capabilities[static_cast<unsigned>(held)] |
+                        capabilities[static_cast<unsigned>(requested)];
+    for(unsigned i=0;i<9;++i)if(capabilities[i]==combined)return static_cast<LockMode>(i);
+    return LockMode::X;
+}
+inline LockMode lock_mode_record_cover(LockMode mode) {
+    if(mode==LockMode::SIX || mode==LockMode::SIU)return LockMode::S;
+    if(mode==LockMode::UIX)return LockMode::U;
+    return mode;
 }
 
 }  // namespace rrl

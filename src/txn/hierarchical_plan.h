@@ -44,9 +44,9 @@ inline std::vector<HierarchyRequest> hierarchy_plan(const TransactionTrace& txn,
     plan.reserve(1 + buckets.size() + records.size());
     plan.push_back({writes ? LockMode::IX : LockMode::IS, KeyRangeEnt::unbounded(), LockKind::Node, 0});
     for (auto& [b, flags] : buckets) {
-        // SIX is deliberately not introduced. A scan+write bucket takes X
-        // from the outset, conservatively covering its read and write set.
-        flags.mode = flags.scan ? (flags.write ? LockMode::X : LockMode::S)
+        // SIX covers the scan with S while retaining IX for actual row X.
+        // Other point readers retain IS and can proceed on unrelated rows.
+        flags.mode = flags.scan ? (flags.write ? LockMode::SIX : LockMode::S)
                                 : (flags.write ? LockMode::IX : LockMode::IS);
         const idx_key_t base = b * width;
         const auto max = std::numeric_limits<idx_key_t>::max();
@@ -55,7 +55,8 @@ inline std::vector<HierarchyRequest> hierarchy_plan(const TransactionTrace& txn,
     }
     for (const auto& [key, mode] : records) {
         const auto bucket_mode = buckets.at(key / width).mode;
-        if (bucket_mode == LockMode::S || bucket_mode == LockMode::X) continue;
+        if (bucket_mode == LockMode::X || (mode==LockMode::S &&
+            (bucket_mode==LockMode::S || bucket_mode==LockMode::SIX))) continue;
         plan.push_back({mode, KeyRangeEnt::point(key), LockKind::Record, 2});
     }
     return plan;

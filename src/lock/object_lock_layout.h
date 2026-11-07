@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <vector>
 namespace rrl::object_detail {
-constexpr std::uint64_t magic=0x52524c4f424a3031ULL;
+constexpr std::uint64_t magic=0x52524c4f424a3032ULL;
 struct Header {
     std::uint64_t signature{magic},bytes{0},records{0},nodes{0},sessions{0},budget{0},allocated{0},fingerprint{0};
     std::uint64_t session_base{128},object_base{0},holder_base{0},poison{0},reserved[4]{};

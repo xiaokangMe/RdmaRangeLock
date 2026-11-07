@@ -16,6 +16,8 @@ public:
         require(coroutine_active()==expect_coroutines,"incorrect execution context");
         ++prepared;
     }
+    bool key_neighbors(idx_key_t k,IndexKeyNeighbors& out) const override{return tree.key_neighbors(k,out);}
+    bool key_range_into(const KeyRangeEnt& range,std::vector<idx_key_t>& out) const override{return tree.key_range_into(range,out);}
     RC init(std::size_t n) override{return tree.init(n);}
     RC insert(idx_key_t k,void* p) override{++inserts;return tree.insert(k,p);}
     RC erase(idx_key_t k) override{return tree.erase(k);}

@@ -289,10 +289,10 @@ def main():
         raise SystemExit("one distinct seed per repetition is required")
     if set(config["wait_policies"]) - {"no-wait", "wait-die", "wound-wait"}: raise SystemExit("invalid wait policy")
     if not config["wait_policies"] or not config["workloads"] or not config["threads"] or not config["ranges"] or not config["buckets"]: raise SystemExit("empty dimensions")
-    if set(config["local_ccs"]) - {"none", "record-2pl", "gap-lock", "next-key", "hierarchical", "predicate", "exact-range"}: raise SystemExit("invalid local protocols")
+    if set(config["local_ccs"]) - {"none", "record-2pl", "gap-lock", "next-key", "prior-key", "hierarchical", "predicate", "exact-range"}: raise SystemExit("invalid local protocols")
     if args.mode in ("local","both") and not config["local_ccs"]:raise SystemExit("empty local protocols")
     if args.mode in ("cross-host","both") and not config["rdma_ccs"]:raise SystemExit("empty RDMA protocols")
-    if set(config["rdma_ccs"]) - {"rdma-record-2pl", "rdma-gap-lock", "rdma-next-key", "rdma-hierarchical", "rdma-predicate", "rdma-exact-range"}: raise SystemExit("invalid RDMA protocols")
+    if set(config["rdma_ccs"]) - {"rdma-record-2pl", "rdma-gap-lock", "rdma-next-key", "rdma-prior-key", "rdma-hierarchical", "rdma-predicate", "rdma-exact-range"}: raise SystemExit("invalid RDMA protocols")
     if subprocess.check_output(["git", "diff", "HEAD", "--"], text=True).strip() and not args.smoke:
         raise SystemExit("commit source/config before formal run")
     untracked = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard", "include", "src", "benchmarks", "test", "experiments/configs"], text=True)

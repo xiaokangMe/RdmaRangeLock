@@ -292,7 +292,7 @@ int run(int argc, char** argv) {
     if (index_name == "btree_latch_coupling") index_name = "v2";
     if (index_name == "btree_single") index_name = "v1";
     if (cc == "record-level-strict-2pl") cc = "record-2pl";
-    const std::set<std::string> protocols{"none", "record-2pl", "gap-lock", "next-key", "hierarchical", "predicate", "exact-range", "rdma-next-key", "rdma-hierarchical", "rdma-predicate", "rdma-exact-range", "rdma-record-2pl", "rdma-gap-lock"};
+    const std::set<std::string> protocols{"none", "record-2pl", "gap-lock", "next-key", "prior-key", "hierarchical", "predicate", "exact-range", "rdma-next-key", "rdma-prior-key", "rdma-hierarchical", "rdma-predicate", "rdma-exact-range", "rdma-record-2pl", "rdma-gap-lock"};
     if (index_name != "v1" && index_name != "v2" && index_name != "rdma") throw std::invalid_argument("unknown index: " + index_name);
     if(policy.deneva_insert_behavior && (!policy.leaf_hierarchy || cc!="rdma-hierarchical" || index_name!="rdma" || !policy.txn_state_port))throw std::invalid_argument("deneva behavior requires native RDMA leaf hierarchy");
     if(policy.native_object_locks && (cc!="rdma-record-2pl" || index_name!="rdma" || !policy.txn_state_port || policy.leaf_hierarchy))
@@ -384,7 +384,7 @@ int run(int argc, char** argv) {
     if (measured) {
         const auto plain = cc.rfind("rdma-",0) == 0 ? cc.substr(5) : cc;
         policy.protocol = plain == "none" ? PolicyProtocol::None : plain == "record-2pl" ? PolicyProtocol::Record : plain == "gap-lock" ? PolicyProtocol::Gap :
-            plain == "next-key" ? PolicyProtocol::NextKey : plain == "predicate" ? PolicyProtocol::Predicate :
+            plain == "next-key" ? PolicyProtocol::NextKey : plain == "prior-key" ? PolicyProtocol::PriorKey : plain == "predicate" ? PolicyProtocol::Predicate :
             plain == "exact-range" ? PolicyProtocol::ExactRange : PolicyProtocol::Hierarchy;
         if(policy.leaf_hierarchy || policy.native_object_locks) {
             ObjectLockManager locks;
@@ -439,13 +439,16 @@ int run(int argc, char** argv) {
         LockManager locks; stats = run_record_2pl(*index, locks, trace, config.threads);
     } else if (cc == "gap-lock") {
         LockManager locks; stats = run_gap_lock(*index, locks, trace, config.threads);
-    } else if (cc == "next-key") {
-        LockManager locks; stats = run_next_key_lock(*index, locks, trace, config.threads);
+    } else if (cc == "next-key" || cc == "prior-key") {
+        LockManager locks;
+        if(cc=="next-key")stats=run_next_key_lock(*index,locks,trace,config.threads);
+        else {policy.protocol=PolicyProtocol::PriorKey;policy.max_attempts=1;policy.use_coroutines=false;
+              stats=run_policy_workload(*index,locks,trace,policy);}
     } else if (cc == "hierarchical") {
         LockManager locks;
         locks.set_bucket_width(config.hierarchy_bucket_width);
         stats = run_hierarchical_lock(*index, locks, trace, config.threads);
-    } else if (cc == "rdma-next-key" || cc == "rdma-hierarchical") {
+    } else if (cc == "rdma-next-key" || cc == "rdma-prior-key" || cc == "rdma-hierarchical") {
         RemoteLockManager locks;
         active_connections = resolve_connection_count(config.threads, rdma_connections);
         locks.set_connection_count(active_connections);
@@ -455,6 +458,8 @@ int run(int argc, char** argv) {
         }
         locks.set_bucket_width(config.hierarchy_bucket_width);
         if (cc == "rdma-next-key") stats = run_next_key_lock(*index, locks, trace, config.threads);
+        else if(cc=="rdma-prior-key") {policy.protocol=PolicyProtocol::PriorKey;policy.max_attempts=1;policy.use_coroutines=false;
+            stats=run_policy_workload(*index,locks,trace,policy);}
         else stats = run_hierarchical_lock(*index, locks, trace, config.threads);
         stats.rdma_timeouts = locks.rdma_timeouts();
         stats.rdma_completion_errors = locks.rdma_completion_errors();

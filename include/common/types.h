@@ -42,6 +42,8 @@ enum class LockKind : std::uint8_t {
     // Keep the wire value/cache identity for existing configs and results.
     // Provenance: docs/notes/paper-reproduction-audit-2026-11-07.md.
     ExactRange,
+    InsertIntent, // InnoDB-style insertion at one key, distinct from gap guard
+    PriorKey,
 };
 
 // Gray et al. (1976), Table 1 / requesting-node rules (PDF pp.4-5),

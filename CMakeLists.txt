@@ -70,7 +70,7 @@ add_executable(rrl_txn_cache_test test/txn_cache_test.cpp)
 target_include_directories(rrl_txn_cache_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_compile_options(rrl_txn_cache_test PRIVATE -Wall -Wextra -Wpedantic)
 add_executable(rrl_rdma_lock_loopback_test test/rdma_lock_loopback_test.cpp)
-target_link_libraries(rrl_rdma_lock_loopback_test PRIVATE rrl_lock rrl_rdma)
+target_link_libraries(rrl_rdma_lock_loopback_test PRIVATE rrl_lock rrl_rdma rrl_index_latch)
 target_compile_options(rrl_rdma_lock_loopback_test PRIVATE -Wall -Wextra -Wpedantic)
 enable_testing()
 find_program(RRL_PYTHON3 python3)
@@ -305,7 +305,7 @@ endif()
 
 # Shared paper-derived histories also run inside the live RDMA loopback test.
 add_executable(rrl_locking_paper_contract_test test/locking_paper_contract_test.cpp)
-target_link_libraries(rrl_locking_paper_contract_test PRIVATE rrl_lock)
+target_link_libraries(rrl_locking_paper_contract_test PRIVATE rrl_lock rrl_index_latch)
 target_compile_options(rrl_locking_paper_contract_test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME rrl_locking_paper_contract_test COMMAND rrl_locking_paper_contract_test)
 

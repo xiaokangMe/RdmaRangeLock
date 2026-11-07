@@ -20,7 +20,7 @@ with tempfile.TemporaryDirectory(prefix="rrl-range-capacity-") as directory:
         with SharedServices(build,path,d/str(capacity),env,native=True) as service:
             subprocess.run([str(exe),"--capacity"],env=service.test_env(),check=True,timeout=45)
             service.check()
-    for protocol in ("rdma-record-2pl","rdma-gap-lock"):
+    for protocol in ("rdma-record-2pl","rdma-gap-lock","rdma-next-key","rdma-prior-key"):
       for policy in ("no-wait","wait-die","wound-wait"):
         cfg=dict(base,cc=protocol,rdma_lock_slots_per_shard=32768,
                  native_object_locks=int(protocol=="rdma-record-2pl"))

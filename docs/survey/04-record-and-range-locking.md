@@ -21,11 +21,12 @@
 | 入口 | 扫描加锁方式 | 复现定位 |
 |---|---|---|
 | record-2pl | 返回记录 S，锁后复扫 | 记录锁基线；不防范围幻读 |
-| gap-lock | 查询开区间及两端点 Gap S，再加返回记录 S | 项目查询区间保护变体；不是 InnoDB 相邻键纯抑制 gap |
-| next-key | point(lo)、按返回记录分段、尾部到 hi 的闭保护 | 项目分段谓词变体；实际邻接键/+∞ 尚未补齐 |
+| gap-lock | 相邻物理键开间隙 guard + Record S/X + InsertIntent | InnoDB 纯抑制规则的统一锁表适配；包含 ghost 记录保护 |
+| next-key | 真实相邻键 (prev,k]，首尾用显式无穷；删除保护相邻两单元 | Graefe 基础 S/X 机制的稳定数值区间适配；非完整 ARIES/KVL |
+| prior-key | 真实相邻键 [k,next)，首尾用显式无穷；删除保护相邻两单元 | next-key 镜像基础机制，与 next-key 共用规划及验证路径 |
 | predicate / exact-range | 每个逻辑范围一把 S [lo,hi)，点写 X | 同一种一维谓词锁机制，两个兼容入口 |
 
-gap/next-key 的现有扫描保护并集均为 [lo,hi]，主要比较的是表示和执行开销；不能把结果直接归因到两种完整经典协议。InnoDB gap 的纯抑制兼容与插入意向是另一套明确机制 [@innodb84locking]。
+2026-11-07 修正前的 gap/next-key 扫描保护并集均为 [lo,hi]，旧实验主要比较查询区间的表示和执行开销。修正后使用实际邻接键和显式无穷，gap 引入纯抑制兼容与插入意向 [@innodb84locking]；新旧代码的性能数据不能混组。实现差异和正确性验证见 docs/notes/classic-key-locks-implementation-2026-11-07.md。
 
 predicate 与 exact-range 仅 kind/cache 身份不同；该标签不改变冲突规则，也不隔离跨事务冲突。正文统计为一个机制，保留旧命令和旧数据标签以便追溯。它是有明确论文依据的受限复现，不是 Griffin precision locking，也不能自动称为工业系统做不到的性能上界。
 

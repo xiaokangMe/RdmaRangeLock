@@ -1,6 +1,7 @@
 #include "index/rdma_btree.h"
 #include "lock/remote_lock_manager.h"
 #include "lock/wait_policy.h"
+#include "../src/txn/key_range_plan.h"
 #include <chrono>
 #include <cstdlib>
 #include <future>
@@ -128,5 +129,32 @@ int main(int argc,char** argv){try {
     std::uint64_t value=42;std::vector<IndexMutation> changes{{UINT64_MAX,&value,false},{778,&value,false},{778,nullptr,true}};
     CHECK(a.apply_batch(changes)==RCOK);void* out=nullptr;CHECK(!a.lookup(778,out));CHECK(a.lookup(UINT64_MAX,out));CHECK(*static_cast<std::uint64_t*>(out)==42);
     a.finish_thread();release(ca,la,txn.id);CHECK(a.validate());CHECK(a.rdma_operations()>0 && a.read_bytes()>0 && a.write_bytes()>0);
+    // A retained physical ghost is a lock boundary even though live scans
+    // omit it. A gap scan must lock that ghost record against resurrection.
+    for(auto protocol:{PolicyProtocol::Gap,PolicyProtocol::NextKey,PolicyProtocol::PriorKey}) {
+        PolicyClient reader(host,coord_port,15000),writer(host,coord_port,15000);
+        const auto r=reader.begin(WaitPolicy::NoWait,0,10000000000ULL);
+        const auto w=writer.begin(WaitPolicy::NoWait,0,10000000000ULL);
+        CHECK(r.result==TxnResult::Ok && w.result==TxnResult::Ok);
+        a.prepare_thread(0,1024);
+        detail::KeyObservation snapshot;std::vector<detail::KeyRequest> requests;
+        Operation scan{OperationKind::RangeRead,778,779,0};
+        CHECK(detail::observe_keys(a,scan,snapshot) && snapshot.lower.present);
+        CHECK(std::find(snapshot.keys.begin(),snapshot.keys.end(),778)!=snapshot.keys.end());
+        detail::key_plan(scan,snapshot,protocol,requests);
+        for(const auto& request:requests)grant(reader,la,r.id,request.mode,request.range,request.kind);
+        if(protocol==PolicyProtocol::Gap)
+            CHECK(std::any_of(requests.begin(),requests.end(),[](const auto& q){return q.kind==LockKind::Record && q.range.contains(778);}));
+        Operation revive{OperationKind::Insert,778,0,9};
+        CHECK(detail::observe_keys(a,revive,snapshot));
+        detail::key_plan(revive,snapshot,protocol,requests);
+        bool blocked=false;
+        for(const auto& request:requests) {
+            auto result=writer.acquire(w.id,request.mode,request.range,request.kind);
+            if(result.result==TxnResult::Conflict){blocked=true;break;}
+            CHECK(result.result==TxnResult::Ok && lb.lock(w.id,request.mode,request.range,request.kind)==RCOK);
+        }
+        CHECK(blocked);a.finish_thread();release(writer,lb,w.id);release(reader,la,r.id);
+    }
     std::cout<<"Shared RDMA records, wait-die, wound-wait, strict release and boundaries: OK\n";return 0;
 } catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

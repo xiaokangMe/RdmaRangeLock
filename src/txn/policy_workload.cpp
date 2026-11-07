@@ -6,6 +6,7 @@
 #include "lock/range_batch.h"
 #include "hierarchical_plan.h"
 #include "leaf_hierarchy.h"
+#include "key_range_plan.h"
 #include <atomic>
 #include <algorithm>
 #include <thread>
@@ -26,26 +27,24 @@ struct Worker {
     std::uint64_t state_start{0};
     LatencyHistogram attempt,logical,wait,call,release;
 };
-KeyRangeEnt right_closed(idx_key_t a,idx_key_t b) {
-    auto r=KeyRangeEnt::closed(a,b);r.start_bound=Bound::Open;return r;
+
 }
-}
-RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const WorkloadTrace& trace,const PolicyRunConfig& cfg) {
+static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& physical,const WorkloadTrace& trace,const PolicyRunConfig& cfg,std::size_t worker_threads) {
     if((cfg.protocol==PolicyProtocol::None && cfg.wait_policy!=WaitPolicy::NoWait) ||
-       !trace.config().threads || !cfg.max_attempts || !cfg.wait_timeout_ms || cfg.wait_timeout_ms>600000)throw std::invalid_argument("invalid retry/wait bound");
+       !worker_threads || !cfg.max_attempts || !cfg.wait_timeout_ms || cfg.wait_timeout_ms>600000)throw std::invalid_argument("invalid retry/wait bound");
     std::unordered_map<idx_key_t,std::uint64_t> seed;
     if(!index.preloaded() && !seed_index(index,trace,seed)){RunStats s;s.index_errors=1;return s;}
     const auto total=trace.transactions().size();
     if(!total)return {};
-    if(!cfg.coroutines || cfg.coroutines>4096 || trace.config().threads>4096/cfg.coroutines ||
+    if(!cfg.coroutines || cfg.coroutines>4096 || worker_threads>4096/cfg.coroutines ||
        cfg.coroutine_stack_bytes<65536 || cfg.coroutine_stack_bytes>16777216 || cfg.warmup_seconds>600000)
         throw std::invalid_argument("runtime geometry bounds");
     if(!cfg.use_coroutines && cfg.coroutines!=1)
         throw std::invalid_argument("threads execution requires coroutines=1");
     if(cfg.coroutines>1 && !cfg.txn_state_port && !cfg.coordinator_host.empty())
         throw std::invalid_argument("TCP compatibility coordinator cannot block a coroutine worker");
-    const auto count=std::min(trace.config().threads*cfg.coroutines,total);
-    const auto os_workers=std::min(trace.config().threads,count);
+    const auto count=std::min(worker_threads*cfg.coroutines,total);
+    const auto os_workers=std::min(worker_threads,count);
     const bool warmup=cfg.warmup_seconds!=0;
     LocalNativePolicyState local_native_state(std::max<std::size_t>(count, 1));
     std::vector<std::unique_ptr<PolicyClient>> clients;
@@ -82,10 +81,17 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
     std::vector<std::vector<IndexMutation>> writes(count);
     std::vector<std::vector<KeyValue>> scans(count),rechecks(count);
     std::vector<std::vector<KeyRangeEnt>> record_requests(count);
+    const bool classic=cfg.protocol==PolicyProtocol::Gap || cfg.protocol==PolicyProtocol::NextKey || cfg.protocol==PolicyProtocol::PriorKey;
+    std::vector<detail::KeyObservation> key_before(count),key_after(count);
+    std::vector<std::vector<detail::KeyRequest>> key_plans(count);
     const auto scan_capacity=trace.config().range_length;
     for(auto& v:scans)v.reserve(scan_capacity);
     for(auto& v:rechecks)v.reserve(scan_capacity);
-    for(auto& v:record_requests)v.reserve(scan_capacity);
+    for(auto& v:record_requests)v.reserve(scan_capacity+2);
+    for(std::size_t w=0;w<count;++w) {
+        key_before[w].keys.reserve(scan_capacity);key_after[w].keys.reserve(scan_capacity);
+        key_plans[w].reserve(2*scan_capacity+8);
+    }
     std::size_t maxops=0;for(const auto& t:trace.transactions())maxops=std::max(maxops,t.operations.size());
     for(auto& v:writes)v.reserve(maxops);
     std::vector<std::vector<IndexNodeSpan>> leaf_scratch(count);
@@ -213,6 +219,18 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                     for(const auto& range:ranges)if(!acquire(mode,range,kind))return false;
                     return true;
                 };
+                auto acquire_key_plan=[&]() {
+                    auto& plan=key_plans[worker];auto& ranges=record_requests[worker];
+                    for(std::size_t first=0;first<plan.size();) {
+                        const auto mode=plan[first].mode;const auto kind=plan[first].kind;
+                        ranges.clear();std::size_t last=first;
+                        while(last<plan.size() && plan[last].mode==mode && plan[last].kind==kind)
+                            ranges.push_back(plan[last++].range);
+                        if(!acquire_batch(mode,ranges,kind))return false;
+                        first=last;
+                    }
+                    return true;
+                };
                 if(cfg.protocol==PolicyProtocol::Hierarchy) {
                     if(cfg.leaf_hierarchy && !cfg.deneva_insert_behavior) {
                         if(!detail::leaf_plan(index,txn,leaf_scratch[worker],leaf_plans[worker]))outcome=TxnResult::Error;
@@ -249,36 +267,21 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                         // ExactRange is an equivalent compatibility tag.
                         if((cfg.protocol==PolicyProtocol::Predicate && !acquire(LockMode::S,range,LockKind::Predicate)) ||
                            (cfg.protocol==PolicyProtocol::ExactRange && !acquire(LockMode::S,range,LockKind::ExactRange))) break;
-                        // Project query-cover variant: these guards cover
-                        // [lo,hi], not actual neighboring-index-key gaps.
-                        // NOT InnoDB purely inhibitive gap compatibility.
-                        if(cfg.protocol==PolicyProtocol::Gap) {
-                            const std::vector<KeyRangeEnt> gaps{KeyRangeEnt::open(op.key,op.end_key),
-                                KeyRangeEnt::point(op.key),KeyRangeEnt::point(op.end_key)};
-                            if(!acquire_batch(LockMode::S,gaps,LockKind::Gap))break;
-                        }
-                        auto& rows=scans[worker];index.scan_range_into(range,rows);s.rows_scanned+=rows.size();
-                        // Graefe2010 section 5 is the target, not a claim of
-                        // full reproduction: lo/hi are query bounds here.
-                        // True next-key requires actual neighbors and +inf.
-                        // See paper-reproduction-audit-2026-11-07.md, P0.
-                        if(cfg.protocol==PolicyProtocol::NextKey) {
-                            std::vector<KeyRangeEnt> next_ranges;next_ranges.reserve(rows.size()+2);
-                            next_ranges.push_back(KeyRangeEnt::point(op.key));
-                            auto previous=op.key;
-                            for(const auto& row:rows) {
-                                next_ranges.push_back(row.key==previous ? KeyRangeEnt::point(row.key) : right_closed(previous,row.key));
-                                previous=row.key;
-                            }
-                            next_ranges.push_back(previous==op.end_key ? KeyRangeEnt::point(previous) : right_closed(previous,op.end_key));
-                            if(!acquire_batch(LockMode::S,next_ranges,LockKind::NextKey))break;
+                        if(classic) {
+                            auto& before=key_before[worker];auto& after=key_after[worker];
+                            if(!detail::observe_keys(index,op,before)){outcome=TxnResult::Conflict;break;}
+                            // Candidate values are never consumed. The second
+                            // scan reads only after the complete protection set.
+                            auto& rows=scans[worker];index.scan_range_into(range,rows);s.rows_scanned+=rows.size();
+                            detail::key_plan(op,before,cfg.protocol,key_plans[worker]);
+                            if(!acquire_key_plan())break;
+                            if(!detail::observe_keys(index,op,after) ||
+                               !detail::same_observation(before,after,true)){outcome=TxnResult::Conflict;break;}
                             auto& verified=rechecks[worker];index.scan_range_into(range,verified);s.rows_rechecked+=verified.size();
-                            if(verified.size()!=rows.size()){outcome=TxnResult::Conflict;break;}
-                            for(std::size_t n=0;n<rows.size();++n)if(rows[n].key!=verified[n].key)outcome=TxnResult::Conflict;
-                            if(outcome!=TxnResult::Ok)break;
                             for(const auto& row:verified)account_value(row.key,static_cast<const std::uint64_t*>(row.value));
                             account_inserted(range,verified);
-                        } else if(cfg.protocol==PolicyProtocol::Record || cfg.protocol==PolicyProtocol::Gap) {
+                        } else if(cfg.protocol==PolicyProtocol::Record) {
+                            auto& rows=scans[worker];index.scan_range_into(range,rows);s.rows_scanned+=rows.size();
                             auto& requests=record_requests[worker];requests.clear();
                             for(const auto& row:rows)requests.push_back(KeyRangeEnt::point(row.key));
                             if(!acquire_batch(LockMode::S,requests,LockKind::Record))break;
@@ -286,9 +289,6 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                             // One scan replaces a fresh root descent for every row.
                             auto& verified=rechecks[worker];index.scan_range_into(range,verified);
                             s.rows_rechecked+=verified.size();
-                            if(cfg.protocol==PolicyProtocol::Gap && verified.size()!=rows.size()) {
-                                outcome=TxnResult::Conflict;break;
-                            }
                             std::size_t n=0;
                             for(const auto& row:rows) {
                                 while(n<verified.size() && verified[n].key<row.key)++n;
@@ -301,6 +301,7 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                             // keys are deliberately not consumed without a lock.
                             if(outcome==TxnResult::Ok)account_inserted(range,verified);
                         } else {
+                            auto& rows=scans[worker];index.scan_range_into(range,rows);s.rows_scanned+=rows.size();
                             for(const auto& row:rows)account_value(row.key,static_cast<const std::uint64_t*>(row.value));
                             account_inserted(range,rows);
                         }
@@ -310,7 +311,15 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                             cfg.protocol==PolicyProtocol::ExactRange ? LockKind::ExactRange :
                             cfg.protocol==PolicyProtocol::NextKey ? LockKind::NextKey :
                             cfg.protocol==PolicyProtocol::Gap && op.kind==OperationKind::Insert ? LockKind::Gap : LockKind::Record;
-                        if(cfg.protocol!=PolicyProtocol::Hierarchy && cfg.protocol!=PolicyProtocol::None && !acquire(read?LockMode::S:LockMode::X,KeyRangeEnt::point(op.key),kind))break;
+                        if(classic) {
+                            auto& before=key_before[worker];auto& after=key_after[worker];
+                            if(!detail::observe_keys(index,op,before)){outcome=TxnResult::Conflict;break;}
+                            detail::key_plan(op,before,cfg.protocol,key_plans[worker]);
+                            if(!acquire_key_plan())break;
+                            if(!detail::observe_keys(index,op,after) ||
+                               !detail::same_observation(before,after,false)){outcome=TxnResult::Conflict;break;}
+                        }
+                        if(!classic && cfg.protocol!=PolicyProtocol::Hierarchy && cfg.protocol!=PolicyProtocol::None && !acquire(read?LockMode::S:LockMode::X,KeyRangeEnt::point(op.key),kind))break;
                         if(read) {
                             ++s.reads;void* value=nullptr;
                             if(own_write(op.key))account_value(op.key,nullptr);
@@ -499,5 +508,15 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
         if(!out)throw std::runtime_error("latency histogram write failed");
     }
     return result;
+}
+RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& locks,const WorkloadTrace& trace,const PolicyRunConfig& cfg) {
+    return run_policy_workload_impl(index,locks,trace,cfg,trace.config().threads);
+}
+namespace detail {
+RunStats run_classic_workload(BTreeIndex& index,IRangeLockManager& locks,const WorkloadTrace& trace,
+                             std::size_t threads,PolicyProtocol protocol) {
+    PolicyRunConfig cfg;cfg.protocol=protocol;cfg.max_attempts=1;cfg.use_coroutines=false;
+    return run_policy_workload_impl(index,locks,trace,cfg,std::max<std::size_t>(1,threads));
+}
 }
 } // namespace rrl

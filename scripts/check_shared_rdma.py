@@ -106,7 +106,7 @@ def main():
                 (logs/"active-failure.stdout").write_text(out);(logs/"active-failure.stderr").write_text(err)
                 if process.returncode!=3:raise RuntimeError(("in-flight fault did not fail measurement",process.returncode,out,err))
                 with socket.create_connection(("127.0.0.1",service.coordinator_port),timeout=5) as sock:
-                    message=[0x52524c5741495431,1,1,0,1000000000]+[0]*11
+                    message=[0x52524c5741495432,1,1,0,1000000000]+[0]*11
                     sock.sendall(struct.pack("!16Q",*message));reply=b""
                     while len(reply)<128:
                         block=sock.recv(128-len(reply))

@@ -52,3 +52,18 @@ with tempfile.TemporaryDirectory() as directory:
             other=validate(override.stdout)
             assert other['execution_mode']!=execution
 print('Policy JSON/CLI validation, histogram export and count conservation: OK')
+
+# The new protocol must be reachable through CLI and config, not only C++ tests.
+for policy in ("no-wait","wait-die","wound-wait"):
+    for workload in ("ycsb-a","ycsb-e"):
+        cmd=[runner,"--cc","prior-key","--keys","32","--txns","12","--ops","2",
+             "--threads","2","--range","4","--workload",workload,"--wait-policy",policy,"--format","csv"]
+        row=validate(subprocess.run(cmd,check=True,capture_output=True,text=True,timeout=15).stdout)
+        assert row["cc"]=="prior-key" and int(row["committed"])>0
+
+for protocol in ("gap-lock","next-key","prior-key"):
+    cmd=[runner,"--cc",protocol,"--keys","16","--txns","12","--ops","2",
+         "--threads","2","--workload","ycsb-e","--range","4","--format","csv"]
+    import csv,io
+    row=next(csv.DictReader(io.StringIO(subprocess.run(cmd,check=True,capture_output=True,text=True,timeout=15).stdout)))
+    assert int(row["transactions"])==12 and int(row["committed"])+int(row["aborted"])==12

@@ -404,8 +404,11 @@ PolicyReply LocalNativePolicyClient::acquire(txnid_t id,LockMode mode,const KeyR
         p.conflicts.clear();
         const auto rc=p.physical.lock(id,mode,range,kind,&p.conflicts);
         if(rc==RCOK){p.held=true;return reply(p.status(id));}
-        if(rc==AbortCapacity || rc==AbortGate || p.policy==WaitPolicy::NoWait)return reply(TxnResult::Conflict);
-        if(rc!=Abort && rc!=AbortConflict)return reply(TxnResult::Error);
+        if(rc==AbortCapacity || rc==AbortGate)return reply(TxnResult::Conflict);
+        // A backend error may follow a partially installed acquisition.
+        // Preserve cleanup and never turn an uncertain error into a retry.
+        if(rc!=Abort && rc!=AbortConflict){p.held=true;return reply(TxnResult::Error);}
+        if(p.policy==WaitPolicy::NoWait)return reply(TxnResult::Conflict);
         if(p.conflicts.empty())return reply(TxnResult::Error);
         for(const auto other:p.conflicts) {
             std::uint64_t holder_age=0,word=0;bool current=false;
@@ -448,8 +451,11 @@ PolicyReply LocalNativePolicyClient::acquire_batch(txnid_t id, LockMode mode,
             }
         }
         if(rc==RCOK){p.held=true;return reply(p.status(id));}
-        if(rc==AbortCapacity || rc==AbortGate || p.policy==WaitPolicy::NoWait)return reply(TxnResult::Conflict);
-        if(rc!=Abort && rc!=AbortConflict)return reply(TxnResult::Error);
+        if(rc==AbortCapacity || rc==AbortGate)return reply(TxnResult::Conflict);
+        // A backend error may follow a partially installed acquisition.
+        // Preserve cleanup and never turn an uncertain error into a retry.
+        if(rc!=Abort && rc!=AbortConflict){p.held=true;return reply(TxnResult::Error);}
+        if(p.policy==WaitPolicy::NoWait)return reply(TxnResult::Conflict);
         if(p.conflicts.empty())return reply(TxnResult::Error);
         for(const auto other:p.conflicts) {
             std::uint64_t holder_age=0,word=0;bool current=false;

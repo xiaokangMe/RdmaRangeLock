@@ -105,6 +105,15 @@ struct RangeLock {
     bool conflicts(const RangeLock& other) const {
         if (txn_id == other.txn_id || !range.overlaps(other.range) ||
             !lock_modes_conflict(mode, other.mode)) return false;
+        // MySQL 8.4 17.7.1: gap guards are purely inhibitive.
+        // They coexist regardless of S/X and do not lock existing records.
+        // InsertIntent reserves an actual insert position; distinct positions
+        // coexist through ordinary geometric point intersection.
+        if(kind==LockKind::Gap || other.kind==LockKind::Gap) {
+            if(kind==LockKind::Gap && other.kind==LockKind::Gap)return false;
+            const auto counterpart=kind==LockKind::Gap?other.kind:kind;
+            if(counterpart==LockKind::Record)return false;
+        }
         const bool this_parent_intention = kind == LockKind::Node &&
             range.is_unbounded() && (mode == LockMode::IS || mode == LockMode::IX);
         const bool other_parent_intention = other.kind == LockKind::Node &&

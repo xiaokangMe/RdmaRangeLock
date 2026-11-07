@@ -7,6 +7,8 @@ using namespace rrl;
 // workload must retain capacity failures when aggregating worker statistics.
 struct CapacityIndex final : BTreeIndex {
     BTreeLatch tree;
+    bool key_neighbors(idx_key_t k,IndexKeyNeighbors& out) const override{return tree.key_neighbors(k,out);}
+    bool key_range_into(const KeyRangeEnt& range,std::vector<idx_key_t>& out) const override{return tree.key_range_into(range,out);}
     RC init(std::size_t order) override { return tree.init(order); }
     RC insert(idx_key_t k,void* v) override { return tree.insert(k,v); }
     RC erase(idx_key_t k) override { return tree.erase(k); }
@@ -30,7 +32,7 @@ int main(){try {
             else if(op.kind==OperationKind::Delete)model.erase(op.key);
             else model[op.key]=op.value;
         }
-        for(auto protocol:{PolicyProtocol::Record,PolicyProtocol::Gap,PolicyProtocol::NextKey,PolicyProtocol::Hierarchy,PolicyProtocol::Predicate,PolicyProtocol::ExactRange})
+        for(auto protocol:{PolicyProtocol::Record,PolicyProtocol::Gap,PolicyProtocol::NextKey,PolicyProtocol::PriorKey,PolicyProtocol::Hierarchy,PolicyProtocol::Predicate,PolicyProtocol::ExactRange})
             for(auto policy:{WaitPolicy::NoWait,WaitPolicy::WaitDie,WaitPolicy::WoundWait}) {
                 BTreeLatch index;CHECK(index.init(16)==RCOK);LockManager locks;
                 PolicyRunConfig run;run.protocol=protocol;run.wait_policy=policy;

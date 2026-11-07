@@ -9,9 +9,16 @@ void check(bool ok, const char* what) {
 }
 struct ScanWindowIndex : BTreeIndex {
     mutable BTreeLatch tree;
-    mutable bool fired{false};
+    mutable bool fired{false}, prepared{false};
     std::function<void()> window;
     idx_key_t target{0};
+    bool key_neighbors(idx_key_t k,IndexKeyNeighbors& out) const override {
+        // The hole must predate the neighbor snapshot, otherwise deleting
+        // and restoring the same key is a valid ABA with locked value reread.
+        if(!prepared){prepared=true;check(tree.erase(target)==RCOK,"prepare missing boundary before observation");}
+        return tree.key_neighbors(k,out);
+    }
+    bool key_range_into(const KeyRangeEnt& range,std::vector<idx_key_t>& out) const override{return tree.key_range_into(range,out);}
     RC init(std::size_t order) override { return tree.init(order); }
     RC insert(idx_key_t key, void* value) override { return tree.insert(key, value); }
     RC erase(idx_key_t key) override { return tree.erase(key); }
@@ -20,7 +27,7 @@ struct ScanWindowIndex : BTreeIndex {
     std::vector<KeyValue> scan_range(const KeyRangeEnt& range) const override {
         if (!fired) {
             fired = true;
-            check(tree.erase(target) == RCOK, "prepare an insertion gap before first scan");
+            if(!prepared){prepared=true;check(tree.erase(target)==RCOK,"prepare insertion gap before first scan");}
             auto candidates = tree.scan_range(range);
             window(); // Writer attempts insertion after enumeration.
             return candidates;
@@ -82,7 +89,7 @@ int main() {
         RC writer_rc = ERROR;
         std::uint64_t inserted = 77;
         index.window = [&] {
-            writer_rc = locks.lock(999, LockMode::X, KeyRangeEnt::point(target), LockKind::Gap);
+            writer_rc = locks.lock(999, LockMode::X, KeyRangeEnt::point(target), LockKind::InsertIntent);
             if (writer_rc == RCOK) {
                 check(index.insert(target, &inserted) == RCOK, "insert in scan window");
                 check(locks.unlock_all(999) == RCOK, "inserting writer commits");
@@ -94,8 +101,8 @@ int main() {
         if (driver == 2) stats = run_next_key_lock(index, locks, trace, 1);
         if (driver == 0) check(writer_rc == RCOK && stats.committed == 1,
                                "record-only baseline retains phantom window");
-        if (driver == 1) check(writer_rc == AbortConflict && stats.committed == 1,
-                               "gap lock precedes enumeration and blocks insertion");
+        if (driver == 1) check(writer_rc == RCOK && stats.aborted == 1 && stats.committed == 0,
+                               "gap rejects changed physical boundary snapshot");
         if (driver == 2) check(writer_rc == RCOK && stats.aborted == 1 && stats.committed == 0,
                                "next-key rejects changed candidate keys");
         check(!stats.failed() && locks.get_lock_count() == 0, "window test completes and releases");

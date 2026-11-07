@@ -9,6 +9,8 @@ struct FaultIndex : BTreeIndex {
     BTreeLatch tree;
     std::size_t calls{0}, fail_at{0};
     FaultIndex() { tree.init(8); }
+    bool key_neighbors(idx_key_t k,IndexKeyNeighbors& out) const override{return tree.key_neighbors(k,out);}
+    bool key_range_into(const KeyRangeEnt& range,std::vector<idx_key_t>& out) const override{return tree.key_range_into(range,out);}
     RC init(std::size_t order) override { return tree.init(order); }
     RC insert(idx_key_t key, void* value) override {
         if (++calls == fail_at) return ERROR;

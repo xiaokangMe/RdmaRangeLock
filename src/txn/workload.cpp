@@ -186,13 +186,7 @@ RunStats merge_parts(const std::vector<LocalAcc>& parts,
     return result;
 }
 
-KeyRangeEnt right_closed(idx_key_t left, idx_key_t right) {
-    KeyRangeEnt range;
-    range.StartKey = left; range.EndKey = right;
-    range.has_start = true; range.has_end = true;
-    range.start_bound = Bound::Open; range.end_bound = Bound::Closed;
-    return range;
-}
+
 
 }  // namespace
 
@@ -432,190 +426,14 @@ RunStats run_record_2pl(BTreeIndex& index, LockManager& locks, const WorkloadTra
     return merge_parts(parts, begin);
 }
 
-RunStats run_gap_lock(BTreeIndex& index, LockManager& locks, const WorkloadTrace& trace,
-                      size_t threads) {
-    if (!threads) threads = 1;
-    SeedValues seed;
-    if (!seed_index(index, trace, seed)) { RunStats failed; failed.index_errors = 1; return failed; }
-    if (trace.transactions().empty()) return {};
-    std::atomic<bool> stopped{false};
-    const size_t worker_count = std::min(threads, std::max<size_t>(1, trace.transactions().size()));
-    std::vector<LocalAcc> parts(worker_count);
-    const auto begin = std::chrono::steady_clock::now();
-    const size_t total_txns = trace.transactions().size();
-    const bool timed = trace.config().duration_seconds != 0;
-    const auto deadline = timed ? std::chrono::steady_clock::now() +
-        std::chrono::seconds(trace.config().duration_seconds)
-        : std::chrono::steady_clock::time_point::max();
-    std::vector<std::thread> workers;
-    for (size_t worker = 0; worker < worker_count; ++worker)
-        workers.emplace_back([&, worker] {
-            LocalAcc& a = parts[worker];
-            auto acquire = [&](txnid_t txn, LockMode mode, const KeyRangeEnt& range, LockKind kind) {
-                ++a.acquires;
-                if (!record_lock_result(a, stopped, locks.lock(txn, mode, range, kind))) return false;
-                return true;
-            };
-            for (size_t i = worker, rounds = 0;; i += worker_count, ++rounds) {
-                if (stopped.load(std::memory_order_relaxed)) break;
-                a.held = 0;
-                if (timed) { if ((rounds % 64) == 0 && std::chrono::steady_clock::now() >= deadline) break; }
-                else if (i >= total_txns) break;
-                const auto& txn = trace.transactions()[i % total_txns];
-                const txnid_t tid = txn.txn_id +
-                    static_cast<txnid_t>(i / total_txns) * static_cast<txnid_t>(total_txns);
-                bool ok = true;
-                bool stop_after_txn = false;
-                std::vector<const Operation*> writes;
-                for (const Operation& op : txn.operations) {
-                    if (timed && std::chrono::steady_clock::now() >= deadline) { stop_after_txn = true; ok = false; break; }
-                    ++a.ops;
-                    if (op.kind == OperationKind::RangeRead) {
-                        ++a.ranges;
-                        if (!acquire(tid, LockMode::S, KeyRangeEnt::open(op.key, op.end_key), LockKind::Gap) ||
-                            !acquire(tid, LockMode::S, KeyRangeEnt::point(op.key), LockKind::Gap) ||
-                            !acquire(tid, LockMode::S, KeyRangeEnt::point(op.end_key), LockKind::Gap)) { ok = false; break; }
-                        const auto rows = index.scan_range(KeyRangeEnt::half_open(op.key, op.end_key));
-                        a.scanned += rows.size();
-                        a.found += rows.size();
-                        for (const auto& row : rows) {
-                            if (timed && std::chrono::steady_clock::now() >= deadline) { stop_after_txn = true; ok = false; break; }
-                            if (!acquire(tid, LockMode::S, KeyRangeEnt::point(row.key), LockKind::Record)) { ok = false; break; }
-                            void* value = nullptr;
-                            if (!index.lookup(row.key, value)) { ok = false; break; }
-                            a.checksum += row.key ^ *static_cast<uint64_t*>(value);
-                        }
-                    } else if (op.kind == OperationKind::Read) {
-                        if (!acquire(tid, LockMode::S, KeyRangeEnt::point(op.key), LockKind::Record)) { ok = false; break; }
-                        ++a.reads;
-                        void* value = nullptr;
-                        if (index.lookup(op.key, value)) { ++a.found; a.checksum += op.key ^ *static_cast<uint64_t*>(value); }
-                    } else {
-                        const LockKind kind = op.kind == OperationKind::Insert ? LockKind::Gap : LockKind::Record;
-                        if (!acquire(tid, LockMode::X, KeyRangeEnt::point(op.key), kind)) { ok = false; break; }
-                        if (op.kind == OperationKind::Update) { ++a.updates; writes.push_back(&op); }
-                        else if (op.kind == OperationKind::Insert) { ++a.inserts; writes.push_back(&op); }
-                        else if (op.kind == OperationKind::Delete) { ++a.deletes; writes.push_back(&op); }
-                    }
-                    if (!ok) break;
-                }
-                finish_transaction(index, locks, tid, writes, ok, a, stopped);
-                if (stop_after_txn) break;
-            }
-        });
-    for (auto& worker : workers) worker.join();
-    return merge_parts(parts, begin);
+namespace detail {
+RunStats run_classic_workload(BTreeIndex&,IRangeLockManager&,const WorkloadTrace&,std::size_t,PolicyProtocol);
 }
-
-RunStats run_next_key_lock(BTreeIndex& index, IRangeLockManager& locks,
-                           const WorkloadTrace& trace, size_t threads) {
-    if (!threads) threads = 1;
-    SeedValues seed;
-    if (!seed_index(index, trace, seed)) { RunStats failed; failed.index_errors = 1; return failed; }
-    if (trace.transactions().empty()) return {};
-    std::atomic<bool> stopped{false};
-    const size_t worker_count = std::min(threads, std::max<size_t>(1, trace.transactions().size()));
-    std::vector<LocalAcc> parts(worker_count);
-    const auto begin = std::chrono::steady_clock::now();
-    const size_t total_txns = trace.transactions().size();
-    const bool timed = trace.config().duration_seconds != 0;
-    const auto deadline = timed ? std::chrono::steady_clock::now() +
-        std::chrono::seconds(trace.config().duration_seconds)
-        : std::chrono::steady_clock::time_point::max();
-    std::vector<std::thread> workers;
-    for (size_t worker = 0; worker < worker_count; ++worker) {
-        workers.emplace_back([&, worker] {
-            LocalAcc& a = parts[worker];
-            auto acquire = [&](txnid_t txn, LockMode mode, const KeyRangeEnt& range) {
-                ++a.acquires;
-                if (!record_lock_result(a, stopped, locks.lock(txn, mode, range, LockKind::NextKey))) return false;
-                return true;
-            };
-            for (size_t i = worker, rounds = 0;; i += worker_count, ++rounds) {
-                if (stopped.load(std::memory_order_relaxed)) break;
-                a.held = 0;
-                if (timed) { if ((rounds % 64) == 0 && std::chrono::steady_clock::now() >= deadline) break; }
-                else if (i >= total_txns) break;
-                const auto& txn = trace.transactions()[i % total_txns];
-                const txnid_t tid = txn.txn_id +
-                    static_cast<txnid_t>(i / total_txns) * static_cast<txnid_t>(total_txns);
-                bool ok = true;
-                bool stop_after_txn = false;
-                std::vector<const Operation*> writes;
-                for (const Operation& op : txn.operations) {
-                    if (timed && std::chrono::steady_clock::now() >= deadline) { stop_after_txn = true; ok = false; break; }
-                    ++a.ops;
-                    if (op.kind == OperationKind::RangeRead) {
-                        ++a.ranges;
-                        const auto rows = index.scan_range(KeyRangeEnt::half_open(op.key, op.end_key));
-                        a.scanned += rows.size();
-                        a.found += rows.size();
-                        idx_key_t previous = op.key;
-                        std::vector<KeyRangeEnt> next_ranges;
-                        next_ranges.reserve(rows.size() + 2);
-                        // The lower-bound point covers an empty leading gap;
-                        // the following (prev,curr] intervals retain next-key semantics.
-                        next_ranges.push_back(KeyRangeEnt::point(op.key));
-                        for (const auto& row : rows) {
-                            if (timed && std::chrono::steady_clock::now() >= deadline) { stop_after_txn = true; ok = false; break; }
-                            const KeyRangeEnt interval = row.key == previous
-                                ? KeyRangeEnt::point(row.key)
-                                : right_closed(previous, row.key);
-                            next_ranges.push_back(interval);
-                            previous = row.key;
-                        }
-                        if (ok) {
-                            // Project tail guard: hi is a query endpoint,
-                            // NOT the index supremum described by Graefe2010.
-                            // It conservatively also covers insertion at hi.
-                            const KeyRangeEnt tail = (previous == op.end_key)
-                                ? KeyRangeEnt::point(previous)
-                                : right_closed(previous, op.end_key);
-                            next_ranges.push_back(tail);
-                            if (auto* batch = dynamic_cast<IRangeLockBatch*>(&locks)) {
-                                a.acquires += next_ranges.size();
-                                const RC rc = batch->lock_batch(tid, LockMode::S, next_ranges, LockKind::NextKey);
-                                if (rc == RCOK) a.held += next_ranges.size();
-                                else ok = record_lock_result(a, stopped, rc);
-                            } else {
-                                for (const auto& interval : next_ranges)
-                                    if (!acquire(tid, LockMode::S, interval)) { ok = false; break; }
-                            }
-                            if (ok) {
-                                // Recheck after installing locks so a writer
-                                // that committed in the scan-to-lock window
-                                // cannot create an undetected phantom.
-                                const auto verify = index.scan_range(KeyRangeEnt::half_open(op.key, op.end_key));
-                                a.rechecked += verify.size();
-                                if (verify.size() != rows.size()) ok = false;
-                                else for (size_t n = 0; n < rows.size(); ++n)
-                                    if (verify[n].key != rows[n].key) { ok = false; break; }
-                                // The candidate scan predates the locks. Values
-                                // belong to the validated scan under next-key locks.
-                                if (ok) for (const auto& row : verify)
-                                    a.checksum += row.key ^ *static_cast<uint64_t*>(row.value);
-                            }
-                        }
-                    } else if (op.kind == OperationKind::Read) {
-                        if (!acquire(tid, LockMode::S, KeyRangeEnt::point(op.key))) { ok = false; break; }
-                        ++a.reads;
-                        void* value = nullptr;
-                        if (index.lookup(op.key, value)) { ++a.found; a.checksum += op.key ^ *static_cast<uint64_t*>(value); }
-                    } else {
-                        if (!acquire(tid, LockMode::X, KeyRangeEnt::point(op.key))) { ok = false; break; }
-                        if (op.kind == OperationKind::Update) { ++a.updates; writes.push_back(&op); }
-                        else if (op.kind == OperationKind::Insert) { ++a.inserts; writes.push_back(&op); }
-                        else if (op.kind == OperationKind::Delete) { ++a.deletes; writes.push_back(&op); }
-                    }
-                    if (!ok) break;
-                }
-                finish_transaction(index, locks, tid, writes, ok, a, stopped);
-                if (stop_after_txn) break;
-            }
-        });
-    }
-    for (auto& worker : workers) worker.join();
-    return merge_parts(parts, begin);
+RunStats run_gap_lock(BTreeIndex& index,LockManager& locks,const WorkloadTrace& trace,size_t threads) {
+    return detail::run_classic_workload(index,locks,trace,threads,PolicyProtocol::Gap);
+}
+RunStats run_next_key_lock(BTreeIndex& index,IRangeLockManager& locks,const WorkloadTrace& trace,size_t threads) {
+    return detail::run_classic_workload(index,locks,trace,threads,PolicyProtocol::NextKey);
 }
 
 namespace {

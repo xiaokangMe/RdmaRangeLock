@@ -6,23 +6,31 @@
 
 | 负载/组 | 读 | 更新 | scan | insert | 请求分布 |
 |---|---:|---:|---:|---:|---|
-| YCSB-A | 50% | 50% | 0 | 0 | Zipf theta=0.99 |
-| YCSB-E | 0 | 0 | 95% | 5% | Zipf theta=0.99 |
+| YCSB-A | 50% | 50% | 0 | 0 | Zipf theta=0.4 |
+| YCSB-E | 0 | 0 | 95% | 5% | Zipf theta=0.4 |
 | E-skew uniform 对照 | 0 | 0 | 95% | 5% | uniform |
 | E-skew 80/20 | 0 | 0 | 95% | 5% | hotspot p=0.8、f=0.2 |
 | E-skew 80/10 | 0 | 0 | 95% | 5% | hotspot p=0.8、f=0.1 |
 | E-skew 90/20 | 0 | 0 | 95% | 5% | hotspot p=0.9、f=0.2 |
 | E-skew 90/10 | 0 | 0 | 95% | 5% | hotspot p=0.9、f=0.1 |
 
-所有组固定 32 线程、execution_mode=threads、coroutines=1、2^21 键、10 请求/事务、10 秒预热、10 秒测量、3 个种子。A 不包含 scan，矩阵运行时 range=0；E/E-skew 固定 range=32。基础配置中的 ranges=[32] 对 A 不展开扫描维度。
+所有组固定 32 线程、execution_mode=threads、coroutines=1、2^21 键、10 请求/事务、10 秒预热、10 秒测量、单次运行（种子 8）。A 不包含 scan，矩阵运行时 range=0；E/E-skew 固定 range=32。基础配置中的 ranges=[32] 对 A 不展开扫描维度。
 
 已补齐两个基线文件（同一目录 experiments/configs/ycsb_e_skew/）：
-- ycsb-a-zipf-0p99.json
-- ycsb-e-zipf-0p99.json
+- ycsb-a-zipf-0p4.json
+- ycsb-e-zipf-0p4.json
 
-两个基线加五个 E-skew，一共 7 组；本地 168 cases、RDMA 147 cases，总计 315 主 cases，门禁和容量预检另计。此为配置计数，不是已完成的实验。均匀组用于解释热点影响；不能声称 E 默认均匀。
+两个基线加五个 E-skew，一共 7 组；本地 133 cases、RDMA 126 cases，总计 259 主 cases，门禁和容量预检另计。此为配置计数，不是已完成的实验。均匀组用于解释热点影响；不能声称 E 默认均匀。
 
-若后续正式考察“Zipf 偏斜率”，A 与 E 使用同一组 theta 参数，建议五档 0、0.6、0.8、0.9、0.99（更完整的七档加 0.3、0.95）。这是第二阶段扩展，当前补齐的两个基线均固定 theta=0.99，未自动扩成多档或启动实验。
+若后续正式考察“Zipf 偏斜率”，A 与 E 使用同一组 theta 参数，按用户指定四档 0、0.4、0.7、0.9。这是第二阶段扩展，当前补齐的两个基线均固定 theta=0.4，未自动扩成多档或启动实验。
+
+## 本轮仅测六种不同协议，区间锁统一选 exact-range
+
+用户选择 exact-range。当前 predicate 与 exact-range 在统一事务执行器中采用相同的区间谓词保护：scan 取区间 S、写入取目标点 X，使用相同冲突机制；PolicyProtocol/LockKind 标签不同，不作为两个独立算法计数或解释性能差异。
+
+本轮配置仅保留 record-2pl、gap-lock、next-key、prior-key、hierarchical（bucket）、exact-range，本地另保留 none 基线。predicate 的本地/RDMA实现和既有正确性覆盖保留，历史配置/结果不删除不重标。
+
+三种等待策略全部展开：no-wait、wait-die、wound-wait；none 不重复三种策略，只执行一次。每项 case 只测一次，seed=8；这里的“重试次数”仍由事务冲突处理产生，不等于独立实验重复次数。
 
 ## E-skew 的五组分布配置
 
@@ -50,8 +58,8 @@
 | threads | [32] | 32 个线程 |
 | execution_mode / coroutines | threads / 1 | 普通线程路径，不启动协程 |
 | warmup_seconds / duration_seconds | 10 / 10 | 全并发预热、正式测量窗口 |
-| runs / seeds | 3 / [8,9,10] | 3 个固定随机种子 |
-| wait_policies | [no-wait] | 第一轮固定等待策略，避免和分布同时变化 |
+| runs / seeds | 1 / [8] | 每个 case 测一次 |
+| wait_policies | [no-wait,wait-die,wound-wait] | 每个负载/算法分别比较三种等待策略 |
 | hierarchy_layout / buckets | bucket / [64] | 固定层级桶几何，升降粒度关闭 |
 | coordination_backend | native-rdma-state | 原生单边远端状态、数据、锁路径 |
 | native_object_locks | 1 | RDMA record 使用原生对象锁 |
@@ -126,7 +134,7 @@ request_distribution 允许 auto、uniform、zipfian、hotspot。auto 对 E-skew
 - ycsb-e-skew-hot-ops-0p9-data-0p2.json
 - ycsb-e-skew-hot-ops-0p9-data-0p1.json
 
-每组本地 24 cases（7 种锁 + none，32 线程，3 seed）；RDMA 21 cases（7 种锁）。五组主矩阵共 225 cases，容量预检和正确性门禁另计。本次没有启动这些 cases。
+每组本地 19 cases（6 种锁×3 策略 + none 一次，32 线程，1 seed）；RDMA 18 cases（6 种锁×3 策略）。五组 E-skew 主矩阵共 185 cases，容量预检和正确性门禁另计。本次没有启动这些 cases。
 
 scripts/make_ycsb_e_skew_configs.py 只生成配置，不建链、不构建、不运行实验；默认固定 32 线程且关闭协程，不覆盖已有文件。示例：
 
@@ -134,15 +142,14 @@ scripts/make_ycsb_e_skew_configs.py 只生成配置，不建链、不构建、�
 python3 scripts/make_ycsb_e_skew_configs.py --out /tmp/ycsb-e-hotspot-plan
 ~~~
 
-如后续单独比较 Zipf，推荐 Q-Store Figure 6 的 7 档：
-0、0.3、0.6、0.8、0.9、0.95、0.99。
-精简 5 档可选 0、0.6、0.8、0.9、0.99。这是参数设计参考，不是复制 Q-Store 的分区和事务设置；它在分区内偏斜，分区选择均匀，本系统是整个键域采样。
+后续 A 与 E 单独比较 Zipf，按用户指定四档：0、0.4、0.7、0.9。
+Q-Store Figure 6 的七档仅作为文献背景，当前配置不采用其档位。这是参数设计参考，不是复制 Q-Store 的分区和事务设置；它在分区内偏斜，分区选择均匀，本系统是整个键域采样。
 
 ~~~sh
 python3 scripts/make_ycsb_e_skew_configs.py --distribution zipfian --out /tmp/ycsb-e-zipf-plan
 ~~~
 
-Zipf 与 hotspot 必须分开报告；theta=0.99 不等于“99% 请求访问 1% 数据”。第一轮不要同时扩大 scan 长度、等待策略、线程数、协程数或桶宽；以后再选代表分布补 8/32/128。
+Zipf 与 hotspot 必须分开报告；theta=0.99 不等于“99% 请求访问 1% 数据”。同一等待策略内比较分布，同一分布内比较等待策略；第一轮不同时扩大 scan 长度、线程数、协程数或桶宽；以后再选代表分布补 8/32/128。
 
 ## 实现与可追溯性
 
@@ -154,7 +161,7 @@ runner CSV 增加 trace_* 字段：theta、分布选择/实际分布、热点两
 
 ## 验证及未执行事项
 
-在用户最后要求“先给参数别跑”之前，已完成 build-shared 构建及完整 CTest **53/53 通过，无跳过**，包括：
+此前负载接入版本已完成 build-shared 构建及完整 CTest **53/53 通过，无跳过**，包括：
 - 新旧 E 在显式相同 Zipf 参数下 trace 相同；
 - hotspot 的 80/20、90/20、80/10、90/10 等分布频率与请求种类检查、合法端点和非法配置拒绝；
 - 固定 seed、同事务唯一 anchor、本地/远端初始数据一致；
@@ -162,8 +169,28 @@ runner CSV 增加 trace_* 字段：theta、分布选择/实际分布、热点两
 - 官方参数别名、本地矩阵执行/续跑/报告门禁；配置生成器固定 32 线程、普通线程路径。
 - 新 E-skew 小负载断言 execution_mode=threads、coroutines=1、coroutine_switches_total=0。
 
-日志：experiments/logs/classic-mgl-check-20261107-091739/ctest.log。
+日志：experiments/logs/classic-mgl-check-20261107-091739/ctest.log。该结果不覆盖本轮单次测量脚本改动，本轮未运行构建或 CTest。
 正确性回环不是 .66/.67 跨主机性能结果。**五组正式配置未运行、没有新性能数字**。最后“别跑”要求后仅整理文档/配置和提交，不再执行测试或负载。
+
+## 七种算法的插入路径（源码核对）
+
+七种协议均支持本地与原生 RDMA Insert；none 无锁对照也能写入。A 的默认 50/50 读更新不会主动生成 Insert；E/E-skew 才是本次插入路径的负载入口。
+
+| 算法 | 插入时的事务保护 |
+|---|---|
+| record-2PL | 插入目标 Record X；支持插入，但不保护范围扫描的 gap，因此不防幻读 |
+| gap-lock | InsertIntent + Record X，与已有 gap 抑制保护冲突 |
+| next-key | 用实际物理邻键确定 next-key 区间并取 X，锁后重新验证邻键 |
+| prior-key | 用实际物理邻键确定镜像 prior-key 区间并取 X，锁后重新验证邻键 |
+| 层级桶锁 | 祖先/桶 IX（混合 scan 的桶用 SIX）+ Record X；插入与桶 S 冲突 |
+| predicate | 插入目标 point X，与覆盖此点的扫描 Predicate S 冲突 |
+| exact-range | 插入目标 point X，与覆盖此点的扫描 ExactRange S 冲突 |
+
+写操作统一进入 src/txn/policy_workload.cpp 的 pending 集合，prepare 成功后 index.apply_batch(pending)。本地默认实现调用 BTreeIndex::insert；RDMA 使用 BTreeRdma::apply_batch，通过远端树/记录写入路径。不能把“有 Insert 分支”等同于全量持续新增压力已经验证。
+
+其他层级布局也有插入路径：真实 leaf 模式规划记录 X、叶/安全祖先 X 处理结构变化；DAG 写入取得所有父路径意向锁和共享 Record X。它们不是本轮固定 bucket 的额外算法组。显式 Deneva 兼容早释放模式是独立非 strict 例外，可能在分裂分支 Abort，本轮使用 strict，不混组。
+
+有限键域与预热的限制仍在：Insert 可能针对已存在键并覆盖；5% Insert 请求不等于 5% 真正新建记录。当前配置不能据此声称测量了持续键域增长、所有插入均引发新记录创建，或新键密集分裂路径的全部性能。本轮为源码检查，未新跑插入负载。
 
 ## 阅读依据
 
@@ -179,3 +206,9 @@ runner CSV 增加 trace_* 字段：theta、分布选择/实际分布、热点两
 - workloade：0e75eea21df10bc1304f25c8daa6e16c2bfbfcb83f9b5a4d794260f470cf7dd1
 - HotspotIntegerGenerator.java：9f230d5d22be0338ce0196751b57206d4bcd524f3fd96b110c4305a68eb5f6c2
 - CoreWorkload.java：b872f2c2e585e90d56cd9f08e050f26c18ee1d834c26f537793fa4df4258bbc1
+
+## 本轮修订与验证状态
+
+用户要求单次测量、三种等待策略、A/E 默认 theta=0.4，后续 theta=0/0.4/0.7/0.9，不启动实验。
+配置新增 repetition_policy=single-run；runner 与 report 只对显式该标记允许 runs=1，保留旧 repeated 默认 >=3 的门禁，保留 >=10 秒要求。单次报告不画运行间波动误差线，不宣称重复实验或置信区间。
+配置生成器同步默认值；A/E 基线文件名与 theta 一致。用户本次要求仅准备配置：不运行负载、构建或 CTest，仅做静态语法/配置核对；之前 53/53 结果不覆盖本轮脚本改动。

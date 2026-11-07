@@ -8,13 +8,13 @@ import math
 from pathlib import Path
 from run_shared_matrices import cases,validate_hotspot
 
-DEFAULT_THETAS=(0.,.3,.6,.8,.9,.95,.99)
+DEFAULT_THETAS=(0.,.4,.7,.9)
 
-def make_configs(base, thetas=None, threads=(32,), ranges=(32,), bucket=64, wait_policy="no-wait",
+def make_configs(base, thetas=None, threads=(32,), ranges=(32,), bucket=64, wait_policy=None,
                  distribution="hotspot", data_fractions=(.2,.1), opn_fractions=(.8,.9)):
     if not threads or not ranges or any(type(v) is not int or v<1 for v in (*threads,*ranges,bucket)):
         raise ValueError("threads, ranges and bucket must be positive integers")
-    if wait_policy not in ("no-wait","wait-die","wound-wait"):raise ValueError("invalid wait policy")
+    if wait_policy is not None and wait_policy not in ("no-wait","wait-die","wound-wait"):raise ValueError("invalid wait policy")
     if distribution=="zipfian":
         thetas=DEFAULT_THETAS if thetas is None else thetas
         if not thetas or any(isinstance(t,bool) or not isinstance(t,(int,float)) or not math.isfinite(t) or t<0 for t in thetas) or len(set(thetas))!=len(thetas):
@@ -35,13 +35,15 @@ def make_configs(base, thetas=None, threads=(32,), ranges=(32,), bucket=64, wait
         config=copy.deepcopy(base)
         config.update(name="ycsb-e-skew-"+tag,workloads=["ycsb-e-skew"],zipf=theta,
                       request_distribution=requested,hotspot_data_fraction=data,hotspot_opn_fraction=opn,
-                      threads=list(threads),ranges=list(ranges),buckets=[bucket],wait_policies=[wait_policy],
+                      threads=list(threads),ranges=list(ranges),buckets=[bucket],
+                      runs=1,seeds=[8],repetition_policy="single-run",
+                      wait_policies=[wait_policy] if wait_policy is not None else ["no-wait","wait-die","wound-wait"],
                       hierarchy_layout="bucket",hierarchy_behavior="strict",
                       hierarchy_escalation_threshold=0,hierarchy_deescalate_after=0,
                       coordination_backend="native-rdma-state",native_object_locks=1,ycsb_unique_keys=1,
                       execution_mode="threads",coroutines=1,
-                      local_ccs=["none","record-2pl","gap-lock","next-key","prior-key","hierarchical","predicate","exact-range"],
-                      rdma_ccs=["rdma-record-2pl","rdma-gap-lock","rdma-next-key","rdma-prior-key","rdma-hierarchical","rdma-predicate","rdma-exact-range"])
+                      local_ccs=["none","record-2pl","gap-lock","next-key","prior-key","hierarchical","exact-range"],
+                      rdma_ccs=["rdma-record-2pl","rdma-gap-lock","rdma-next-key","rdma-prior-key","rdma-hierarchical","rdma-exact-range"])
         config["expected_local_cases"]=len(list(cases(config,"local")))
         config["expected_cross_host_cases"]=len(list(cases(config,"cross-host")))
         result.append(config)
@@ -59,7 +61,7 @@ def main():
     parser.add_argument("--threads",nargs="+",type=int,default=[32])
     parser.add_argument("--ranges",nargs="+",type=int,default=[32])
     parser.add_argument("--bucket",type=int,default=64)
-    parser.add_argument("--wait-policy",choices=["no-wait","wait-die","wound-wait"],default="no-wait")
+    parser.add_argument("--wait-policy",choices=["no-wait","wait-die","wound-wait"],default=None,help="optional single-policy override; default: all three")
     args=parser.parse_args()
     configs=make_configs(json.loads(args.base.read_text()),args.thetas,args.threads,args.ranges,args.bucket,args.wait_policy,
                          args.distribution,args.hotspot_data_fractions,args.hotspot_opn_fractions)

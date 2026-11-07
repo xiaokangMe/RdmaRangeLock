@@ -4,11 +4,9 @@
   "transactions": 5000,
   "keys": 2097152,
   "operations": 10,
-  "runs": 3,
+  "runs": 1,
   "seeds": [
-    8,
-    9,
-    10
+    8
   ],
   "threads": [
     32
@@ -31,7 +29,6 @@
     "next-key",
     "prior-key",
     "hierarchical",
-    "predicate",
     "exact-range"
   ],
   "rdma_ccs": [
@@ -40,15 +37,16 @@
     "rdma-next-key",
     "rdma-prior-key",
     "rdma-hierarchical",
-    "rdma-predicate",
     "rdma-exact-range"
   ],
   "wait_policies": [
-    "no-wait"
+    "no-wait",
+    "wait-die",
+    "wound-wait"
   ],
   "max_attempts": 1000,
-  "expected_local_cases": 24,
-  "expected_cross_host_cases": 21,
+  "expected_local_cases": 19,
+  "expected_cross_host_cases": 18,
   "profile": 0,
   "slot_lookup": "linear",
   "rdma_connections": "auto",
@@ -77,5 +75,6 @@
   "hotspot_opn_fraction": 0.8,
   "hierarchy_behavior": "strict",
   "hierarchy_escalation_threshold": 0,
-  "hierarchy_deescalate_after": 0
+  "hierarchy_deescalate_after": 0,
+  "repetition_policy": "single-run"
 }

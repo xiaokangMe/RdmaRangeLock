@@ -181,3 +181,16 @@ for layout,params in (("bucket",dict(hierarchy_escalation_threshold=2,hierarchy_
     try:validate_hierarchy_runtime(bad,cfg)
     except ValueError:pass
     else:raise AssertionError("runtime mismatch accepted")
+
+# Repetition policy is explicit; single runs cannot masquerade as repeated runs.
+from run_shared_matrices import validate_measurement_plan
+validate_measurement_plan(dict(runs=1,duration_seconds=10,repetition_policy="single-run"))
+validate_measurement_plan(dict(runs=3,duration_seconds=10))
+for invalid in (dict(runs=1,duration_seconds=10),
+                dict(runs=2,duration_seconds=10,repetition_policy="single-run"),
+                dict(runs=1,duration_seconds=9,repetition_policy="single-run"),
+                dict(runs=3,duration_seconds=10,repetition_policy="unknown"),
+                dict(runs=True,duration_seconds=10,repetition_policy="single-run")):
+    try:validate_measurement_plan(invalid)
+    except ValueError:pass
+    else:raise AssertionError("invalid repetition policy accepted")

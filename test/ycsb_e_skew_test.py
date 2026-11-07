@@ -62,7 +62,11 @@ with tempfile.TemporaryDirectory(prefix="rrl-e-skew-") as directory:
     assert len({config_fingerprint(c) for c in configs})==5
     for c in configs:
         assert c["workloads"]==["ycsb-e-skew"] and c["keys"]==2097152
-        assert c["expected_local_cases"]==24 and c["expected_cross_host_cases"]==21
+        assert c["expected_local_cases"]==19 and c["expected_cross_host_cases"]==18
+        assert "predicate" not in c["local_ccs"] and "rdma-predicate" not in c["rdma_ccs"]
+        assert "exact-range" in c["local_ccs"] and "rdma-exact-range" in c["rdma_ccs"]
+        assert c["runs"]==1 and c["seeds"]==[8] and c["repetition_policy"]=="single-run"
+        assert c["wait_policies"]==["no-wait","wait-die","wound-wait"]
         assert c["threads"]==[32] and c["execution_mode"]=="threads" and c["coroutines"]==1
         assert {point[1] for point in cases(c,"local")}=={32}
     for thetas in ([0,0],[-1],[float("nan")],[float("inf")]):

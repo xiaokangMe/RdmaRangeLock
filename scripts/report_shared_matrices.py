@@ -6,7 +6,7 @@ import csv
 import json
 from pathlib import Path
 import statistics
-from run_shared_matrices import cases, ERRORS, validate_row, config_fingerprint, hierarchy_layout, hierarchy_behavior, validate_slot_geometry, validate_workload_parameters, key_distribution
+from run_shared_matrices import cases, ERRORS, validate_row, config_fingerprint, hierarchy_layout, hierarchy_behavior, validate_slot_geometry, validate_workload_parameters, key_distribution, validate_measurement_plan
 
 
 def load_campaign(path, allow_smoke=False):
@@ -16,8 +16,7 @@ def load_campaign(path, allow_smoke=False):
     if not formal and not (allow_smoke and state.get("kind")=="smoke-not-formal"):
         raise ValueError("requires new shared-data formal results; --allow-smoke is only for report validation")
     if state.get("failed_cases") or state.get("error"):raise ValueError("campaign contains failures")
-    if formal and (state["config"]["runs"]<3 or state["config"]["duration_seconds"]<10):
-        raise ValueError("formal report requires >=3 repetitions and >=10 seconds")
+    if formal:validate_measurement_plan(state["config"])
     groups=collections.defaultdict(list)
     for mode,path in state["result_files"].items():
         expected={(w,length,cc,b,t,run+1,state["config"]["seeds"][run],policy if cc!="none" else "none")
@@ -74,7 +73,7 @@ def main():
     summary=[]
     for key,rows in sorted(groups.items()):
         mode,w,length,cc,b,t,policy=key
-        entry=dict(request_distribution=key_distribution(w,state["config"]) if w.startswith("ycsb-") else "not-applicable",
+        entry=dict(repetition_policy=state["config"].get("repetition_policy","repeated"),request_distribution=key_distribution(w,state["config"]) if w.startswith("ycsb-") else "not-applicable",
                    hotspot_data_fraction=state["config"].get("hotspot_data_fraction",.2),
                    hotspot_opn_fraction=state["config"].get("hotspot_opn_fraction",.8),zipf=state["config"]["zipf"],hierarchy_behavior=hierarchy_behavior(state["config"],cc),hierarchy_layout=hierarchy_layout(state["config"],cc),mode=mode,workload=w,range=length,cc=cc,bucket=b,threads=t,wait_policy=policy,repetitions=len(rows))
         metrics={"throughput":[float(r["throughput_committed_txn_s"]) for r in rows],
@@ -109,12 +108,13 @@ def main():
                 label=cc+" / "+hierarchy_behavior(state["config"],cc)+" ["+hierarchy_layout(state["config"],cc)+"]"+(" b="+str(b) if b else "")+" / "+policy
                 x=[p["threads"] for p in points];y=[p[metric+"_mean"] for p in points]
                 error=[[p[metric+"_mean"]-p[metric+"_min"] for p in points],[p[metric+"_max"]-p[metric+"_mean"] for p in points]]
-                ax.errorbar(x,y,yerr=error,marker="o",capsize=3,label=label)
+                ax.errorbar(x,y,yerr=error if any(p["repetitions"]>1 for p in points) else None,marker="o",capsize=3,label=label)
             ax.set_xlabel("Worker threads");ax.set_ylabel(ylabel);ax.grid(alpha=.25)
         axes[0,0].legend(fontsize=7)
         distribution=key_distribution(w,state["config"]) if w.startswith("ycsb-") else "not-applicable"
         suffix=(" / hot-data="+str(state["config"].get("hotspot_data_fraction",.2))+" / hot-ops="+str(state["config"].get("hotspot_opn_fraction",.8))) if distribution=="hotspot" else " / theta="+str(state["config"]["zipf"])
         title=mode+" / "+w+" / range="+str(length)+" / "+distribution+suffix
+        if state["config"].get("repetition_policy")=="single-run":title="SINGLE RUN - NO REPEAT VARIATION | "+title
         if state["kind"]!="formal-shared-data":title="SMOKE VALIDATION - NOT FORMAL PERFORMANCE | "+title
         fig.suptitle(title,fontsize=11)
         name=mode+"-"+w+"-range"+str(length)+".png";fig.savefig(out/name,dpi=150);plt.close(fig);figures.append(name)
@@ -122,7 +122,7 @@ def main():
           "源码提交：`"+state["source_commit"]+"`；输入：`"+str(Path(args.campaign).resolve())+"`。",
           "请求分布按配置 request_distribution 解析（auto 对 E-skew 为 hotspot）；theta="+str(state["config"]["zipf"])+"，hotspot 数据比例="+str(state["config"].get("hotspot_data_fraction",.2))+"，hotspot 请求比例="+str(state["config"].get("hotspot_opn_fraction",.8))+"。参数记录于 summary.csv；不同分布/比例不能合并为重复。E 扫描是固定键宽、末尾截断。",
           "本地与跨主机分组绘图；跨主机必须读取共享远端索引和记录，禁止混入旧锁服务结果。", "",
-          "折线为各次重复的均值，误差线为最小/最大。p99 面板是各次已完成逻辑事务 p99 的均值，不是合并直方图后的总体 p99；无提交样本的点省略，未完成比例和无进展重复保留在 summary.csv。新运行时 none 基线同样经过预热与统一测量驱动，具有完成延迟但没有事务锁等待。旧基线无延迟样本。",
+          ("每项配置只测一次：不估计运行间波动，不画重复误差线，不提供运行间置信区间。" if state["config"].get("repetition_policy")=="single-run" else "折线为各次重复的均值，误差线为最小/最大。")+"p99 面板是各次已完成逻辑事务 p99 的均值，不是合并直方图后的总体 p99；无提交样本的点省略，未完成比例和无进展重复保留在 summary.csv。新运行时 none 基线同样经过预热与统一测量驱动，具有完成延迟但没有事务锁等待。旧基线无延迟样本。",
           "原始阻塞、重试、attempt 中止率和未完成比例在原始 CSV；summary.csv 汇总吞吐、等待/启动逻辑事务、重试/启动逻辑事务和已完成逻辑事务的 p99。", "",
           "共享索引的已存在记录更新使用共享结构 latch 和记录短 latch；结构变化仍串行。真实叶模式还持事务级 topology S/X 屏障，插入/删除不能并发；协调后端："+state["config"].get("coordination_backend","tcp-control+rdma-slots")+"；每 worker 协程数："+str(state["config"].get("coroutines",1))+"；预热秒数："+str(state["config"].get("warmup_seconds",0))+"。原生模式的 TCP 用于建链交换 QP/MR 属性、连接存活及故障/断连通知；不承担逐事务或逐锁授权。事务状态、数据和锁槽均为单边 RDMA。此结果不能直接支持与 Sherman/ROLEX 的公平端到端排名。", ""]
     for name in figures:text += ["!["+name+"]("+name+")",""]

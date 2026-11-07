@@ -236,6 +236,19 @@ def write_matrix_rows(rows, outpath, temp):
         writer.writeheader();writer.writerows(rows)
     Path(temp).replace(outpath)
 
+def validate_measurement_plan(config):
+    """Single-run campaigns need an explicit opt-in; historical defaults stay repeated."""
+    policy=config.get("repetition_policy","repeated")
+    runs=config["runs"];seconds=config["duration_seconds"]
+    if type(runs) is not int or type(seconds) is not int or seconds<10:
+        raise ValueError("measurement requires integer runs and >=10 seconds")
+    if policy=="single-run":
+        if runs!=1:raise ValueError("single-run requires exactly one repetition")
+    elif policy=="repeated":
+        if runs<3:raise ValueError("repeated formal matrices require >=3 repetitions")
+    else:raise ValueError("unknown repetition_policy")
+
+
 def config_fingerprint(config):
     """All resolved parameters matter when appending to an existing campaign."""
     return hashlib.sha256(json.dumps(config,sort_keys=True,separators=(",",":")).encode()).hexdigest()
@@ -390,8 +403,8 @@ def main():
                           operations=min(config["operations"], 4), threads=[1, 4], ranges=[8], buckets=[16], order=16)
     elif args.no_build:
         raise SystemExit("formal runs must build from the recorded committed source")
-    elif config["duration_seconds"] < 10 or config["runs"] < 3:
-        raise SystemExit("formal matrices require >=10 seconds and >=3 repetitions; use --smoke for validation")
+    else:
+        validate_measurement_plan(config)
     if max(config["threads"])*config["coroutines"]>4096:
         raise SystemExit("active execution contexts exceed runtime/state capacity")
     if str(config["rdma_connections"])!="auto" and (not str(config["rdma_connections"]).isdigit() or int(config["rdma_connections"])<1):

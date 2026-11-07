@@ -156,6 +156,10 @@ YCSB 请求数遵循 Deneva 的可配置模型，默认 `REQ_PER_QUERY=10` 对�
 
 两百万 key 配置：`experiments/configs/deneva_scale_2m.json` 用于单 case，`formal_native_deneva_2m_10s.json` 用于完整维度（尚未自动运行正式矩阵）。两者均配置 2,097,152 key 域、10 请求、10 秒预热与 10 秒测量，并同步增大数据页/记录容量。`deneva_scale_2m_boundary.json` 是小维度验证配置，执行 `python3 scripts/run_shared_matrices.py --config experiments/configs/deneva_scale_2m_boundary.json --mode both --smoke --keep-geometry --validation-seconds 10`，结果仍为非正式。规模、元数据 gate 与真实叶节点锁的区别见 [源码核查](docs/notes/deneva-gate-scale-warmup-2026-11-04.md)。
 
+历史候选配置 `experiments/configs/formal_native_record_gap_2m_10s.json` 保留 record/gap 接入时的参数，不是本轮正式矩阵入口。当前 `native_object_locks=1` 时 record-2PL 使用 `ObjectLockManager` 的远端对象锁；gap-lock 使用 `RemoteLockManager` 的远端区间槽，两者的数据访问均走共享 B+ 树单边 RDMA 路径。bucket 层级不能与真实 leaf 层级结果混组。
+
+本轮 A/E/E-skew 配置位于 `experiments/configs/ycsb_e_skew/`，固定 32 线程、`execution_mode=threads`、`coroutines=1`、单次运行、10 秒预热和测量。七组配置共本地 175、跨主机 168 个主 case，正确性及容量预检另计；未启动本轮正式实验。旧配置的保留用途和正式门禁说明见 [配置整理记录](docs/notes/formal-config-gates-2026-11-07.md)。
+
 ## 真实叶层级锁（单独标识的候选实现）
 
 `--hierarchy-layout leaf` 对实际 B+ 树叶页加 IS/IX/S/X，再对实际记录资源加 S/X；叶 ID 来自本地页身份或远端页偏移，不是 `key / bucket_width`。旧布局用 `--hierarchy-layout bucket`。两种布局的配置、CSV、续跑与报告校验隔离，不复用旧数据。

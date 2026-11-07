@@ -65,13 +65,15 @@ un_gap_lock() 在 v3 的记录锁外增加开区间 Gap S 锁和边界 Gap S 锁
 
 ## RDMA 接入
 
-`RemoteLockManager` 实现同一 `IRangeLockManager` 接口，远程锁表放在 `RemoteLockRegion` 注册内存中。`rrl_rdma_lock_server` 提供 RC QP 服务，`rrl_workload_runner --cc rdma-next-key` 和 `--cc rdma-hierarchical` 分别接入 v5/v6。当前版本使用一个 RDMA CAS gate 串行化槽表扫描与更新，作为正确性基线；后续再按 bucket 分片优化。
+RDMA 的 `rdma-record-2pl` 与 `rdma-gap-lock` 复用统一策略驱动及共享 B+ 树 RDMA 数据后端。当前 `native_object_locks=1` 的 record-2PL 使用 `ObjectLockManager` 的远端对象锁；gap-lock 使用 `RemoteLockManager` 的远端区间槽。gap-lock 扫描保护 gap 和返回记录，插入使用 InsertIntent + Record X，与已有 gap 抑制保护冲突；不能把两者都描述成区间槽路径。
+
+`RemoteLockManager` 实现同一 `IRangeLockManager` 接口，远程区间锁表放在 `RemoteLockRegion` 注册内存中，`rrl_rdma_lock_server` 提供 RC QP 服务。`rdma-next-key` 和 bucket 布局的 `rdma-hierarchical` 也使用该区间锁路径；对象锁路径的服务按对象区域初始化。事务状态由 `rrl_rdma_txn_server` 的注册内存提供，客户端通过 RDMA 执行锁与事务状态操作。不能再用早期“全局单 gate 正确性基线”概括当前全部路径。
 
 
 ## 可切换等待策略与 Predicate（2026-11-03）
 
 `--wait-policy no-wait|wait-die|wound-wait` 显式进入新统一事务驱动 `src/txn/policy_workload.cpp`。`TransactionCoordinator` 负责逻辑年龄、等待、wound 与提交许可；`IRangeLockManager` 仍负责物理锁。默认旧命令维持 NO_WAIT。新模式三策略都须走同一协调路径比较；不能将旧 NO_WAIT 数据作为其直接对照。
 
-本地使用进程内 CV；RDMA 使用 `rrl_wait_coordinator` TCP 控制面 + 原 RDMA 物理槽表，每轮专用服务器、单一协调器，不允许混入旧客户端。活跃 holder 断线会 poison 协调器并拒绝后续授权，需要结束失败 run 并重启本轮独立服务。
+本节记录 2026-11-03 的初始实现。当前正式候选采用 `coordination_backend=native-rdma-state`，不启动逐事务授权的 `rrl_wait_coordinator`，锁与事务状态走 RDMA。`tcp-control+rdma-slots` 是保留的兼容路径：每轮专用服务，活跃 holder 断线会 poison 协调器并拒绝后续授权，需要结束失败 run 并重启，不能与 native 结果混组。
 
 `--cc predicate|rdma-predicate` 在扫描前获取完整半开区间 S，点写/插入/删除取 Predicate X，保护空结果区间。这是单键区间谓词。两套延迟、重试、超时和使用命令详见 [实现记录](../../docs/notes/wait-policies-and-latency-2026-11-03.md)。

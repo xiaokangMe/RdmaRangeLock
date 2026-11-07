@@ -1,0 +1,66 @@
+{
+  "name": "cross-host-bucket-t32-zipf000",
+  "duration_seconds": 10,
+  "transactions": 5000,
+  "keys": 2097152,
+  "operations": 10,
+  "runs": 1,
+  "seeds": [
+    8
+  ],
+  "threads": [
+    32
+  ],
+  "workloads": [
+    "ycsb-a",
+    "ycsb-e"
+  ],
+  "ranges": [
+    8,
+    32,
+    128
+  ],
+  "buckets": [
+    16,
+    64,
+    256
+  ],
+  "zipf": 0.0,
+  "tpcc_items": 5,
+  "local_ccs": [
+    "none"
+  ],
+  "rdma_ccs": [
+    "rdma-hierarchical",
+    "rdma-predicate",
+    "rdma-exact-range"
+  ],
+  "wait_policies": [
+    "no-wait",
+    "wait-die",
+    "wound-wait"
+  ],
+  "max_attempts": 1000,
+  "expected_local_cases": 0,
+  "expected_cross_host_cases": 60,
+  "profile": 0,
+  "slot_lookup": "linear",
+  "rdma_connections": "auto",
+  "local_gate": 1,
+  "gate_retry": 64,
+  "gid_index": 3,
+  "server_roce": "10.0.0.3",
+  "client_roce": "10.0.0.4",
+  "order": 128,
+  "tree_pages": 131072,
+  "tree_records": 4194304,
+  "wait_timeout_ms": 5000,
+  "tree_latch_timeout_ms": 10000,
+  "lock_budget": 65536,
+  "coordination_backend": "native-rdma-state",
+  "coroutines": 4,
+  "coroutine_stack_bytes": 262144,
+  "warmup_seconds": 10,
+  "ycsb_unique_keys": 1,
+  "hierarchy_layout": "bucket"
+}

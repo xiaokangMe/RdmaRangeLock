@@ -7,6 +7,7 @@ import hashlib
 import io
 import itertools
 import json
+import math
 import os
 from pathlib import Path
 import shlex
@@ -68,9 +69,65 @@ def validate_slot_geometry(row, config, shared):
         raise ValueError("range lock capacity differs from campaign configuration")
 
 
+
+def key_distribution(workload, config):
+    requested=config.get("request_distribution","auto")
+    if requested not in ("auto","uniform","zipfian","hotspot"):raise ValueError("invalid request distribution")
+    if requested=="hotspot" or requested=="auto" and workload=="ycsb-e-skew":return "hotspot"
+    if requested=="uniform":return "uniform"
+    return "ordered-zipf" if config["zipf"]>0 else "uniform"
+
+
+def validate_hotspot(config):
+    for key,default in (("hotspot_data_fraction",.2),("hotspot_opn_fraction",.8)):
+        value=config.get(key,default)
+        if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or not 0<=value<=1:
+            raise ValueError(key+" must be finite and in [0,1]")
+
+
+def validate_workload_parameters(row, config=None, seed=None, length=None):
+    """Check runner-observed trace geometry; historical E rows remain historical."""
+    fields=("zipf_theta","key_count","transaction_count","operations_per_transaction",
+            "range_length","seed","ycsb_unique_keys","key_distribution","scan_semantics",
+            "request_distribution","hotspot_data_fraction","hotspot_opn_fraction")
+    if not any("trace_"+k in row for k in fields):
+        if row.get("workload")=="ycsb-e-skew":
+            raise ValueError("YCSB-E-skew result lacks trace parameters")
+        return
+    if any("trace_"+k not in row for k in fields):raise ValueError("incomplete trace parameters")
+    theta=float(row["trace_zipf_theta"])
+    if not math.isfinite(theta) or theta<0:raise ValueError("invalid observed theta")
+    observed=dict(zipf=theta,request_distribution=row["trace_request_distribution"],
+                  hotspot_data_fraction=float(row["trace_hotspot_data_fraction"]),
+                  hotspot_opn_fraction=float(row["trace_hotspot_opn_fraction"]))
+    validate_hotspot(observed)
+    is_e=row["workload"] in ("ycsb-e","ycsb-e-skew")
+    is_ycsb=row["workload"] in ("ycsb-a","ycsb-b") or is_e
+    distribution=key_distribution(row["workload"],observed) if is_ycsb else "not-applicable"
+    if row["trace_key_distribution"]!=distribution or row["trace_scan_semantics"]!=("fixed-key-width-clipped" if is_e else "not-applicable"):
+        raise ValueError("unexpected trace distribution/scan semantics")
+    for k in ("key_count","transaction_count","operations_per_transaction"):
+        if int(row["trace_"+k])<=0:raise ValueError("invalid trace size: "+k)
+    if int(row["trace_ycsb_unique_keys"]) not in (0,1) or int(row["trace_seed"])<0 or int(row["trace_range_length"])<int(is_e):
+        raise ValueError("invalid trace keys/seed/range")
+    if seed is None and "seed" in row:seed=int(row["seed"])
+    if length is None and "range" in row:length=int(row["range"])
+    if seed is not None and int(row["trace_seed"])!=seed:raise ValueError("trace seed mismatch")
+    if length is not None and int(row["trace_range_length"])!=length:raise ValueError("trace scan width mismatch")
+    if config is not None:
+        if theta!=config["zipf"]:raise ValueError("trace theta differs from campaign")
+        for key,default in (("request_distribution","auto"),("hotspot_data_fraction",.2),("hotspot_opn_fraction",.8)):
+            if observed[key]!=config.get(key,default):raise ValueError("trace distribution differs from campaign: "+key)
+        for observed_key,key,default in (("key_count","keys",None),("transaction_count","transactions",None),
+                                     ("operations_per_transaction","operations",None),("ycsb_unique_keys","ycsb_unique_keys",1)):
+            if int(row["trace_"+observed_key])!=config.get(key,default):
+                raise ValueError("trace geometry differs from campaign: "+key)
+
+
+
 def cases(config, mode):
     for workload in config["workloads"]:
-        for length in config["ranges"] if workload == "ycsb-e" else [0]:
+        for length in config["ranges"] if workload in ("ycsb-e","ycsb-e-skew") else [0]:
             for cc in config["rdma_ccs"] if mode == "cross-host" else config["local_ccs"]:
                 for bucket in hierarchy_buckets(config, cc):
                     for threads, run, policy in itertools.product(config["threads"], range(config["runs"]), config["wait_policies"]):
@@ -84,6 +141,7 @@ def validate_row(output, seconds, shared, expected_coordination=None, expected_l
     if len(rows) != 1 or len(reader.fieldnames) != len(set(reader.fieldnames)) or None in rows[0] or None in rows[0].values():
         raise RuntimeError("invalid runner CSV schema")
     row = rows[0]
+    validate_workload_parameters(row)
     layout=row.get("hierarchy_layout", "bucket" if row.get("cc") in ("hierarchical","rdma-hierarchical") else "none")
     behavior=row.get("hierarchy_behavior","strict")
     isolation=row.get("isolation_semantics","strict-2pl")
@@ -187,6 +245,7 @@ def validate_resume_rows(rows, config, commit, kind, mode):
     expected_backend=config["coordination_backend"] if mode=="cross-host" else "native-local-state"
     expected_fingerprint=config_fingerprint(config)
     for row in rows:
+        validate_workload_parameters(row,config)
         validate_slot_geometry(row,config,mode=="cross-host")
         validate_hierarchy_runtime(row,dict(config,hierarchy_layout=hierarchy_layout(config,row["cc"])))
         if row.get("hierarchy_behavior","strict")!=hierarchy_behavior(config,row["cc"]):
@@ -222,6 +281,9 @@ def config_from_environment():
                 coroutines=number("COROUTINES","1"),coroutine_stack_bytes=number("COROUTINE_STACK_BYTES","262144"),
                 warmup_seconds=number("WARMUP_SECONDS","10"),duration_seconds=number("DURATION", "10"), runs=runs, seeds=list(range(8, 8+runs)),
                 keys=number("KEYS", "10000"), transactions=number("TRANSACTIONS", "5000"),
+                request_distribution=os.environ.get("RRL_REQUEST_DISTRIBUTION","auto"),
+                hotspot_data_fraction=float(os.environ.get("RRL_HOTSPOT_DATA_FRACTION","0.2")),
+                hotspot_opn_fraction=float(os.environ.get("RRL_HOTSPOT_OPN_FRACTION","0.8")),
                 operations=number("OPERATIONS", "10"), ycsb_unique_keys=number("YCSB_UNIQUE_KEYS","1"), zipf=float(os.environ.get("RRL_ZIPF", "0.99")),
                 tpcc_items=number("TPCC_ITEMS", "5"), threads=ls("THREADS", "1,2,4,8,16,32", int),
                 workloads=ls("WORKLOADS", "ycsb-a,ycsb-e,tpcc-payment,tpcc-new-order"),
@@ -297,6 +359,10 @@ def main():
         raise SystemExit("runtime geometry bounds")
     if config["coordination_backend"]=="tcp-control+rdma-slots" and config["coroutines"]!=1:
         raise SystemExit("TCP compatibility path requires one coroutine per worker")
+    config.setdefault("request_distribution","auto")
+    config.setdefault("hotspot_data_fraction",.2);config.setdefault("hotspot_opn_fraction",.8)
+    validate_hotspot(config)
+    for workload in config["workloads"]:key_distribution(workload,config)
     config.setdefault("ycsb_unique_keys",1)
     if type(config["ycsb_unique_keys"]) is not int or config["ycsb_unique_keys"] not in (0,1):
         raise SystemExit("ycsb_unique_keys must be 0 or 1")
@@ -334,6 +400,12 @@ def main():
         raise SystemExit("one distinct seed per repetition is required")
     if set(config["wait_policies"]) - {"no-wait", "wait-die", "wound-wait"}: raise SystemExit("invalid wait policy")
     if not config["wait_policies"] or not config["workloads"] or not config["threads"] or not config["ranges"] or not config["buckets"]: raise SystemExit("empty dimensions")
+    if set(config["workloads"]) - {"ycsb-a","ycsb-b","ycsb-e","ycsb-e-skew","tpcc-payment","tpcc-new-order"}:
+        raise SystemExit("invalid workload")
+    if isinstance(config["zipf"],bool) or not isinstance(config["zipf"],(int,float)) or not math.isfinite(config["zipf"]) or config["zipf"]<0:
+        raise SystemExit("zipf must be finite and nonnegative")
+    if any(w in ("ycsb-e","ycsb-e-skew") for w in config["workloads"]) and any(type(n) is not int or n<1 for n in config["ranges"]):
+        raise SystemExit("YCSB-E scan widths must be positive integers")
     if set(config["local_ccs"]) - {"none", "record-2pl", "gap-lock", "next-key", "prior-key", "hierarchical", "predicate", "exact-range"}: raise SystemExit("invalid local protocols")
     if args.mode in ("local","both") and not config["local_ccs"]:raise SystemExit("empty local protocols")
     if args.mode in ("cross-host","both") and not config["rdma_ccs"]:raise SystemExit("empty RDMA protocols")
@@ -399,6 +471,8 @@ def main():
         cfg = dict(workload=workload, index="rdma", cc=cc, key_count=config["keys"],
                    transaction_count=config["transactions"], operations_per_transaction=config["operations"],
                    ycsb_unique_keys=config["ycsb_unique_keys"],
+                   request_distribution=config["request_distribution"],hotspot_data_fraction=config["hotspot_data_fraction"],
+                   hotspot_opn_fraction=config["hotspot_opn_fraction"],
                    range_length=length,hierarchy_bucket_width=bucket if bucket else 64, threads=threads, seed=config["seeds"][run], zipf=config["zipf"],
                    tpcc_items_per_order=config["tpcc_items"], order=config["order"],
                    tree_pages=config["tree_pages"], tree_records=config["tree_records"],
@@ -422,6 +496,9 @@ def main():
                  "--txns", str(config["transactions"]), "--ops", str(config["operations"]),
                  "--ycsb-unique-keys",str(config["ycsb_unique_keys"]),"--range", str(length),
                  "--threads", str(threads), "--seed", str(cfg["seed"]), "--zipf", str(config["zipf"]),
+                 "--request-distribution",config["request_distribution"],
+                 "--hotspot-data-fraction",str(config["hotspot_data_fraction"]),
+                 "--hotspot-opn-fraction",str(config["hotspot_opn_fraction"]),
                  "--items", str(config["tpcc_items"]), "--order", str(config["order"]),
                  "--duration", str(duration), "--format", "csv",
                  "--execution-mode",config["execution_mode"],
@@ -448,6 +525,7 @@ def main():
         row = validate_row(output, duration, mode == "cross-host", config["coordination_backend"] if mode=="cross-host" else None,layout,behavior,cfg["native_object_locks"])
         validate_slot_geometry(row,config,mode=="cross-host")
         validate_hierarchy_runtime(row,cfg)
+        validate_workload_parameters(row,config,cfg["seed"],length)
         if cc=="none":row["wait_policy"]="none"
         return dict(source_commit=commit, result_kind=kind, transport="rdma-cross-host-shared" if mode=="cross-host" else "local-no-rdma",
                     execution_stack_bytes=config["coroutine_stack_bytes"], ycsb_unique_keys=config["ycsb_unique_keys"],
@@ -482,7 +560,8 @@ def main():
             for cc in config["rdma_ccs"]:
                 for bucket in hierarchy_buckets(config,cc):
                     for run,policy in itertools.product(range(config["runs"]),config["wait_policies"]):
-                        preflight.append(("ycsb-e",max(config["ranges"]),cc,bucket,max(config["threads"]),run,policy))
+                        scan_workload="ycsb-e-skew" if "ycsb-e-skew" in config["workloads"] else "ycsb-e"
+                        preflight.append((scan_workload,max(config["ranges"]),cc,bucket,max(config["threads"]),run,policy))
             state["preflight_expected"]=len(preflight)
             for i,point in enumerate(preflight):
                 row=execute("cross-host",point,"preflight-"+str(i),duration=args.validation_seconds if args.smoke else 10)

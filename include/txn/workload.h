@@ -12,7 +12,11 @@
 
 namespace rrl {
 
-enum class WorkloadKind : std::uint8_t { YcsbA, YcsbB, YcsbE, TpccPayment, TpccNewOrder };
+// Append new kinds: preserve values used by existing workload configurations.
+enum class WorkloadKind : std::uint8_t { YcsbA, YcsbB, YcsbE, TpccPayment, TpccNewOrder, YcsbESkew };
+constexpr bool is_ycsb_e(WorkloadKind kind) {
+    return kind == WorkloadKind::YcsbE || kind == WorkloadKind::YcsbESkew;
+}
 enum class OperationKind : std::uint8_t { Read, Update, Insert, Delete, RangeRead };
 
 struct WorkloadConfig {
@@ -33,6 +37,10 @@ struct WorkloadConfig {
     bool hierarchy_diagnostics{false};
     size_t tpcc_items_per_order{5};
     double zipf_theta{0.99};
+    // auto preserves legacy Zipf/uniform selection; E-skew defaults to hotspot.
+    std::string request_distribution{"auto"};
+    double hotspot_data_fraction{0.2};
+    double hotspot_opn_fraction{0.8};
     uint64_t seed{7};
 };
 
@@ -45,6 +53,7 @@ public:
     const std::vector<TransactionTrace>& transactions() const { return transactions_; }
     size_t max_key() const { return max_key_; }
     const WorkloadConfig& config() const { return config_; }
+    static const char* key_distribution(const WorkloadConfig&);
     static WorkloadKind parse_kind(const std::string&);
     static const char* name(WorkloadKind);
 private:

@@ -13,6 +13,7 @@
 #include <fstream>
 #include <initializer_list>
 #include <iostream>
+#include <iomanip>
 #include <set>
 #include <stdexcept>
 #include <arpa/inet.h>
@@ -29,7 +30,8 @@ namespace {
 // swept as well and follow the point-write case, not the middle value.
 std::size_t auto_bucket_width(WorkloadKind kind) {
     switch (kind) {
-        case WorkloadKind::YcsbE: return 256;
+        case WorkloadKind::YcsbE:
+        case WorkloadKind::YcsbESkew: return 256;
         case WorkloadKind::YcsbA:
         case WorkloadKind::YcsbB:
         case WorkloadKind::TpccPayment:
@@ -75,7 +77,8 @@ void load_config(const std::string& path, WorkloadConfig& config,
         {"coroutines", &policy.coroutines}, {"coroutine_stack_bytes", &policy.coroutine_stack_bytes},
         {"warmup_seconds", &policy.warmup_seconds}, {"tree_latch_timeout_ms", &tree_timeout}, {"seed", &config.seed}, {"order", &order}, {"rdma_connections", &connections}};
     std::set<std::size_t*> assigned;
-    bool zipf_seen = false, port_seen = false;
+    bool zipf_seen = false, port_seen = false, distribution_seen = false;
+    std::set<std::string> hotspot_seen;
     for (const auto& entry : values) {
         const auto& key = entry.first;
         const auto& value = entry.second;
@@ -155,6 +158,15 @@ void load_config(const std::string& path, WorkloadConfig& config,
             const auto enabled = parse_unsigned(value.text, key);
             if (enabled > 1) throw std::invalid_argument("hierarchy_diagnostics must be 0 or 1");
             config.hierarchy_diagnostics = enabled != 0;
+        } else if (key == "request_distribution" || key == "requestdistribution") {
+            if (distribution_seen || value.kind!=ConfigScalar::String) throw std::invalid_argument("invalid/duplicate request_distribution");
+            distribution_seen=true;config.request_distribution=value.text;
+        } else if (key == "hotspot_data_fraction" || key == "hotspotdatafraction" ||
+                   key == "hotspot_opn_fraction" || key == "hotspotopnfraction") {
+            const bool data=key=="hotspot_data_fraction" || key=="hotspotdatafraction";
+            if (value.kind!=ConfigScalar::Number || !hotspot_seen.insert(data?"data":"opn").second)
+                throw std::invalid_argument("invalid/duplicate hotspot fraction");
+            (data?config.hotspot_data_fraction:config.hotspot_opn_fraction)=parse_real(value.text,key);
         } else if (key == "zipf" || key == "zipf_theta") {
             if (zipf_seen || value.kind != ConfigScalar::Number) throw std::invalid_argument("invalid/duplicate zipf");
             zipf_seen = true; config.zipf_theta = parse_real(value.text, key);
@@ -306,6 +318,9 @@ int run(int argc, char** argv) {
         else if (option == "--duration") config.duration_seconds = parse_unsigned(value, option);
         else if (option == "--seed") config.seed = parse_unsigned(value, option);
         else if (option == "--zipf") config.zipf_theta = parse_real(value, option);
+        else if (option == "--request-distribution") config.request_distribution=value;
+        else if (option == "--hotspot-data-fraction") config.hotspot_data_fraction=parse_real(value,option);
+        else if (option == "--hotspot-opn-fraction") config.hotspot_opn_fraction=parse_real(value,option);
         else if (option == "--items") config.tpcc_items_per_order = parse_unsigned(value, option);
         else if (option == "--order") order = parse_unsigned(value, option);
         else if (option == "--format") {
@@ -363,7 +378,7 @@ int run(int argc, char** argv) {
     } else if(policy.hierarchy_index_paths!=2 || policy.hierarchy_read_path)
         throw std::invalid_argument("index paths/read path require DAG layout");
     if (!config.key_count || !config.transaction_count || !config.operations_per_transaction ||
-        !config.threads || (config.kind == WorkloadKind::YcsbE && !config.range_length) || !config.hierarchy_bucket_width ||
+        !config.threads || (is_ycsb_e(config.kind) && !config.range_length) || !config.hierarchy_bucket_width ||
         !config.tpcc_items_per_order || order < 3 || config.zipf_theta < 0)
         throw std::invalid_argument("sizes/threads/bucket/items must be positive, order >= 3, zipf >= 0");
     if (index_name == "v1" && config.threads != 1)
@@ -535,6 +550,7 @@ int run(int argc, char** argv) {
         std::cout << ",data_backend,data_rdma_operations,data_read_bytes,data_write_bytes,data_latch_wait_ns,coroutines,active_contexts,warmup_seconds,warmup_committed,warmup_aborted,warmup_elapsed_ns,coroutine_switches_total,state_rdma_operations,hierarchy_layout,native_object_locks,hierarchy_behavior,isolation_semantics,deneva_early_inserts,deneva_early_unlocks,deneva_split_aborts,deneva_partial_write_aborts,execution_mode";
         std::cout << ",hierarchy_index_paths,hierarchy_read_path";
         std::cout << ",hierarchy_escalation_threshold,hierarchy_deescalate_after,escalation_attempts,escalations,escalation_failures,deescalation_attempts,deescalations,deescalation_failures";
+        std::cout << ",trace_zipf_theta,trace_key_count,trace_transaction_count,trace_operations_per_transaction,trace_range_length,trace_seed,trace_ycsb_unique_keys,trace_key_distribution,trace_scan_semantics,trace_request_distribution,trace_hotspot_data_fraction,trace_hotspot_opn_fraction";
         std::cout << ",rdma_lock_slots_per_shard";
         for(std::size_t shard=0;shard<kRemoteLockShards;++shard)
             std::cout << ",rdma_lock_slot_peak_" << shard << ",rdma_lock_capacity_required_" << shard;
@@ -595,6 +611,13 @@ int run(int argc, char** argv) {
         std::cout << ',' << policy.hierarchy_escalation_threshold << ',' << policy.hierarchy_deescalate_after
             << ',' << stats.policy.escalation_attempts << ',' << stats.policy.escalations << ',' << stats.policy.escalation_failures
             << ',' << stats.policy.deescalation_attempts << ',' << stats.policy.deescalations << ',' << stats.policy.deescalation_failures;
+        const bool ycsb = config.kind == WorkloadKind::YcsbA || config.kind == WorkloadKind::YcsbB || is_ycsb_e(config.kind);
+        std::cout << ',' << std::setprecision(17) << config.zipf_theta << ',' << config.key_count
+                  << ',' << config.transaction_count << ',' << config.operations_per_transaction
+                  << ',' << config.range_length << ',' << config.seed << ',' << config.ycsb_unique_keys
+                  << ',' << (ycsb?WorkloadTrace::key_distribution(config):"not-applicable")
+                  << ',' << (is_ycsb_e(config.kind)?"fixed-key-width-clipped":"not-applicable")
+                  << ',' << config.request_distribution << ',' << config.hotspot_data_fraction << ',' << config.hotspot_opn_fraction;
         std::cout << ',' << rdma_diag.slots_per_shard;
         for(std::size_t shard=0;shard<kRemoteLockShards;++shard)
             std::cout << ',' << rdma_diag.slot_peaks[shard] << ',' << rdma_diag.capacity_required[shard];
@@ -607,6 +630,12 @@ int run(int argc, char** argv) {
                   << ",hierarchy_behavior=" << (policy.deneva_insert_behavior?"deneva":"strict")
                   << ",isolation_semantics=" << (policy.deneva_insert_behavior?"deneva-early-release":"strict-2pl") << "\n";
         std::cout << "workload=" << WorkloadTrace::name(config.kind)
+                  << ",request_distribution=" << WorkloadTrace::key_distribution(config)
+                  << ",hotspot_data_fraction=" << config.hotspot_data_fraction << ",hotspot_opn_fraction=" << config.hotspot_opn_fraction
+                  << ",zipf_theta=" << std::setprecision(17) << config.zipf_theta
+                  << ",keys=" << config.key_count << ",trace_txns=" << config.transaction_count
+                  << ",ops_per_txn=" << config.operations_per_transaction << ",range=" << config.range_length
+                  << ",seed=" << config.seed << ",ycsb_unique_keys=" << config.ycsb_unique_keys
                   << ",index=" << index_name << ",cc=" << cc
                   << ",threads=" << config.threads
                   << ",transactions=" << stats.transactions

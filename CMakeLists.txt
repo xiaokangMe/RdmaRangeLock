@@ -327,3 +327,6 @@ add_test(NAME rrl_dag_hierarchy_test COMMAND rrl_dag_hierarchy_test)
 set_tests_properties(rrl_dag_hierarchy_test PROPERTIES TIMEOUT 30)
 add_test(NAME rrl_dag_rdma_test COMMAND ${RRL_PYTHON3} ${CMAKE_SOURCE_DIR}/test/dag_rdma_test.py $<TARGET_FILE:rrl_workload_runner>)
 set_tests_properties(rrl_dag_rdma_test PROPERTIES SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 180)
+
+add_test(NAME rrl_ycsb_e_skew_test COMMAND ${RRL_PYTHON3} ${CMAKE_SOURCE_DIR}/test/ycsb_e_skew_test.py $<TARGET_FILE:rrl_workload_runner>)
+set_tests_properties(rrl_ycsb_e_skew_test PROPERTIES SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 180)

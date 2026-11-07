@@ -50,7 +50,8 @@ print("Matrix dimensions, backend identity, hard errors, count conservation and 
 # absent from a runner CSV (keys/ops/zipf) and the new runtime settings.
 runtime=dict(config,coordination_backend="native-rdma-state",coroutines=4,
              coroutine_stack_bytes=65536,warmup_seconds=1)
-saved=dict(row,source_commit="baseline",result_kind="smoke-not-formal",
+legacy_row={k:v for k,v in row.items() if not k.startswith("trace_")}
+saved=dict(legacy_row,source_commit="baseline",result_kind="smoke-not-formal",
            coordination="native-local-state",coroutines="4",warmup_seconds="1",execution_stack_bytes="65536",
            campaign_config_sha256=config_fingerprint(runtime),range="0",bucket="0",seed="8")
 validate_resume_rows([saved],runtime,"baseline","smoke-not-formal","local")
@@ -84,7 +85,7 @@ with tempfile.TemporaryDirectory() as directory:
     small=dict(runtime,duration_seconds=0,runs=1,seeds=[8],threads=[2],workloads=["ycsb-a"],
                local_ccs=["next-key"],ranges=[8],buckets=[16],wait_policies=["wait-die"],
                coroutines=1,coroutine_stack_bytes=262144,warmup_seconds=0)
-    report_row=dict(row,source_commit="baseline",result_kind="smoke-not-formal",
+    report_row=dict(legacy_row,source_commit="baseline",result_kind="smoke-not-formal",
                     transport="local-no-rdma",run="1",seed="8",range="0",bucket="0",
                     campaign_config_sha256=config_fingerprint(small))
     data=d/"rows.csv";data.write_text(text(report_row))
@@ -98,7 +99,7 @@ with tempfile.TemporaryDirectory() as directory:
 print("Report configuration signature: OK")
 
 with tempfile.TemporaryDirectory() as directory:
-    cfg=dict(config,name="resume-integration",local_ccs=["none"],threads=[1],workloads=["ycsb-a"],
+    cfg=dict(config,name="resume-integration",local_ccs=["none"],threads=[1],workloads=["ycsb-e-skew"],
              warmup_seconds=0,coroutines=1,execution_mode="threads",coordination_backend="native-rdma-state",
              keys=16,transactions=16,operations=2)
     path=Path(directory)/"config.json";path.write_text(json.dumps(cfg))

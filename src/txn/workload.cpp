@@ -39,7 +39,16 @@ struct Zipf {
 
 idx_key_t key(std::mt19937_64& g, const WorkloadConfig& c, const Zipf& z) {
     if (!c.key_count) return 0;
-    return c.zipf_theta > 0 ? z.get(g)
+    const std::string distribution=WorkloadTrace::key_distribution(c);
+    if (distribution=="hotspot") {
+        // YCSB HotspotIntegerGenerator: choose hot/cold set, then sample
+        // uniformly inside it. No key hashing: the hot interval is [0, hot).
+        const auto hot=static_cast<idx_key_t>(static_cast<long double>(c.key_count)*c.hotspot_data_fraction);
+        const bool hit=std::bernoulli_distribution(c.hotspot_opn_fraction)(g);
+        return hit ? std::uniform_int_distribution<idx_key_t>(0,hot-1)(g)
+                   : std::uniform_int_distribution<idx_key_t>(hot,c.key_count-1)(g);
+    }
+    return distribution=="ordered-zipf" ? z.get(g)
                             : std::uniform_int_distribution<idx_key_t>(0, c.key_count - 1)(g);
 }
 
@@ -63,12 +72,12 @@ void ycsb(TransactionTrace& t, const WorkloadConfig& c, std::mt19937_64& g, cons
         }
         Operation o;
         o.value = (uint64_t(n) << 32) | i;
-        if (c.kind == WorkloadKind::YcsbE && !ins(g)) {
+        if (is_ycsb_e(c.kind) && !ins(g)) {
             o.kind = OperationKind::RangeRead;
             o.key = k;
             o.end_key = std::min<idx_key_t>(c.key_count, k + c.range_length);
             mx = std::max(mx, size_t(o.end_key));
-        } else if (c.kind == WorkloadKind::YcsbE) {
+        } else if (is_ycsb_e(c.kind)) {
             o.kind = OperationKind::Insert;
             // Historical repeated-key fixtures retain their exact generator.
             o.key = c.ycsb_unique_keys ? k : (c.key_count == 0 ? 0 : std::min<idx_key_t>(
@@ -190,12 +199,24 @@ RunStats merge_parts(const std::vector<LocalAcc>& parts,
 
 }  // namespace
 
+const char* WorkloadTrace::key_distribution(const WorkloadConfig& c) {
+    if (c.request_distribution=="auto") {
+        if (c.kind==WorkloadKind::YcsbESkew) return "hotspot";
+        return c.zipf_theta>0 ? "ordered-zipf" : "uniform";
+    }
+    if (c.request_distribution=="hotspot") return "hotspot";
+    if (c.request_distribution=="uniform") return "uniform";
+    if (c.request_distribution=="zipfian") return c.zipf_theta>0 ? "ordered-zipf" : "uniform";
+    throw std::invalid_argument("request distribution must be auto, uniform, zipfian or hotspot");
+}
+
 WorkloadKind WorkloadTrace::parse_kind(const std::string& in) {
     std::string v;
     for (char x : in) v += char(std::tolower((unsigned char)x));
     if (v == "a" || v == "ycsb-a") return WorkloadKind::YcsbA;
     if (v == "b" || v == "ycsb-b") return WorkloadKind::YcsbB;
     if (v == "e" || v == "ycsb-e") return WorkloadKind::YcsbE;
+    if (v == "e-skew" || v == "ycsb-e-skew") return WorkloadKind::YcsbESkew;
     if (v == "payment" || v == "tpcc-payment") return WorkloadKind::TpccPayment;
     if (v == "new-order" || v == "tpcc-new-order") return WorkloadKind::TpccNewOrder;
     throw std::invalid_argument("unknown workload: " + in);
@@ -206,6 +227,7 @@ const char* WorkloadTrace::name(WorkloadKind k) {
         case WorkloadKind::YcsbA: return "ycsb-a";
         case WorkloadKind::YcsbB: return "ycsb-b";
         case WorkloadKind::YcsbE: return "ycsb-e";
+        case WorkloadKind::YcsbESkew: return "ycsb-e-skew";
         case WorkloadKind::TpccPayment: return "tpcc-payment";
         case WorkloadKind::TpccNewOrder: return "tpcc-new-order";
     }
@@ -213,13 +235,31 @@ const char* WorkloadTrace::name(WorkloadKind k) {
 }
 
 WorkloadTrace WorkloadTrace::generate(const WorkloadConfig& c) {
-    const bool ycsb_kind = c.kind == WorkloadKind::YcsbA || c.kind == WorkloadKind::YcsbB || c.kind == WorkloadKind::YcsbE;
+    const bool ycsb_kind = c.kind == WorkloadKind::YcsbA || c.kind == WorkloadKind::YcsbB || is_ycsb_e(c.kind);
     if (ycsb_kind && c.ycsb_unique_keys && (!c.key_count || c.operations_per_transaction > c.key_count))
         throw std::invalid_argument("YCSB unique requests must not exceed key_count");
+    if (!std::isfinite(c.zipf_theta) || c.zipf_theta < 0)
+        throw std::invalid_argument("zipf theta must be finite and nonnegative");
+    if (is_ycsb_e(c.kind) && (!c.range_length ||
+        c.key_count > std::numeric_limits<idx_key_t>::max() - c.range_length))
+        throw std::invalid_argument("YCSB-E scan width must be positive and key/range must not overflow");
+    const std::string distribution=key_distribution(c);
+    if (!std::isfinite(c.hotspot_data_fraction) || c.hotspot_data_fraction<0 || c.hotspot_data_fraction>1 ||
+        !std::isfinite(c.hotspot_opn_fraction) || c.hotspot_opn_fraction<0 || c.hotspot_opn_fraction>1)
+        throw std::invalid_argument("hotspot fractions must be finite and in [0,1]");
+    if (ycsb_kind && distribution=="hotspot") {
+        const auto hot=static_cast<size_t>(static_cast<long double>(c.key_count)*c.hotspot_data_fraction);
+        const auto cold=c.key_count-hot;
+        if ((!hot && c.hotspot_opn_fraction>0) || (!cold && c.hotspot_opn_fraction<1))
+            throw std::invalid_argument("hotspot selects an empty key set");
+        const auto available=c.hotspot_opn_fraction==1 ? hot : c.hotspot_opn_fraction==0 ? cold : c.key_count;
+        if (c.ycsb_unique_keys && c.operations_per_transaction>available)
+            throw std::invalid_argument("hotspot active set cannot supply unique request count");
+    }
     WorkloadTrace t;
     t.config_ = c;
     std::mt19937_64 g(c.seed);
-    Zipf z(c.key_count, c.zipf_theta);
+    Zipf z(distribution=="ordered-zipf" ? c.key_count : 0, c.zipf_theta);
     t.transactions_.reserve(c.transaction_count);
     for (size_t i = 0; i < c.transaction_count; i++) {
         TransactionTrace x;

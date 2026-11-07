@@ -6,7 +6,7 @@ import csv
 import json
 from pathlib import Path
 import statistics
-from run_shared_matrices import cases, ERRORS, validate_row, config_fingerprint, hierarchy_layout, hierarchy_behavior, validate_slot_geometry
+from run_shared_matrices import cases, ERRORS, validate_row, config_fingerprint, hierarchy_layout, hierarchy_behavior, validate_slot_geometry, validate_workload_parameters, key_distribution
 
 
 def load_campaign(path, allow_smoke=False):
@@ -35,6 +35,7 @@ def load_campaign(path, allow_smoke=False):
                          hierarchy_layout(state["config"],row["cc"]),hierarchy_behavior(state["config"],row["cc"]),
                          (state["config"].get("native_object_locks",1) if mode=="cross-host" and row["cc"]=="rdma-record-2pl" else 0))
             validate_slot_geometry(row,state["config"],mode=="cross-host")
+            validate_workload_parameters(row,state["config"])
             if int(row.get("coroutines",1))!=state["config"].get("coroutines",1) or int(row.get("warmup_seconds",0))!=state["config"].get("warmup_seconds",0) or int(row.get("execution_stack_bytes",262144))!=state["config"].get("coroutine_stack_bytes",262144):
                 raise ValueError("mixed runtime geometry/warmup")
             if state["config"].get("warmup_seconds",0) and int(row.get("warmup_elapsed_ns",0))<state["config"]["warmup_seconds"]*1000000000:
@@ -73,7 +74,9 @@ def main():
     summary=[]
     for key,rows in sorted(groups.items()):
         mode,w,length,cc,b,t,policy=key
-        entry=dict(hierarchy_behavior=hierarchy_behavior(state["config"],cc),hierarchy_layout=hierarchy_layout(state["config"],cc),mode=mode,workload=w,range=length,cc=cc,bucket=b,threads=t,wait_policy=policy,repetitions=len(rows))
+        entry=dict(request_distribution=key_distribution(w,state["config"]) if w.startswith("ycsb-") else "not-applicable",
+                   hotspot_data_fraction=state["config"].get("hotspot_data_fraction",.2),
+                   hotspot_opn_fraction=state["config"].get("hotspot_opn_fraction",.8),zipf=state["config"]["zipf"],hierarchy_behavior=hierarchy_behavior(state["config"],cc),hierarchy_layout=hierarchy_layout(state["config"],cc),mode=mode,workload=w,range=length,cc=cc,bucket=b,threads=t,wait_policy=policy,repetitions=len(rows))
         metrics={"throughput":[float(r["throughput_committed_txn_s"]) for r in rows],
                  "abort_pct":[100*int(r["aborted"])/max(1,int(r["transactions"])) for r in rows],
                  "unfinished_pct":[100*int(r.get("logical_unfinished") or 0)/max(1,int(r.get("logical_started") or 0)) for r in rows],
@@ -109,12 +112,15 @@ def main():
                 ax.errorbar(x,y,yerr=error,marker="o",capsize=3,label=label)
             ax.set_xlabel("Worker threads");ax.set_ylabel(ylabel);ax.grid(alpha=.25)
         axes[0,0].legend(fontsize=7)
-        title=mode+" / "+w+" / range="+str(length)
+        distribution=key_distribution(w,state["config"]) if w.startswith("ycsb-") else "not-applicable"
+        suffix=(" / hot-data="+str(state["config"].get("hotspot_data_fraction",.2))+" / hot-ops="+str(state["config"].get("hotspot_opn_fraction",.8))) if distribution=="hotspot" else " / theta="+str(state["config"]["zipf"])
+        title=mode+" / "+w+" / range="+str(length)+" / "+distribution+suffix
         if state["kind"]!="formal-shared-data":title="SMOKE VALIDATION - NOT FORMAL PERFORMANCE | "+title
         fig.suptitle(title,fontsize=11)
         name=mode+"-"+w+"-range"+str(length)+".png";fig.savefig(out/name,dpi=150);plt.close(fig);figures.append(name)
     text=["# "+("共享数据正式矩阵报告" if state["kind"]=="formal-shared-data" else "运行与绘图入口验证（非正式性能结果）"),"",
           "源码提交：`"+state["source_commit"]+"`；输入：`"+str(Path(args.campaign).resolve())+"`。",
+          "请求分布按配置 request_distribution 解析（auto 对 E-skew 为 hotspot）；theta="+str(state["config"]["zipf"])+"，hotspot 数据比例="+str(state["config"].get("hotspot_data_fraction",.2))+"，hotspot 请求比例="+str(state["config"].get("hotspot_opn_fraction",.8))+"。参数记录于 summary.csv；不同分布/比例不能合并为重复。E 扫描是固定键宽、末尾截断。",
           "本地与跨主机分组绘图；跨主机必须读取共享远端索引和记录，禁止混入旧锁服务结果。", "",
           "折线为各次重复的均值，误差线为最小/最大。p99 面板是各次已完成逻辑事务 p99 的均值，不是合并直方图后的总体 p99；无提交样本的点省略，未完成比例和无进展重复保留在 summary.csv。新运行时 none 基线同样经过预热与统一测量驱动，具有完成延迟但没有事务锁等待。旧基线无延迟样本。",
           "原始阻塞、重试、attempt 中止率和未完成比例在原始 CSV；summary.csv 汇总吞吐、等待/启动逻辑事务、重试/启动逻辑事务和已完成逻辑事务的 p99。", "",

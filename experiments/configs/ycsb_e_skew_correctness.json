@@ -1,0 +1,23 @@
+{
+  "name": "ycsb-e-skew-correctness-not-performance",
+  "workload": "ycsb-e-skew",
+  "cc": "next-key",
+  "key_count": 128,
+  "transaction_count": 24,
+  "operations_per_transaction": 2,
+  "range_length": 8,
+  "threads": 2,
+  "seed": 8,
+  "zipf": 0.9,
+  "order": 8,
+  "tree_pages": 256,
+  "tree_records": 512,
+  "warmup_seconds": 0,
+  "coroutines": 1,
+  "execution_mode": "threads",
+  "lock_budget": 256,
+  "rdma_lock_slots_per_shard": 32768,
+  "request_distribution": "hotspot",
+  "hotspot_data_fraction": 0.2,
+  "hotspot_opn_fraction": 0.8
+}

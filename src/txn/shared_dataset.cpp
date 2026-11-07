@@ -43,7 +43,8 @@ void load_shared_dataset_config(const std::string& path,WorkloadConfig& c,RdmaTr
         "coordinator_port","txn_state_port","execution_mode","coroutines","coroutine_stack_bytes","warmup_seconds","wait_policy","wait_timeout_ms","max_attempts","lock_budget","latency",
         "hierarchy_index_paths","hierarchy_read_path","hierarchy_escalation_threshold","hierarchy_deescalate_after","latency_histogram","hierarchy_diagnostics","hierarchy_layout","hierarchy_behavior","native_object_locks","rdma_lock_slots_per_shard"};
     std::set<std::size_t*> assigned;
-    bool zipf=false;
+    bool zipf=false,distribution=false;
+    std::set<std::string> hotspot_seen;
     for(const auto& e:entries) {
         auto found=numbers.find(e.first);
         if(found!=numbers.end()) {
@@ -57,6 +58,15 @@ void load_shared_dataset_config(const std::string& path,WorkloadConfig& c,RdmaTr
         } else if(e.first=="workload") {
             if(e.second.kind!=ConfigScalar::String)throw std::invalid_argument("workload must be string");
             c.kind=WorkloadTrace::parse_kind(e.second.text);
+        } else if(e.first=="request_distribution" || e.first=="requestdistribution") {
+            if(distribution || e.second.kind!=ConfigScalar::String)throw std::invalid_argument("invalid/duplicate request_distribution");
+            distribution=true;c.request_distribution=e.second.text;
+        } else if(e.first=="hotspot_data_fraction" || e.first=="hotspotdatafraction" ||
+                  e.first=="hotspot_opn_fraction" || e.first=="hotspotopnfraction") {
+            const bool data=e.first=="hotspot_data_fraction" || e.first=="hotspotdatafraction";
+            if(e.second.kind!=ConfigScalar::Number || !hotspot_seen.insert(data?"data":"opn").second)
+                throw std::invalid_argument("invalid/duplicate hotspot fraction");
+            (data?c.hotspot_data_fraction:c.hotspot_opn_fraction)=parse_real(e.second.text,e.first);
         } else if(e.first=="zipf" || e.first=="zipf_theta") {
             if(zipf || e.second.kind!=ConfigScalar::Number)throw std::invalid_argument("invalid/duplicate zipf");
             zipf=true;c.zipf_theta=parse_real(e.second.text,e.first);
@@ -68,7 +78,7 @@ void load_shared_dataset_config(const std::string& path,WorkloadConfig& c,RdmaTr
     }
     if(!c.key_count || !c.transaction_count || !c.operations_per_transaction || !c.tpcc_items_per_order ||
        !t.latch_timeout_ms || t.latch_timeout_ms>600000 || c.zipf_theta<0 ||
-       c.key_count>UINT64_MAX-c.range_length)throw std::invalid_argument("invalid dataset sizes");
+       (is_ycsb_e(c.kind) && !c.range_length) || c.key_count>UINT64_MAX-c.range_length)throw std::invalid_argument("invalid dataset sizes");
     if((c.kind==WorkloadKind::TpccPayment || c.kind==WorkloadKind::TpccNewOrder) &&
        (c.key_count>(UINT64_MAX-2030000)/30000 || c.key_count>(UINT64_MAX-4000000)/c.key_count))
         throw std::invalid_argument("TPC-C seed key overflow");

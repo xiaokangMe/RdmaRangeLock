@@ -20,6 +20,8 @@ struct PolicyRunConfig {
     std::uint16_t coordinator_port{0};
     // Deneva-style passive transaction table; zero keeps the compatibility path.
     std::uint16_t txn_state_port{0};
+    // False runs work directly on OS threads, without scheduler/stacks.
+    bool use_coroutines{true};
     std::size_t coroutines{1}, coroutine_stack_bytes{262144}, warmup_seconds{0};
     // Called after all warm-up attempts drain, before measured workers resume.
     std::function<void()> measurement_begin;

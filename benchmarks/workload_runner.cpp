@@ -86,6 +86,10 @@ void load_config(const std::string& path, WorkloadConfig& config,
                 value.kind == ConfigScalar::String && value.text == "auto") { bucket_auto = true; continue; }
             if (value.kind != ConfigScalar::Number) throw std::invalid_argument(key + ": expected number");
             *number->second = parse_unsigned(value.text, key);
+        } else if (key == "execution_mode") {
+            if(value.kind!=ConfigScalar::String || (value.text!="threads" && value.text!="coroutines"))
+                throw std::invalid_argument("execution_mode must be threads or coroutines");
+            policy.use_coroutines=value.text=="coroutines";measured=true;
         } else if (key == "data_port") {
             if(value.kind!=ConfigScalar::Number)throw std::invalid_argument("data_port expected number");
             const auto n=parse_unsigned(value.text,key);
@@ -209,6 +213,10 @@ int run(int argc, char** argv) {
         else if (option == "--lock-budget") { policy.lock_budget = parse_unsigned(value,option); measured = true; }
         else if (option == "--max-attempts") { policy.max_attempts = parse_unsigned(value,option); measured = true; }
         else if (option == "--wait-timeout-ms") { policy.wait_timeout_ms = parse_unsigned(value,option); measured = true; }
+        else if (option == "--execution-mode") {
+            if(value!="threads" && value!="coroutines")throw std::invalid_argument("execution-mode must be threads or coroutines");
+            policy.use_coroutines=value=="coroutines";measured=true;
+        }
         else if (option == "--coroutines") {policy.coroutines=parse_unsigned(value,option);measured=true;}
         else if (option == "--coroutine-stack-bytes") {policy.coroutine_stack_bytes=parse_unsigned(value,option);measured=true;}
         else if (option == "--warmup") {policy.warmup_seconds=parse_unsigned(value,option);measured=true;}
@@ -288,6 +296,8 @@ int run(int argc, char** argv) {
     if(!policy.coroutines || policy.coroutines>4096 || config.threads>4096/policy.coroutines ||
        policy.coroutine_stack_bytes<65536 || policy.coroutine_stack_bytes>16777216 || policy.warmup_seconds>600000)
         throw std::invalid_argument("runtime geometry bounds");
+    if(!policy.use_coroutines && policy.coroutines!=1)
+        throw std::invalid_argument("threads execution requires --coroutines 1");
     if(policy.txn_state_port && (cc.rfind("rdma-",0)!=0 || policy.coordinator_port))
         throw std::invalid_argument("native RDMA state requires rdma protocol and excludes TCP coordinator");
     if(policy.coroutines>1 && policy.coordinator_port)
@@ -470,7 +480,7 @@ int run(int argc, char** argv) {
         if (measured) std::cout << ",metrics_schema,wait_policy,coordination,logical_started,logical_unfinished,logical_failed,retries,max_retries,wound_aborts,deadline_aborts,retry_exhausted,completed_retries,unfinished_retries";
         if (measured) for (const char* name : {"successful_attempt","logical_completion","lock_wait","lock_call","release"})
             for (const char* field : {"count","total_ns","p50_ns","p95_ns","p99_ns","p999_ns","max_ns"}) std::cout << "," << name << "_" << field;
-        std::cout << ",data_backend,data_rdma_operations,data_read_bytes,data_write_bytes,data_latch_wait_ns,coroutines,active_contexts,warmup_seconds,warmup_committed,warmup_aborted,warmup_elapsed_ns,coroutine_switches_total,state_rdma_operations,hierarchy_layout,native_object_locks,hierarchy_behavior,isolation_semantics,deneva_early_inserts,deneva_early_unlocks,deneva_split_aborts,deneva_partial_write_aborts\n";
+        std::cout << ",data_backend,data_rdma_operations,data_read_bytes,data_write_bytes,data_latch_wait_ns,coroutines,active_contexts,warmup_seconds,warmup_committed,warmup_aborted,warmup_elapsed_ns,coroutine_switches_total,state_rdma_operations,hierarchy_layout,native_object_locks,hierarchy_behavior,isolation_semantics,deneva_early_inserts,deneva_early_unlocks,deneva_split_aborts,deneva_partial_write_aborts,execution_mode\n";
         std::cout << WorkloadTrace::name(config.kind) << ',' << index_name << ',' << cc << ',' << config.threads << ','
                   << stats.transactions << ',' << stats.committed << ',' << stats.aborted << ',' << stats.operations << ','
                   << stats.reads << ',' << stats.updates << ',' << stats.inserts << ',' << stats.deletes << ','
@@ -521,8 +531,10 @@ int run(int argc, char** argv) {
                   << ',' << (policy.native_object_locks?1:0)
                   << ',' << (policy.deneva_insert_behavior?"deneva":"strict") << ',' << (policy.deneva_insert_behavior?"deneva-early-release":"strict-2pl")
                   << ',' << stats.policy.deneva_early_inserts << ',' << stats.policy.deneva_early_unlocks
-                  << ',' << stats.policy.deneva_split_aborts << ',' << stats.policy.deneva_partial_write_aborts << '\n';
+                  << ',' << stats.policy.deneva_split_aborts << ',' << stats.policy.deneva_partial_write_aborts
+                  << ',' << (measured?(policy.use_coroutines?"coroutines":"threads"):"threads") << '\n';
     } else {
+        std::cout << "execution_mode=" << (measured?(policy.use_coroutines?"coroutines":"threads"):"threads") << "\n";
         std::cout << "data_backend=" << (index_name=="rdma"?"shared-rdma":"local")
                   << ",data_rdma_operations=" << data_ops << ",data_read_bytes=" << data_reads
                   << ",data_write_bytes=" << data_writes << ",data_latch_wait_ns=" << data_wait

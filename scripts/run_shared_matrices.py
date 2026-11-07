@@ -135,6 +135,8 @@ def validate_resume_rows(rows, config, commit, kind, mode):
             raise ValueError("resume source/kind differs from this campaign")
         if row.get("coordination")!=expected_backend or int(row.get("coroutines",1))!=config["coroutines"] or int(row.get("warmup_seconds",0))!=config["warmup_seconds"] or int(row.get("execution_stack_bytes",262144))!=config["coroutine_stack_bytes"]:
             raise ValueError("resume runtime/backend differs from this campaign")
+        if row.get("execution_mode","coroutines")!=config.get("execution_mode","coroutines"):
+            raise ValueError("resume execution mode differs from this campaign")
         expected_objects=1 if mode=="cross-host" and row.get("cc")=="rdma-record-2pl" and config.get("native_object_locks",1) else 0
         if int(row.get("native_object_locks",0))!=expected_objects:
             raise ValueError("resume native object-lock backend differs from this campaign")
@@ -154,6 +156,7 @@ def config_from_environment():
     def number(name, default): return int(os.environ.get("RRL_" + name, default))
     runs = number("RUNS", "3")
     return dict(hierarchy_behavior=os.environ.get("RRL_HIERARCHY_BEHAVIOR","strict"),hierarchy_layout=os.environ.get("RRL_HIERARCHY_LAYOUT","bucket"),coordination_backend=os.environ.get("RRL_COORDINATION_BACKEND","native-rdma-state"),
+                execution_mode=os.environ.get("RRL_EXECUTION_MODE","coroutines"),
                 coroutines=number("COROUTINES","1"),coroutine_stack_bytes=number("COROUTINE_STACK_BYTES","262144"),
                 warmup_seconds=number("WARMUP_SECONDS","10"),duration_seconds=number("DURATION", "10"), runs=runs, seeds=list(range(8, 8+runs)),
                 keys=number("KEYS", "10000"), transactions=number("TRANSACTIONS", "5000"),
@@ -209,6 +212,11 @@ def main():
         raise SystemExit("native_object_locks must be 0 or 1")
     if config["native_object_locks"] and config["coordination_backend"]!="native-rdma-state":
         raise SystemExit("native object locks require native-rdma-state")
+    config.setdefault("execution_mode","coroutines")
+    if config["execution_mode"] not in ("threads","coroutines"):
+        raise SystemExit("execution_mode must be threads or coroutines")
+    if config["execution_mode"]=="threads" and config.get("coroutines",1)!=1:
+        raise SystemExit("threads execution requires coroutines=1")
     config.setdefault("coroutines",1);config.setdefault("coroutine_stack_bytes",262144);config.setdefault("warmup_seconds",10)
     if config["coordination_backend"] not in ("native-rdma-state","tcp-control+rdma-slots"):
         raise SystemExit("invalid coordination backend")
@@ -319,7 +327,7 @@ def main():
                    tpcc_items_per_order=config["tpcc_items"], order=config["order"],
                    tree_pages=config["tree_pages"], tree_records=config["tree_records"],
                    wait_policy=policy, max_attempts=config["max_attempts"], duration_seconds=duration,
-                   coroutines=config["coroutines"],coroutine_stack_bytes=config["coroutine_stack_bytes"],warmup_seconds=config["warmup_seconds"],
+                   execution_mode=config["execution_mode"],coroutines=config["coroutines"],coroutine_stack_bytes=config["coroutine_stack_bytes"],warmup_seconds=config["warmup_seconds"],
                    wait_timeout_ms=config["wait_timeout_ms"], tree_latch_timeout_ms=config["tree_latch_timeout_ms"], lock_budget=config["lock_budget"],
                    native_object_locks=(config["native_object_locks"] if mode=="cross-host" and cc=="rdma-record-2pl" else 0))
         layout=hierarchy_layout(config,cc)
@@ -333,6 +341,7 @@ def main():
                  "--threads", str(threads), "--seed", str(cfg["seed"]), "--zipf", str(config["zipf"]),
                  "--items", str(config["tpcc_items"]), "--order", str(config["order"]),
                  "--duration", str(duration), "--format", "csv",
+                 "--execution-mode",config["execution_mode"],
                  "--coroutines",str(config["coroutines"]),"--coroutine-stack-bytes",str(config["coroutine_stack_bytes"]),
                  "--warmup",str(config["warmup_seconds"])]
         if layout!="none":flags += ["--hierarchy-layout",layout]

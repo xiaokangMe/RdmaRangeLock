@@ -1,0 +1,15 @@
+{
+  "workload": "ycsb-e",
+  "index": "v2",
+  "cc": "next-key",
+  "key_count": 128,
+  "transaction_count": 80,
+  "operations_per_transaction": 4,
+  "range_length": 8,
+  "threads": 2,
+  "seed": 7,
+  "execution_mode": "threads",
+  "coroutines": 1,
+  "warmup_seconds": 1,
+  "wait_policy": "no-wait"
+}

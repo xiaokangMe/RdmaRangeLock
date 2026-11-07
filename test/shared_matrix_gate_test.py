@@ -56,7 +56,7 @@ saved=dict(row,source_commit="baseline",result_kind="smoke-not-formal",
 validate_resume_rows([saved],runtime,"baseline","smoke-not-formal","local")
 for key,value in (("source_commit","old"),("coordination","native-rdma-state"),
                   ("coroutines","1"),("warmup_seconds","0"),("execution_stack_bytes","262144"),
-                  ("campaign_config_sha256","old")):
+                  ("execution_mode","threads"),("campaign_config_sha256","old")):
     bad=dict(saved);bad[key]=value
     try:validate_resume_rows([bad],runtime,"baseline","smoke-not-formal","local")
     except ValueError:pass
@@ -99,7 +99,7 @@ print("Report configuration signature: OK")
 
 with tempfile.TemporaryDirectory() as directory:
     cfg=dict(config,name="resume-integration",local_ccs=["none"],threads=[1],workloads=["ycsb-a"],
-             warmup_seconds=0,coroutines=1,coordination_backend="native-rdma-state",
+             warmup_seconds=0,coroutines=1,execution_mode="threads",coordination_backend="native-rdma-state",
              keys=16,transactions=16,operations=2)
     path=Path(directory)/"config.json";path.write_text(json.dumps(cfg))
     artifacts=Path(directory)/"artifacts";result_dir=artifacts/"results"
@@ -112,6 +112,9 @@ with tempfile.TemporaryDirectory() as directory:
     assert len(manifests)==1, manifests
     initial=json.loads(next(iter(manifests)).read_text())
     original=Path(initial["result_files"]["local"])
+    with original.open() as handle:
+        executed=next(csv.DictReader(handle))
+    assert executed["execution_mode"]=="threads" and executed["coroutine_switches_total"]=="0"
     second=subprocess.run(cmd+["--resume",str(original)],cwd=root,check=True,capture_output=True,text=True,timeout=30)
     resumed=set(result_dir.glob("smoke-not-formal-*.json"))-before-manifests
     assert len(resumed)==1, resumed

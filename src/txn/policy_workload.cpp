@@ -40,6 +40,8 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
     if(!cfg.coroutines || cfg.coroutines>4096 || trace.config().threads>4096/cfg.coroutines ||
        cfg.coroutine_stack_bytes<65536 || cfg.coroutine_stack_bytes>16777216 || cfg.warmup_seconds>600000)
         throw std::invalid_argument("runtime geometry bounds");
+    if(!cfg.use_coroutines && cfg.coroutines!=1)
+        throw std::invalid_argument("threads execution requires coroutines=1");
     if(cfg.coroutines>1 && !cfg.txn_state_port && !cfg.coordinator_host.empty())
         throw std::invalid_argument("TCP compatibility coordinator cannot block a coroutine worker");
     const auto count=std::min(trace.config().threads*cfg.coroutines,total);
@@ -99,7 +101,7 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
     std::size_t ready=0;
     std::atomic<unsigned> phase{0};
     std::vector<std::unique_ptr<CoroutineScheduler>> schedulers;
-    for(std::size_t w=0;w<os_workers;++w) {
+    if(cfg.use_coroutines)for(std::size_t w=0;w<os_workers;++w) {
         const auto routines=(count+os_workers-1-w)/os_workers;
         schedulers.emplace_back(new CoroutineScheduler(routines,cfg.coroutine_stack_bytes));
     }
@@ -393,7 +395,8 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
     };
     try {
         for(std::size_t w=0;w<os_workers;++w)threads.emplace_back([&,w] {
-            schedulers[w]->run([&](std::size_t c){work(w+c*os_workers);});
+            if(cfg.use_coroutines)schedulers[w]->run([&](std::size_t c){work(w+c*os_workers);});
+            else work(w);
         });
     } catch(...) {
         stopped=true;

@@ -10,10 +10,12 @@ from run_shared_matrices import cases,validate_hotspot
 
 DEFAULT_THETAS=(0.,.4,.7,.9)
 
-def make_configs(base, thetas=None, threads=(32,), ranges=(32,), bucket=64, wait_policy=None,
-                 distribution="hotspot", data_fractions=(.2,.1), opn_fractions=(.8,.9)):
-    if not threads or not ranges or any(type(v) is not int or v<1 for v in (*threads,*ranges,bucket)):
-        raise ValueError("threads, ranges and bucket must be positive integers")
+def make_configs(base, thetas=None, threads=(32,), ranges=(32,), bucket=None, wait_policy=None,
+                 distribution="hotspot", data_fractions=(.2,.1), opn_fractions=(.8,.9), buckets=None):
+    if bucket is not None and buckets is not None:raise ValueError("use bucket or buckets, not both")
+    widths=list(buckets) if buckets is not None else [bucket] if bucket is not None else [16,64,256]
+    if not threads or not ranges or not widths or any(type(v) is not int or v<1 for v in (*threads,*ranges,*widths)) or len(set(widths))!=len(widths):
+        raise ValueError("threads/ranges/buckets must be positive; bucket widths must be distinct")
     if wait_policy is not None and wait_policy not in ("no-wait","wait-die","wound-wait"):raise ValueError("invalid wait policy")
     if distribution=="zipfian":
         thetas=DEFAULT_THETAS if thetas is None else thetas
@@ -35,7 +37,7 @@ def make_configs(base, thetas=None, threads=(32,), ranges=(32,), bucket=64, wait
         config=copy.deepcopy(base)
         config.update(name="ycsb-e-skew-"+tag,workloads=["ycsb-e-skew"],zipf=theta,
                       request_distribution=requested,hotspot_data_fraction=data,hotspot_opn_fraction=opn,
-                      threads=list(threads),ranges=list(ranges),buckets=[bucket],
+                      threads=list(threads),ranges=list(ranges),buckets=widths,
                       runs=1,seeds=[8],repetition_policy="single-run",
                       wait_policies=[wait_policy] if wait_policy is not None else ["no-wait","wait-die","wound-wait"],
                       hierarchy_layout="bucket",hierarchy_behavior="strict",
@@ -60,11 +62,13 @@ def main():
     parser.add_argument("--hotspot-opn-fractions",nargs="+",type=float,default=[.8,.9])
     parser.add_argument("--threads",nargs="+",type=int,default=[32])
     parser.add_argument("--ranges",nargs="+",type=int,default=[32])
-    parser.add_argument("--bucket",type=int,default=64)
+    geometry=parser.add_mutually_exclusive_group()
+    geometry.add_argument("--bucket",type=int,help="optional single bucket width")
+    geometry.add_argument("--buckets",nargs="+",type=int,help="default: 16 64 256")
     parser.add_argument("--wait-policy",choices=["no-wait","wait-die","wound-wait"],default=None,help="optional single-policy override; default: all three")
     args=parser.parse_args()
     configs=make_configs(json.loads(args.base.read_text()),args.thetas,args.threads,args.ranges,args.bucket,args.wait_policy,
-                         args.distribution,args.hotspot_data_fractions,args.hotspot_opn_fractions)
+                         args.distribution,args.hotspot_data_fractions,args.hotspot_opn_fractions,args.buckets)
     names=[c["name"].replace(".","p")+".json" for c in configs]
     if len(set(names))!=len(names):raise SystemExit("profile names collide")
     if any((args.out/name).exists() for name in names):raise SystemExit("refuse to overwrite existing configs")

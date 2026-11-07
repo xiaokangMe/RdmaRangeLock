@@ -18,7 +18,9 @@
     32
   ],
   "buckets": [
-    64
+    16,
+    64,
+    256
   ],
   "zipf": 0.0,
   "tpcc_items": 5,
@@ -45,8 +47,8 @@
     "wound-wait"
   ],
   "max_attempts": 1000,
-  "expected_local_cases": 19,
-  "expected_cross_host_cases": 18,
+  "expected_local_cases": 25,
+  "expected_cross_host_cases": 24,
   "profile": 0,
   "slot_lookup": "linear",
   "rdma_connections": "auto",

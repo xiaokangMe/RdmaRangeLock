@@ -20,7 +20,7 @@
 - ycsb-a-zipf-0p4.json
 - ycsb-e-zipf-0p4.json
 
-两个基线加五个 E-skew，一共 7 组；本地 133 cases、RDMA 126 cases，总计 259 主 cases，门禁和容量预检另计。此为配置计数，不是已完成的实验。均匀组用于解释热点影响；不能声称 E 默认均匀。
+两个基线加五个 E-skew，一共 7 组；本地 175 cases、RDMA 168 cases，总计 343 主 cases，门禁和容量预检另计。此为配置计数，不是已完成的实验。均匀组用于解释热点影响；不能声称 E 默认均匀。
 
 若后续正式考察“Zipf 偏斜率”，A 与 E 使用同一组 theta 参数，按用户指定四档 0、0.4、0.7、0.9。这是第二阶段扩展，当前补齐的两个基线均固定 theta=0.4，未自动扩成多档或启动实验。
 
@@ -60,7 +60,7 @@
 | warmup_seconds / duration_seconds | 10 / 10 | 全并发预热、正式测量窗口 |
 | runs / seeds | 1 / [8] | 每个 case 测一次 |
 | wait_policies | [no-wait,wait-die,wound-wait] | 每个负载/算法分别比较三种等待策略 |
-| hierarchy_layout / buckets | bucket / [64] | 固定层级桶几何，升降粒度关闭 |
+| hierarchy_layout / buckets | bucket / [16,64,256] | 层级桶锁三档宽度，升降粒度关闭 |
 | coordination_backend | native-rdma-state | 原生单边远端状态、数据、锁路径 |
 | native_object_locks | 1 | RDMA record 使用原生对象锁 |
 | rdma_lock_slots_per_shard | 32768 | 候选远端区间锁容量；正式执行前仍必须通过容量预检 |
@@ -134,7 +134,7 @@ request_distribution 允许 auto、uniform、zipfian、hotspot。auto 对 E-skew
 - ycsb-e-skew-hot-ops-0p9-data-0p2.json
 - ycsb-e-skew-hot-ops-0p9-data-0p1.json
 
-每组本地 19 cases（6 种锁×3 策略 + none 一次，32 线程，1 seed）；RDMA 18 cases（6 种锁×3 策略）。五组 E-skew 主矩阵共 185 cases，容量预检和正确性门禁另计。本次没有启动这些 cases。
+每组本地 25 cases（5 种非桶锁×3 策略 + 层级桶锁3桶宽×3策略 + none 一次，32 线程，1 seed）；RDMA 24 cases（5 种非桶锁×3策略 + 层级桶锁3桶宽×3策略）。五组 E-skew 主矩阵共 245 cases，容量预检和正确性门禁另计。本次没有启动这些 cases。
 
 scripts/make_ycsb_e_skew_configs.py 只生成配置，不建链、不构建、不运行实验；默认固定 32 线程且关闭协程，不覆盖已有文件。示例：
 
@@ -149,7 +149,7 @@ Q-Store Figure 6 的七档仅作为文献背景，当前配置不采用其档位
 python3 scripts/make_ycsb_e_skew_configs.py --distribution zipfian --out /tmp/ycsb-e-zipf-plan
 ~~~
 
-Zipf 与 hotspot 必须分开报告；theta=0.99 不等于“99% 请求访问 1% 数据”。同一等待策略内比较分布，同一分布内比较等待策略；第一轮不同时扩大 scan 长度、线程数、协程数或桶宽；以后再选代表分布补 8/32/128。
+Zipf 与 hotspot 必须分开报告；theta=0.99 不等于“99% 请求访问 1% 数据”。同一等待策略内比较分布，同一分布内比较等待策略；第一轮不同时扩大 scan 长度、线程数或协程数；桶宽按用户要求单独展开 16/64/256；以后再选代表分布补 8/32/128。
 
 ## 实现与可追溯性
 
@@ -212,3 +212,11 @@ runner CSV 增加 trace_* 字段：theta、分布选择/实际分布、热点两
 用户要求单次测量、三种等待策略、A/E 默认 theta=0.4，后续 theta=0/0.4/0.7/0.9，不启动实验。
 配置新增 repetition_policy=single-run；runner 与 report 只对显式该标记允许 runs=1，保留旧 repeated 默认 >=3 的门禁，保留 >=10 秒要求。单次报告不画运行间波动误差线，不宣称重复实验或置信区间。
 配置生成器同步默认值；A/E 基线文件名与 theta 一致。用户本次要求仅准备配置：不运行负载、构建或 CTest，仅做静态语法/配置核对；之前 53/53 结果不覆盖本轮脚本改动。
+
+## 桶宽三档修订（2026-11-07）
+
+原配置仅 b64，按用户要求改为 b16、b64、b256。这里 b 是逻辑键区间宽度：bucket_id=floor(key/b)，不是桶数量，也不是物理 B+ 树叶节点大小。对于 2^21 键，三档分别有 131072、32768、8192 个逻辑桶；扫描宽度固定 32 时，覆盖桶数还受起点对齐影响。
+
+只在 hierarchical / rdma-hierarchical 下展开这三档，其他协议使用 bucket=0 的矩阵维度，不重复运行三遍；none 仍只运行一次。代码生成器默认三档，--buckets 16 64 256 可显式指定，--bucket 64 保留单档兼容入口，两者互斥。
+
+本轮只修改配置、生成器、文档和待运行的回归断言；静态语法/配置检查通过，未执行负载、构建或 CTest。此前 53/53 不能作为本轮脚本改动的运行验证。

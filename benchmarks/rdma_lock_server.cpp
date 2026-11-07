@@ -3,6 +3,7 @@
 #include "lock/object_lock_manager.h"
 #include "txn/shared_dataset.h"
 #include "../src/txn/leaf_hierarchy.h"
+#include "../src/txn/dag_hierarchy.h"
 
 #include <chrono>
 #include <fstream>
@@ -131,13 +132,24 @@ int run(int argc, char** argv) {
         // Runtime geometry is ignored by the dataset parser; read it explicitly.
         std::ifstream input(argv[3]);const std::string text((std::istreambuf_iterator<char>(input)),{});
         const auto entries=FlatConfigParser(text).parse();
-        std::size_t contexts=64,budget=16384,threads=1,coroutines=1;
+        std::size_t contexts=64,budget=16384,threads=1,coroutines=1,paths=2;
+        bool dag=false,bucket_seen=false;
+        for(const auto& e:entries)if(e.first=="hierarchy_layout")dag=e.second.text=="dag";
+        for(const auto& e:entries) {
+            if(e.first=="hierarchy_index_paths")paths=parse_unsigned(e.second.text,e.first);
+            else if(dag && (e.first=="hierarchy_bucket_width" || e.first=="bucket")) {
+                if(bucket_seen || e.second.kind!=ConfigScalar::Number)throw std::invalid_argument("DAG bucket width must be a unique numeric field");
+                bucket_seen=true;c.hierarchy_bucket_width=parse_unsigned(e.second.text,e.first);
+            }
+        }
         for(const auto& e:entries)if(e.first=="threads")threads=parse_unsigned(e.second.text,e.first);
             else if(e.first=="coroutines")coroutines=parse_unsigned(e.second.text,e.first);
             else if(e.first=="lock_budget")budget=parse_unsigned(e.second.text,e.first);
         if(!threads || !coroutines || threads>4096/coroutines)throw std::invalid_argument("object context bounds");
         contexts=std::max(contexts,threads*coroutines+16);
-        return run_object_lock_server(static_cast<std::uint16_t>(port),detail::object_record_keys(trace),t.page_capacity+2,contexts,budget);
+        const auto nodes=dag?detail::dag_node_capacity(trace,c.hierarchy_bucket_width,paths):t.page_capacity+2;
+        return run_object_lock_server(static_cast<std::uint16_t>(port),detail::object_record_keys(trace),nodes,contexts,budget,
+                                      dag?c.hierarchy_bucket_width:0,dag?paths:0);
     }
     bool native_fail_stop=false;
     std::size_t capacity=kRemoteLockSlotsPerShard;

@@ -74,3 +74,18 @@ for flags in (["--cc","next-key","--hierarchy-escalation-threshold","2"],
     cmd=[runner,"--keys","32","--txns","4","--ops","4","--cc","hierarchical"]
     if "--cc" in flags:cmd=cmd[:-2]
     assert subprocess.run(cmd+flags,capture_output=True,text=True,timeout=10).returncode!=0
+
+for flags in (["--hierarchy-layout","dag","--hierarchy-index-paths","1"],
+              ["--hierarchy-layout","dag","--hierarchy-read-path","2"],
+              ["--hierarchy-layout","dag","--hierarchy-deescalate-after","4"],
+              ["--hierarchy-layout","dag","--bucket","auto"],
+              ["--hierarchy-layout","dag","--cc","next-key"]):
+    cmd=[runner,"--cc","hierarchical","--keys","32","--txns","4","--ops","2"]
+    if "--cc" in flags:del cmd[1:3]
+    assert subprocess.run(cmd+flags,capture_output=True,text=True,timeout=10).returncode!=0
+for read in (0,1):
+    row=validate(subprocess.run([runner,"--cc","hierarchical","--hierarchy-layout","dag",
+         "--hierarchy-index-paths","2","--hierarchy-read-path",str(read),"--keys","32",
+         "--txns","12","--ops","4","--bucket","16","--threads","2","--format","csv"],
+         check=True,capture_output=True,text=True,timeout=15).stdout)
+    assert row["hierarchy_layout"]=="dag" and int(row["hierarchy_index_paths"])==2 and int(row["hierarchy_read_path"])==read

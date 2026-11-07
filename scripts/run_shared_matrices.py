@@ -29,7 +29,7 @@ def hierarchy_behavior(config, cc):
 
 
 def hierarchy_buckets(config, cc):
-    return config["buckets"] if hierarchy_layout(config, cc)=="bucket" else [0]
+    return config["buckets"] if hierarchy_layout(config, cc) in ("bucket","dag") else [0]
 
 
 def lock_service_flags(cfg):
@@ -40,10 +40,29 @@ def lock_service_flags(cfg):
     return flags
 
 
+def hierarchy_runtime_flags(cfg,layout):
+    if layout=="bucket":
+        return ["--hierarchy-escalation-threshold",str(cfg.get("hierarchy_escalation_threshold",0)),
+                "--hierarchy-deescalate-after",str(cfg.get("hierarchy_deescalate_after",0))]
+    if layout=="dag":
+        return ["--hierarchy-index-paths",str(cfg.get("hierarchy_index_paths",2)),
+                "--hierarchy-read-path",str(cfg.get("hierarchy_read_path",0))]
+    return []
+
+
+def validate_hierarchy_runtime(row,cfg):
+    layout=cfg.get("hierarchy_layout","none")
+    if layout in ("bucket","dag") and "hierarchy_bucket_width" in cfg and int(row.get("hierarchy_bucket_width",0))!=cfg["hierarchy_bucket_width"]:
+        raise ValueError("hierarchy bucket geometry differs from configuration")
+    for key in ("hierarchy_escalation_threshold","hierarchy_deescalate_after","hierarchy_index_paths","hierarchy_read_path"):
+        expected=cfg.get(key,0) if layout==("dag" if "path" in key else "bucket") else 0
+        if int(row.get(key,0))!=expected:raise ValueError("hierarchy runtime differs from configuration: "+key)
+
+
 def validate_slot_geometry(row, config, shared):
     if "rdma_lock_slots_per_shard" not in config:
         return  # Historical manifests predate the versioned range region.
-    uses_range=shared and not int(row.get("native_object_locks",0)) and row.get("hierarchy_layout")!="leaf"
+    uses_range=shared and not int(row.get("native_object_locks",0)) and row.get("hierarchy_layout") not in ("leaf","dag")
     expected=config["rdma_lock_slots_per_shard"] if uses_range else 0
     if int(row.get("rdma_lock_slots_per_shard",-1))!=expected:
         raise ValueError("range lock capacity differs from campaign configuration")
@@ -93,9 +112,14 @@ def validate_row(output, seconds, shared, expected_coordination=None, expected_l
         if int(row["deneva_early_inserts"])!=int(row["deneva_early_unlocks"]):raise RuntimeError("Deneva insertion/release mismatch")
         if any(int(row[k])>int(row["aborted"]) for k in ("deneva_split_aborts","deneva_partial_write_aborts")):raise RuntimeError("Deneva abort counters mismatch")
     if expected_layout is not None and layout!=expected_layout:raise RuntimeError("hierarchy layout differs from configuration")
-    if layout not in ("leaf","bucket","none"):raise RuntimeError("unknown hierarchy layout")
-    if layout=="leaf" and row.get("cc") not in ("hierarchical","rdma-hierarchical"):raise RuntimeError("leaf layout on another protocol")
-    if layout=="leaf" and shared and row.get("coordination")!="native-rdma-state":raise RuntimeError("leaf objects require native coordination")
+    if layout not in ("leaf","bucket","dag","none"):raise RuntimeError("unknown hierarchy layout")
+    if layout in ("leaf","dag") and row.get("cc") not in ("hierarchical","rdma-hierarchical"):raise RuntimeError("leaf layout on another protocol")
+    if layout in ("leaf","dag") and shared and row.get("coordination")!="native-rdma-state":raise RuntimeError("leaf objects require native coordination")
+    if layout=="dag":
+        paths=int(row.get("hierarchy_index_paths",0));read=int(row.get("hierarchy_read_path",-1))
+        if not 2<=paths<=32 or not 0<=read<paths:raise RuntimeError("invalid DAG path metadata")
+    elif int(row.get("hierarchy_index_paths",0)) or int(row.get("hierarchy_read_path",0)):
+        raise RuntimeError("DAG metadata on another layout")
     if any(int(row[k]) for k in ERRORS): raise RuntimeError("hard error in measurement")
     if int(row["lock_capacity_aborts"]) or int(row["lock_gate_aborts"]):
         raise RuntimeError("capacity/gate saturation; formal case invalid")
@@ -164,6 +188,7 @@ def validate_resume_rows(rows, config, commit, kind, mode):
     expected_fingerprint=config_fingerprint(config)
     for row in rows:
         validate_slot_geometry(row,config,mode=="cross-host")
+        validate_hierarchy_runtime(row,dict(config,hierarchy_layout=hierarchy_layout(config,row["cc"])))
         if row.get("hierarchy_behavior","strict")!=hierarchy_behavior(config,row["cc"]):
             raise ValueError("resume hierarchy behavior differs from configuration")
         if row.get("hierarchy_layout", "bucket" if row.get("cc") in ("hierarchical","rdma-hierarchical") else "none")!=hierarchy_layout(config,row["cc"]):
@@ -243,11 +268,17 @@ def main():
     for k in ("hierarchy_escalation_threshold","hierarchy_deescalate_after"):
         if type(config[k]) is not int or not 0<=config[k]<=1048576:raise SystemExit("invalid "+k)
     config.setdefault("hierarchy_layout","bucket")
-    if config["hierarchy_layout"] not in ("leaf","bucket"):raise SystemExit("hierarchy_layout must be leaf or bucket")
+    if config["hierarchy_layout"] not in ("leaf","bucket","dag"):raise SystemExit("hierarchy_layout must be leaf, bucket or dag")
+    config.setdefault("hierarchy_index_paths",2)
+    config.setdefault("hierarchy_read_path",0)
+    if type(config["hierarchy_index_paths"]) is not int or type(config["hierarchy_read_path"]) is not int or not 2<=config["hierarchy_index_paths"]<=32 or not 0<=config["hierarchy_read_path"]<config["hierarchy_index_paths"]:
+        raise SystemExit("invalid DAG index paths")
+    if (config["hierarchy_escalation_threshold"] or config["hierarchy_deescalate_after"]) and config["hierarchy_layout"]!="bucket":
+        raise SystemExit("runtime granularity conversion requires fixed bucket layout")
     config.setdefault("coordination_backend","native-rdma-state")
     if config["hierarchy_behavior"]=="deneva" and (config["hierarchy_layout"]!="leaf" or config["coordination_backend"]!="native-rdma-state"):
         raise SystemExit("Deneva source behavior requires native leaf objects")
-    if config["hierarchy_layout"]=="leaf" and config["coordination_backend"]!="native-rdma-state":
+    if config["hierarchy_layout"] in ("leaf","dag") and config["coordination_backend"]!="native-rdma-state":
         raise SystemExit("leaf layout requires native-rdma-state")
     config.setdefault("native_object_locks", 1)
     if config["native_object_locks"] not in (0, 1):
@@ -368,7 +399,7 @@ def main():
         cfg = dict(workload=workload, index="rdma", cc=cc, key_count=config["keys"],
                    transaction_count=config["transactions"], operations_per_transaction=config["operations"],
                    ycsb_unique_keys=config["ycsb_unique_keys"],
-                   range_length=length, threads=threads, seed=config["seeds"][run], zipf=config["zipf"],
+                   range_length=length,hierarchy_bucket_width=bucket if bucket else 64, threads=threads, seed=config["seeds"][run], zipf=config["zipf"],
                    tpcc_items_per_order=config["tpcc_items"], order=config["order"],
                    tree_pages=config["tree_pages"], tree_records=config["tree_records"],
                    wait_policy=policy, max_attempts=config["max_attempts"], duration_seconds=duration,
@@ -379,6 +410,9 @@ def main():
         layout=hierarchy_layout(config,cc)
         behavior=hierarchy_behavior(config,cc)
         if layout!="none":cfg["hierarchy_layout"]=layout
+        if layout=="dag":
+            cfg["hierarchy_index_paths"]=config["hierarchy_index_paths"]
+            cfg["hierarchy_read_path"]=config["hierarchy_read_path"]
         if layout=="bucket":
             cfg["hierarchy_escalation_threshold"]=config["hierarchy_escalation_threshold"]
             cfg["hierarchy_deescalate_after"]=config["hierarchy_deescalate_after"]
@@ -394,6 +428,7 @@ def main():
                  "--coroutines",str(config["coroutines"]),"--coroutine-stack-bytes",str(config["coroutine_stack_bytes"]),
                  "--warmup",str(config["warmup_seconds"])]
         if layout!="none":flags += ["--hierarchy-layout",layout]
+        flags += hierarchy_runtime_flags(cfg,layout)
         if layout=="leaf":flags += ["--hierarchy-behavior",behavior]
         if bucket: flags += ["--bucket", str(bucket)]
         if mode=="cross-host" and str(config["rdma_connections"])!="auto":
@@ -412,6 +447,7 @@ def main():
         else: output = command([str(build / "rrl_workload_runner")] + flags, label, timeout=duration+config["warmup_seconds"]+180)
         row = validate_row(output, duration, mode == "cross-host", config["coordination_backend"] if mode=="cross-host" else None,layout,behavior,cfg["native_object_locks"])
         validate_slot_geometry(row,config,mode=="cross-host")
+        validate_hierarchy_runtime(row,cfg)
         if cc=="none":row["wait_policy"]="none"
         return dict(source_commit=commit, result_kind=kind, transport="rdma-cross-host-shared" if mode=="cross-host" else "local-no-rdma",
                     execution_stack_bytes=config["coroutine_stack_bytes"], ycsb_unique_keys=config["ycsb_unique_keys"],

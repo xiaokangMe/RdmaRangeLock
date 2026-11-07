@@ -10,7 +10,8 @@ struct PolicyRunConfig {
     std::uint64_t max_attempts{1000}, wait_timeout_ms{5000};
     std::size_t lock_budget{16384};
     std::size_t rdma_lock_slots_per_shard{0}; // 0 accepts server-advertised geometry
-    bool leaf_hierarchy{false};
+    bool leaf_hierarchy{false},dag_hierarchy{false};
+    std::size_t hierarchy_index_paths{2},hierarchy_read_path{0};
     // Zero keeps static preplanning. Conversion releases only redundant
     // physical representation after equivalent logical protection exists.
     std::size_t hierarchy_escalation_threshold{0},hierarchy_deescalate_after{0};

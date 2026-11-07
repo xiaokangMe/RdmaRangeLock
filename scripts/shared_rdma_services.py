@@ -33,7 +33,7 @@ class SharedServices:
         self.env, self.native = env, native
         self.data_binary=data_binary
         cfg=json.loads(self.config.read_text())
-        self.leaf_objects=cfg.get("hierarchy_layout")=="leaf" or bool(cfg.get("native_object_locks",False))
+        self.leaf_objects=cfg.get("hierarchy_layout") in ("leaf","dag") or bool(cfg.get("native_object_locks",False))
         if self.leaf_objects and native is not True:raise ValueError("leaf object services require native mode")
         self.range_slots=int(cfg.get("rdma_lock_slots_per_shard",8192))
         if not 1<=self.range_slots<=1048576:raise ValueError("rdma_lock_slots_per_shard out of bounds")

@@ -1,6 +1,6 @@
 # 5. 层级锁：多粒度与意向锁
 
-> 复现口径审计（2026-11-07，代码基线 9db05f7）：当前机制、论文对应与差异以 [复现审计](../notes/paper-reproduction-audit-2026-11-07.md) 为准。下方旧矩阵保留其 commit 与数值；不能据此宣称复现了 InnoDB/ARIES/KVL 或证明新代码性能。
+> 复现口径审计（2026-11-07）：初始差异见 [复现审计](../notes/paper-reproduction-audit-2026-11-07.md)，后续九模式、运行时粒度转换、DAG 的实现状态分别见 docs/notes 下 full-mgl-modes、bucket-runtime-conversion、dag-multipath-implementation 同日记录。下方旧矩阵保留其 commit 与数值；不能据此宣称复现了 InnoDB/ARIES/KVL 或证明新代码性能。
 
 > 版本说明（2026-11-03）：下方正式矩阵及图表对应 `8511d5b` 测量提交的旧实现。当前层级锁已改为点访问记录级保护、预先确定模式和 FIFO 传输准入，尚未重新测量正式矩阵。旧曲线用于解释旧实现，不能作为新代码的性能结论。修复与验证见 `../notes/rdma-hierarchy-correctness-2026-11-03.md`。
 
@@ -23,13 +23,14 @@ next-key lock 的问题在于**锁的数量与扫描宽度成正比**。扫描 1
 点写入：  根 IX → 同一 bucket/leaf 的 IX → 目标 record X
 ```
 
-根上的 IS/IX 兼容，允许无关访问并行；覆盖对象上的 S 与写者的 IX 冲突，才阻止子树写入。点读只拿路径 IS 和 record S，不能靠一个 IS 保护整个范围。SIX 是原协议的扫描并局部写模式；当前四模式实现保守使用 X，安全但并发度更低 [@graefe2010]（§5.3）。
+根上的 IS/IX 兼容，允许无关访问并行；覆盖对象上的 S 与写者的 IX 冲突，才阻止子树写入。点读只拿路径 IS 和 record S，不能靠一个 IS 保护整个范围。SIX 是原协议的扫描并局部写模式；当前统一实现使用 SIX + 实际记录 X，不再将 S+IX 保守合并为整桶 X [@gray1976]。U/IU/SIU/UIX 则依据 SQL Server 官方完整兼容表加入，来源与 Gray 原模式区分 [@sqlserverlockingguide]。
 
-关键不变式：**任何事务在子节点加锁前，必须在所有祖先节点上持有兼容的意向锁**。顺序必须自顶向下，否则死锁。
+关键不变式：树中先祖先、后子节点；DAG 的共享访问可选择一条合法父路径，写访问必须覆盖全部父路径并递归取得祖先意向 [@gray1976]。本项目 DAG 的多个逻辑索引路径共用 canonical record；当前使用相同权威键投影，尚不是不同二级键的完整索引存储。
 
 ## 与实现的对应
 
 - 固定桶资源树：src/txn/hierarchical_plan.h；实际 B+ 树祖先/叶对象资源树：src/txn/leaf_hierarchy.h；兼容与存储由 src/lock/ 提供。这两者均不等于 Graefe separator-key 的逻辑命名与 SMO 锁复制
+- 运行时粒度转换：src/txn/bucket_runtime.h；升级先覆盖后移除冗余细锁，降级先恢复全部历史记录/扫描谓词再减弱父模式。DAG 规划：src/txn/dag_hierarchy.h，写遍历全部父路径。
 - 对照：v5 的锁数量作为基线
 - 指标采集：`statistics/` 记录每个事务持有的锁条目数
 

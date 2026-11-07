@@ -166,3 +166,17 @@ object_row=dict(range_row,cc="rdma-record-2pl",native_object_locks="1",rdma_lock
 validate_slot_geometry(object_row,capacity_cfg,True)
 bad=dict(row,rdma_lock_slot_peak_0="1");reject(bad)
 print("Capacity identity and occupancy schema validation: OK")
+
+from run_shared_matrices import hierarchy_runtime_flags,validate_hierarchy_runtime
+for layout,params in (("bucket",dict(hierarchy_escalation_threshold=2,hierarchy_deescalate_after=4)),
+                      ("dag",dict(hierarchy_index_paths=3,hierarchy_read_path=1))):
+    cfg=dict(hierarchy_layout=layout,**params)
+    flags=hierarchy_runtime_flags(cfg,layout)
+    for key,value in params.items():
+        option="--"+key.replace("_","-")
+        assert flags[flags.index(option)+1]==str(value)
+    validate_hierarchy_runtime({k:str(v) for k,v in params.items()},cfg)
+    bad={k:str(v) for k,v in params.items()};bad[next(iter(params))]="99"
+    try:validate_hierarchy_runtime(bad,cfg)
+    except ValueError:pass
+    else:raise AssertionError("runtime mismatch accepted")

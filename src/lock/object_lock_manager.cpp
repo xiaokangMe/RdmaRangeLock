@@ -71,6 +71,7 @@ struct Context {
 }
 struct ObjectLockManager::Impl {
     Header header;
+    std::uint64_t dag_width{0};std::size_t dag_paths{0};
     std::vector<idx_key_t> records;
     std::unique_ptr<Image> image;
     std::vector<std::unique_ptr<Context>> contexts;
@@ -124,11 +125,21 @@ struct ObjectLockManager::Impl {
 };
 ObjectLockManager::ObjectLockManager():impl_(new Impl){}
 ObjectLockManager::~ObjectLockManager()=default;
+bool ObjectLockManager::configure_dag(std::uint64_t width,std::size_t paths) {
+    auto& p=*impl_;
+    if(!p.contexts.empty() || !width || paths<2 || paths>32)return false;
+    p.dag_width=width;p.dag_paths=paths;return true;
+}
+bool ObjectLockManager::matches_dag(std::uint64_t width,std::size_t paths) const {
+    const auto& p=*impl_;
+    return !p.failed && !p.contexts.empty() && p.dag_width==width && p.dag_paths==paths &&
+        p.header.dag_width==width && p.header.dag_paths==paths;
+}
 bool ObjectLockManager::init_local(const std::vector<idx_key_t>& records,std::size_t nodes,std::size_t contexts,std::size_t budget) {
     auto& p=*impl_;
     try {
         if(!p.contexts.empty() || !std::is_sorted(records.begin(),records.end()) || std::adjacent_find(records.begin(),records.end())!=records.end())return false;
-        p.records=records;p.header=layout(records.size(),nodes,contexts,budget,fingerprint(records));p.image.reset(new Image(p.header));
+        p.records=records;p.header=layout(records.size(),nodes,contexts,budget,fingerprint(records));p.header.dag_width=p.dag_width;p.header.dag_paths=p.dag_paths;p.image.reset(new Image(p.header));
         for(std::size_t n=0;n<contexts;++n){auto c=std::make_unique<Context>();c->slot=n;c->io=p.image.get();p.setup(*c);p.contexts.push_back(std::move(c));}
         return true;
     }catch(...){p.failed=true;return false;}
@@ -141,7 +152,7 @@ bool ObjectLockManager::connect(const std::string& host,std::uint16_t port,const
         if(!probe.connection.connect_client(host,port) || !probe.read(0,&p.header,sizeof(Header)))return false;
         const auto h=p.header;
         const auto expected=layout(h.records,h.nodes,h.sessions,h.budget,h.fingerprint);
-        if(h.signature!=magic || h.poison || h.bytes!=expected.bytes || h.object_base!=expected.object_base ||
+        if(h.signature!=magic || h.poison || h.dag_width!=p.dag_width || h.dag_paths!=p.dag_paths || h.reserved[0] || h.reserved[1] || h.bytes!=expected.bytes || h.object_base!=expected.object_base ||
            h.holder_base!=expected.holder_base || h.session_base!=sizeof(Header) || h.bytes!=probe.connection.remote_memory().length ||
            h.records!=records.size() || h.fingerprint!=fingerprint(records) || contexts>h.sessions)return false;
         for(std::size_t n=0;n<contexts;++n) {
@@ -261,8 +272,10 @@ std::size_t ObjectLockManager::get_lock_count(txnid_t txn) const {
 std::uint64_t ObjectLockManager::rdma_operations() const {std::uint64_t n=0;for(auto& c:impl_->contexts)if(c->remote)n+=c->remote->connection.operation_count();return n;}
 std::uint64_t ObjectLockManager::rdma_timeouts() const {std::uint64_t n=0;for(auto& c:impl_->contexts)if(c->remote)n+=c->remote->connection.timeout_count();return n;}
 std::uint64_t ObjectLockManager::rdma_completion_errors() const {std::uint64_t n=0;for(auto& c:impl_->contexts)if(c->remote)n+=c->remote->connection.completion_error_count();return n;}
-int run_object_lock_server(std::uint16_t port,const std::vector<idx_key_t>& records,std::size_t nodes,std::size_t sessions,std::size_t budget) {
-    const auto h=layout(records.size(),nodes,sessions,budget,fingerprint(records));Image image(h);
+int run_object_lock_server(std::uint16_t port,const std::vector<idx_key_t>& records,std::size_t nodes,std::size_t sessions,std::size_t budget,
+                           std::uint64_t dag_width,std::size_t dag_paths) {
+    if((dag_width==0)!=(dag_paths==0) || (dag_width && (dag_paths<2 || dag_paths>32)))throw std::invalid_argument("object DAG geometry");
+    auto h=layout(records.size(),nodes,sessions,budget,fingerprint(records));h.dag_width=dag_width;h.dag_paths=dag_paths;Image image(h);
     RdmaListener listener(port);if(!listener.valid())throw std::runtime_error("object listener");
     std::cout<<"RDMA object lock server listening on port "<<port<<",objects="<<records.size()+nodes<<",bytes="<<h.bytes<<std::endl;
     for(;;) {

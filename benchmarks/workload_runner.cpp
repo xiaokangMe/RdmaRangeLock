@@ -2,6 +2,7 @@
 #include "lock/remote_lock_manager.h"
 #include "lock/object_lock_manager.h"
 #include "../src/txn/leaf_hierarchy.h"
+#include "../src/txn/dag_hierarchy.h"
 #include "common/config_parse.h"
 #include "txn/shared_dataset.h"
 
@@ -117,6 +118,12 @@ void load_config(const std::string& path, WorkloadConfig& config,
                 policy.coordinator_port = static_cast<std::uint16_t>(n);
             } else if (n > 1) throw std::invalid_argument("latency must be 0 or 1");
             if (key != "latency" || n) measured = true;
+        } else if(key=="hierarchy_index_paths" || key=="hierarchy_read_path") {
+            if(value.kind!=ConfigScalar::Number)throw std::invalid_argument(key+": expected integer");
+            const auto n=parse_unsigned(value.text,key);
+            if(key=="hierarchy_index_paths")policy.hierarchy_index_paths=n;
+            else policy.hierarchy_read_path=n;
+            measured=true;
         } else if(key=="hierarchy_escalation_threshold" || key=="hierarchy_deescalate_after") {
             if(value.kind!=ConfigScalar::Number)throw std::invalid_argument(key+": expected integer");
             const auto n=parse_unsigned(value.text,key);
@@ -127,8 +134,8 @@ void load_config(const std::string& path, WorkloadConfig& config,
             if(value.kind!=ConfigScalar::String || (value.text!="strict" && value.text!="deneva"))throw std::invalid_argument("hierarchy_behavior must be strict or deneva");
             policy.deneva_insert_behavior=value.text=="deneva";measured=true;
         } else if (key == "hierarchy_layout") {
-            if(value.kind!=ConfigScalar::String || (value.text!="leaf" && value.text!="bucket"))throw std::invalid_argument("hierarchy_layout must be leaf or bucket");
-            policy.leaf_hierarchy=value.text=="leaf";measured=true;
+            if(value.kind!=ConfigScalar::String || (value.text!="leaf" && value.text!="bucket" && value.text!="dag"))throw std::invalid_argument("hierarchy_layout must be leaf, bucket or dag");
+            policy.leaf_hierarchy=value.text=="leaf";policy.dag_hierarchy=value.text=="dag";measured=true;
         } else if (key == "rdma_lock_slots_per_shard") {
             if(value.kind!=ConfigScalar::Number)throw std::invalid_argument("rdma_lock_slots_per_shard must be integer");
             const auto slots=parse_unsigned(value.text,key);
@@ -206,6 +213,12 @@ int run(int argc, char** argv) {
             if (value.empty()) throw std::invalid_argument("latency-histogram: expected nonempty path");
             policy.histogram_path = value; measured = true;
         }
+        else if(option=="--hierarchy-index-paths" || option=="--hierarchy-read-path") {
+            const auto n=parse_unsigned(value,option);
+            if(option=="--hierarchy-index-paths")policy.hierarchy_index_paths=n;
+            else policy.hierarchy_read_path=n;
+            measured=true;
+        }
         else if(option=="--hierarchy-escalation-threshold" || option=="--hierarchy-deescalate-after") {
             const auto n=parse_unsigned(value,option);
             if(option=="--hierarchy-escalation-threshold")policy.hierarchy_escalation_threshold=n;
@@ -217,8 +230,8 @@ int run(int argc, char** argv) {
             policy.deneva_insert_behavior=value=="deneva";measured=true;
         }
         else if(option=="--hierarchy-layout") {
-            if(value!="leaf" && value!="bucket")throw std::invalid_argument("hierarchy-layout must be leaf or bucket");
-            policy.leaf_hierarchy=value=="leaf";measured=true;
+            if(value!="leaf" && value!="bucket" && value!="dag")throw std::invalid_argument("hierarchy-layout must be leaf, bucket or dag");
+            policy.leaf_hierarchy=value=="leaf";policy.dag_hierarchy=value=="dag";measured=true;
         }
         else if (option == "--rdma-lock-slots-per-shard") {
             const auto slots=parse_unsigned(value,option);
@@ -309,10 +322,10 @@ int run(int argc, char** argv) {
     if(policy.deneva_insert_behavior && (!policy.leaf_hierarchy || cc!="rdma-hierarchical" || index_name!="rdma" || !policy.txn_state_port))throw std::invalid_argument("deneva behavior requires native RDMA leaf hierarchy");
     if(policy.native_object_locks && (cc!="rdma-record-2pl" || index_name!="rdma" || !policy.txn_state_port || policy.leaf_hierarchy))
         throw std::invalid_argument("native object locks require rdma-record-2pl, shared RDMA data, native txn state, and no leaf hierarchy");
-    if(policy.leaf_hierarchy && cc!="hierarchical" && cc!="rdma-hierarchical")throw std::invalid_argument("leaf layout requires hierarchical protocol");
-    if(policy.leaf_hierarchy && policy.coordinator_port)throw std::invalid_argument("leaf layout requires local or native coordination");
+    if((policy.leaf_hierarchy || policy.dag_hierarchy) && cc!="hierarchical" && cc!="rdma-hierarchical")throw std::invalid_argument("leaf layout requires hierarchical protocol");
+    if((policy.leaf_hierarchy || policy.dag_hierarchy) && policy.coordinator_port)throw std::invalid_argument("leaf layout requires local or native coordination");
     if((policy.hierarchy_escalation_threshold || policy.hierarchy_deescalate_after) &&
-       ((cc!="hierarchical" && cc!="rdma-hierarchical") || policy.leaf_hierarchy ||
+       ((cc!="hierarchical" && cc!="rdma-hierarchical") || policy.leaf_hierarchy || policy.dag_hierarchy ||
         policy.coordinator_port || policy.hierarchy_escalation_threshold>1048576 || policy.hierarchy_deescalate_after>1048576))
         throw std::invalid_argument("granularity conversion requires fixed buckets with local/native RDMA state and bounded thresholds");
     if (!protocols.count(cc)) throw std::invalid_argument("unknown cc: " + cc);
@@ -344,6 +357,11 @@ int run(int argc, char** argv) {
         policy.coordinator_host = rdma_host;
     }
     if (bucket_auto) config.hierarchy_bucket_width = auto_bucket_width(config.kind);
+    if(policy.dag_hierarchy) {
+        if(bucket_auto)throw std::invalid_argument("DAG topology requires explicit numeric bucket width");
+        detail::check_dag_geometry(config.hierarchy_bucket_width,policy.hierarchy_index_paths,policy.hierarchy_read_path);
+    } else if(policy.hierarchy_index_paths!=2 || policy.hierarchy_read_path)
+        throw std::invalid_argument("index paths/read path require DAG layout");
     if (!config.key_count || !config.transaction_count || !config.operations_per_transaction ||
         !config.threads || (config.kind == WorkloadKind::YcsbE && !config.range_length) || !config.hierarchy_bucket_width ||
         !config.tpcc_items_per_order || order < 3 || config.zipf_theta < 0)
@@ -402,8 +420,10 @@ int run(int argc, char** argv) {
         policy.protocol = plain == "none" ? PolicyProtocol::None : plain == "record-2pl" ? PolicyProtocol::Record : plain == "gap-lock" ? PolicyProtocol::Gap :
             plain == "next-key" ? PolicyProtocol::NextKey : plain == "prior-key" ? PolicyProtocol::PriorKey : plain == "predicate" ? PolicyProtocol::Predicate :
             plain == "exact-range" ? PolicyProtocol::ExactRange : PolicyProtocol::Hierarchy;
-        if(policy.leaf_hierarchy || policy.native_object_locks) {
+        if(policy.leaf_hierarchy || policy.dag_hierarchy || policy.native_object_locks) {
             ObjectLockManager locks;
+            if(policy.dag_hierarchy && !locks.configure_dag(config.hierarchy_bucket_width,policy.hierarchy_index_paths))
+                throw std::invalid_argument("DAG object topology");
             const auto keys=detail::object_record_keys(trace);
             const auto contexts=std::min(config.threads*policy.coroutines,config.transaction_count);
             if(cc.rfind("rdma-",0)==0) {
@@ -413,7 +433,8 @@ int run(int argc, char** argv) {
             }else {
                 std::size_t operations=0;for(const auto& t:trace.transactions())operations+=t.operations.size();
                 if(keys.size()>(SIZE_MAX-operations-16)/2)throw std::invalid_argument("local leaf directory size");
-                if(!locks.init_local(keys,2*(keys.size()+operations)+16,contexts,policy.lock_budget))throw std::runtime_error("local object init");
+                if(!locks.init_local(keys,policy.dag_hierarchy?detail::dag_node_capacity(trace,config.hierarchy_bucket_width,policy.hierarchy_index_paths):
+                    2*(keys.size()+operations)+16,contexts,policy.lock_budget))throw std::runtime_error("local object init");
             }
             std::uint64_t start_ops=0;
             policy.measurement_begin=[&]{snapshot_data();start_ops=locks.rdma_operations();};
@@ -512,6 +533,7 @@ int run(int argc, char** argv) {
         if (measured) for (const char* name : {"successful_attempt","logical_completion","lock_wait","lock_call","release"})
             for (const char* field : {"count","total_ns","p50_ns","p95_ns","p99_ns","p999_ns","max_ns"}) std::cout << "," << name << "_" << field;
         std::cout << ",data_backend,data_rdma_operations,data_read_bytes,data_write_bytes,data_latch_wait_ns,coroutines,active_contexts,warmup_seconds,warmup_committed,warmup_aborted,warmup_elapsed_ns,coroutine_switches_total,state_rdma_operations,hierarchy_layout,native_object_locks,hierarchy_behavior,isolation_semantics,deneva_early_inserts,deneva_early_unlocks,deneva_split_aborts,deneva_partial_write_aborts,execution_mode";
+        std::cout << ",hierarchy_index_paths,hierarchy_read_path";
         std::cout << ",hierarchy_escalation_threshold,hierarchy_deescalate_after,escalation_attempts,escalations,escalation_failures,deescalation_attempts,deescalations,deescalation_failures";
         std::cout << ",rdma_lock_slots_per_shard";
         for(std::size_t shard=0;shard<kRemoteLockShards;++shard)
@@ -563,12 +585,13 @@ int run(int argc, char** argv) {
                   << ',' << policy.coroutines << ',' << std::min(config.threads*policy.coroutines,config.transaction_count)
                   << ',' << policy.warmup_seconds << ',' << stats.policy.warmup_committed << ',' << stats.policy.warmup_aborted
                   << ',' << stats.policy.warmup_elapsed_ns << ',' << stats.policy.coroutine_switches
-                  << ',' << stats.policy.state_rdma_operations << ',' << ((cc=="hierarchical" || cc=="rdma-hierarchical")?(policy.leaf_hierarchy?"leaf":"bucket"):"none")
+                  << ',' << stats.policy.state_rdma_operations << ',' << ((cc=="hierarchical" || cc=="rdma-hierarchical")?(policy.leaf_hierarchy?"leaf":policy.dag_hierarchy?"dag":"bucket"):"none")
                   << ',' << (policy.native_object_locks?1:0)
                   << ',' << (policy.deneva_insert_behavior?"deneva":"strict") << ',' << (policy.deneva_insert_behavior?"deneva-early-release":"strict-2pl")
                   << ',' << stats.policy.deneva_early_inserts << ',' << stats.policy.deneva_early_unlocks
                   << ',' << stats.policy.deneva_split_aborts << ',' << stats.policy.deneva_partial_write_aborts
                   << ',' << (measured?(policy.use_coroutines?"coroutines":"threads"):"threads");
+        std::cout << ',' << (policy.dag_hierarchy?policy.hierarchy_index_paths:0) << ',' << (policy.dag_hierarchy?policy.hierarchy_read_path:0);
         std::cout << ',' << policy.hierarchy_escalation_threshold << ',' << policy.hierarchy_deescalate_after
             << ',' << stats.policy.escalation_attempts << ',' << stats.policy.escalations << ',' << stats.policy.escalation_failures
             << ',' << stats.policy.deescalation_attempts << ',' << stats.policy.deescalations << ',' << stats.policy.deescalation_failures;

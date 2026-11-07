@@ -55,3 +55,14 @@ de-escalation：先恢复完整历史读写/phantom保护和后续操作所需�
 细化扫描以独立 HierarchyPredicate S 保存原查询范围，桶的纯意向与该后代保护不直接冲突，所有层级点写仍取 Record X。它是固定桶资源树内对 phantom-safe 叶保护的一维谓词适配，不称物理叶节点降级。锁集合表示变化前后所有历史逻辑记录和谓词连续保护，只有额外过锁可释放；用户要求的粒度升降限定适用这一等价保护转换。
 
 DAG 的运行配置先支持 regular identity multi-index topology：root -> index root -> index bucket -> shared canonical record。扫描选一个索引路径，所有点写覆盖全部索引父路径。生成的拓扑天然无环且ID检查溢出；通用显式 DAG 校验和计划接口另加环/未知父节点测试。索引投影为同一权威键，不称已支持不同二级键的存储和原子维护。
+
+## 本轮落地清单
+
+- 521d633：真实邻接键元数据接口与空叶删除结构修复。
+- 9ffa2f4：gap/next-key 修正，local/RDMA prior-key，共用新旧事务入口。
+- 0095888：九种MGL模式、完整兼容与permission join，本地/远端转换检查。
+- 19e4753：bounded Node 原子模式转换可选接口、后代谓词保护及降级缓存。
+- c649b6c：固定桶运行时升降、阈值/计数/本地及RDMA负载接入。
+- DAG里程碑：显式拓扑验证、规则多索引锁路径、canonical record、对象服务拓扑协商，详见 dag-multipath-implementation-2026-11-07.md。
+
+完整能力只指上述范围；不同二级键的真实多索引存储、DAG升降组合、1小时压力与正式性能矩阵仍未完成，不纳入本轮已验证能力。

@@ -1,4 +1,4 @@
-> 后续状态：本文是 5296bac 时点审计，下面的“当前/尚未”均指当时。真实邻接键 gap/next-key 修正及 prior-key 的后续实现见 classic-key-locks-implementation-2026-11-07.md；旧实验结论仍按旧提交解释。
+> 后续状态：本文是 5296bac 时点审计，下面的“当前/尚未”均指当时。真实邻接键 gap/next-key 修正及 prior-key 的后续实现见 classic-key-locks-implementation-2026-11-07.md；九模式、运行时升降和 DAG 的后续状态分别见 full-mgl-modes、bucket-runtime-conversion、dag-multipath-implementation 同日记录。旧实验结论仍按旧提交解释。
 
 # 锁协议复现审计与统一架构适配准则（2026-11-07）
 

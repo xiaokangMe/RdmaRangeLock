@@ -3,11 +3,13 @@
 #include "txn/coroutine.h"
 #include "common/execution_context.h"
 #include "lock/native_policy.h"
+#include "lock/object_lock_manager.h"
 #include "lock/range_batch.h"
 #include "hierarchical_plan.h"
 #include "leaf_hierarchy.h"
 #include "key_range_plan.h"
 #include "bucket_runtime.h"
+#include "dag_hierarchy.h"
 #include <atomic>
 #include <algorithm>
 #include <thread>
@@ -35,9 +37,17 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
        !worker_threads || !cfg.max_attempts || !cfg.wait_timeout_ms || cfg.wait_timeout_ms>600000)throw std::invalid_argument("invalid retry/wait bound");
     const bool conversions=cfg.hierarchy_escalation_threshold || cfg.hierarchy_deescalate_after;
     auto* converter=dynamic_cast<ILockModeConversion*>(&physical);
-    if(conversions && (cfg.protocol!=PolicyProtocol::Hierarchy || cfg.leaf_hierarchy ||
+    if(conversions && (cfg.protocol!=PolicyProtocol::Hierarchy || cfg.leaf_hierarchy || cfg.dag_hierarchy ||
        !converter || (!cfg.coordinator_host.empty() && !cfg.txn_state_port)))
         throw std::invalid_argument("granularity conversion requires fixed buckets and local/native RDMA state");
+    if(cfg.dag_hierarchy) {
+        detail::check_dag_geometry(trace.config().hierarchy_bucket_width,cfg.hierarchy_index_paths,cfg.hierarchy_read_path);
+        auto* object=dynamic_cast<ObjectLockManager*>(&physical);
+        if(cfg.protocol!=PolicyProtocol::Hierarchy || cfg.leaf_hierarchy || cfg.deneva_insert_behavior ||
+           !object || !object->matches_dag(trace.config().hierarchy_bucket_width,cfg.hierarchy_index_paths) ||
+           (!cfg.coordinator_host.empty() && !cfg.txn_state_port))
+            throw std::invalid_argument("DAG requires exact objects and local/native RDMA state");
+    }
     std::unordered_map<idx_key_t,std::uint64_t> seed;
     if(!index.preloaded() && !seed_index(index,trace,seed)){RunStats s;s.index_errors=1;return s;}
     const auto total=trace.transactions().size();
@@ -59,7 +69,8 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
     std::vector<Worker> parts(count);
     std::vector<std::vector<detail::HierarchyRequest>> plans;
     if(cfg.protocol==PolicyProtocol::Hierarchy && !cfg.leaf_hierarchy && !conversions)for(const auto& t:trace.transactions())
-        plans.push_back(detail::hierarchy_plan(t,trace.config().hierarchy_bucket_width));
+        plans.push_back(cfg.dag_hierarchy?detail::dag_plan(t,trace.config().hierarchy_bucket_width,cfg.hierarchy_index_paths,cfg.hierarchy_read_path):
+            detail::hierarchy_plan(t,trace.config().hierarchy_bucket_width));
     for(std::size_t w=0;w<count;++w) {
         if(cfg.protocol==PolicyProtocol::None) {
             clients.emplace_back(nullptr);

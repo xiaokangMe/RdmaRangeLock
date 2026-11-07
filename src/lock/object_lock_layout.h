@@ -5,10 +5,10 @@
 #include <stdexcept>
 #include <vector>
 namespace rrl::object_detail {
-constexpr std::uint64_t magic=0x52524c4f424a3032ULL;
+constexpr std::uint64_t magic=0x52524c4f424a3033ULL;
 struct Header {
     std::uint64_t signature{magic},bytes{0},records{0},nodes{0},sessions{0},budget{0},allocated{0},fingerprint{0};
-    std::uint64_t session_base{128},object_base{0},holder_base{0},poison{0},reserved[4]{};
+    std::uint64_t session_base{128},object_base{0},holder_base{0},poison{0},dag_width{0},dag_paths{0},reserved[2]{};
 };
 struct Object {std::uint64_t mutex{0},head{0};};
 struct Holder {std::uint64_t txn{0},mode{0},next{0};};

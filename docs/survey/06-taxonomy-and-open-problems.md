@@ -24,7 +24,8 @@
 | gap-lock | 有（一维有序键） | 与覆盖的物理间隙和记录数相关 | 纯抑制 guard + 插入意向；统一区间表适配 |
 | next-key | 有（一维有序键） | 与覆盖的邻接单元数相关 | (prev,k] 基础 S/X；非完整 KVL |
 | prior-key | 有（一维有序键） | 与覆盖的邻接单元数相关 | [k,next) 镜像基础 S/X |
-| hierarchical 固定桶 | 有 | O(b)+根 | Gray 四模式固定资源树适配 |
+| hierarchical 固定桶 | 有 | O(b)+根 | Gray 多粒度固定资源树适配；九模式扩展与运行时升降 |
+| DAG hierarchy | 有（identity key paths） | 全父路径及canonical记录 | 多索引逻辑路径协议；单棵权威数据索引 |
 | leaf hierarchy | 有（严格路径） | O(a) | 物理节点多粒度适配；不是 separator-key |
 | predicate / exact-range | 有 | O(1) 每个逻辑范围 | Eswaran 一维区间子集，同一种机制的兼容入口 |
 

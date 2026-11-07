@@ -2,18 +2,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 
 #include "common/range.h"
 
 namespace rrl {
 
 constexpr std::size_t kRemoteLockShards = 16;
-// Capacity, not semantics: one slot per held lock, and a transaction that
-// scans 128 keys holds about 1200 next-key entries. The preflight measured
-// 1024 slots per shard saturating at range=128 with 32 threads (89-97% of
-// aborts were AbortCapacity), so the table was widened to 8192. Reads and
-// writes only touch the active_slots prefix, so this costs memory and nothing
-// per operation.
+// Default geometry; runtime capacity is advertised by the versioned header.
 constexpr std::size_t kRemoteLockSlotsPerShard = 8192;
 constexpr std::size_t kRemoteLockSlots = kRemoteLockShards * kRemoteLockSlotsPerShard;
 
@@ -41,7 +37,34 @@ struct alignas(64) RemoteLockShard {
     RemoteLockSlot slots[kRemoteLockSlotsPerShard]{};
 };
 
+constexpr std::uint64_t kRemoteLockMagic = 0x52524c524e473032ULL;
+struct alignas(64) RemoteLockHeader {
+    std::uint64_t magic{kRemoteLockMagic}, version{2}, shards{kRemoteLockShards};
+    std::uint64_t slots_per_shard{kRemoteLockSlotsPerShard};
+    std::uint64_t shard_stride{sizeof(RemoteLockShard)};
+    std::uint64_t bytes{64 + kRemoteLockShards * sizeof(RemoteLockShard)};
+    std::uint64_t reserved[2]{};
+};
+static_assert(sizeof(RemoteLockHeader) == 64, "stable range lock header");
+inline RemoteLockHeader remote_lock_layout(std::size_t slots) {
+    if (!slots || slots > 1048576) throw std::invalid_argument("rdma_lock_slots_per_shard must be 1..1048576");
+    RemoteLockHeader h;
+    h.slots_per_shard = slots;
+    h.shard_stride = offsetof(RemoteLockShard, slots) + slots * sizeof(RemoteLockSlot);
+    h.bytes = sizeof(RemoteLockHeader) + h.shards * h.shard_stride;
+    return h;
+}
+inline bool valid_remote_lock_header(const RemoteLockHeader& h, std::uint64_t length) {
+    if (h.magic != kRemoteLockMagic || h.version != 2 || h.shards != kRemoteLockShards ||
+        !h.slots_per_shard || h.slots_per_shard > 1048576) return false;
+    const auto expected = remote_lock_layout(h.slots_per_shard);
+    return h.shard_stride == expected.shard_stride && h.bytes == expected.bytes &&
+           h.bytes <= length && h.reserved[0] == 0 && h.reserved[1] == 0;
+}
+// Default-layout convenience image for tests/diagnostics. Runtime production
+// regions use header.bytes and header.shard_stride rather than sizeof this type.
 struct alignas(64) RemoteLockRegion {
+    RemoteLockHeader header{};
     RemoteLockShard shards[kRemoteLockShards]{};
 };
 

@@ -35,6 +35,8 @@ public:
     RemoteLockManager& operator=(const RemoteLockManager&) = delete;
 
     struct Diagnostics {
+        std::uint64_t slots_per_shard{0};
+        std::array<std::uint64_t, kRemoteLockShards> slot_peaks{}, capacity_required{};
         std::uint64_t gate_attempts{0};
         std::uint64_t gate_retries{0};
         std::uint64_t gate_aborts{0};
@@ -71,6 +73,8 @@ public:
     std::uint64_t rdma_completion_errors() const;
     std::uint64_t rdma_operations() const;
     Diagnostics diagnostics() const;
+    // Call only when workers have drained, before the measurement window.
+    void reset_slot_diagnostics();
     // Details of the most recent failed work request: opcode, shard, WR index,
     // QP and phase tag, so a one-second stall can be localised.
     // Returned by value: handing out a reference into a mutex-protected record
@@ -98,7 +102,7 @@ private:
     // buffers; with one connection per thread the mutex is uncontended.
     struct Workspace;
     struct ConnectionSlot {
-        ConnectionSlot();
+        explicit ConnectionSlot(std::size_t capacity);
         ~ConnectionSlot();
         std::unique_ptr<RdmaConnection> connection;
         std::unique_ptr<Workspace> workspace;
@@ -162,7 +166,11 @@ private:
     std::size_t connection_count_{1};
     mutable std::atomic<std::size_t> next_connection_{0};
     std::uint64_t connection_generation_{0};
-    std::uint64_t shards_address_{0};
+    std::uint64_t shards_address_{0}, shard_stride_{sizeof(RemoteLockShard)};
+    std::size_t slots_per_shard_{kRemoteLockSlotsPerShard};
+    mutable std::array<std::atomic<std::uint64_t>, kRemoteLockShards> slot_peaks_{}, capacity_required_{};
+    void observe_slots(std::size_t shard, std::uint64_t slots) const;
+    void observe_capacity(std::size_t shard, std::uint64_t required) const;
     std::uint64_t bucket_width_{64};
     std::uint64_t namespace_token_{0};
     bool coordinator_txn_ids_{false};

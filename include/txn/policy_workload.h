@@ -9,6 +9,7 @@ struct PolicyRunConfig {
     PolicyProtocol protocol{PolicyProtocol::Hierarchy};
     std::uint64_t max_attempts{1000}, wait_timeout_ms{5000};
     std::size_t lock_budget{16384};
+    std::size_t rdma_lock_slots_per_shard{0}; // 0 accepts server-advertised geometry
     bool leaf_hierarchy{false};
     // Deneva-style per-record object metadata. This is an explicit native
     // path for rdma-record-2pl; range protocols keep the range-table fallback.

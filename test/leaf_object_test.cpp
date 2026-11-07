@@ -112,6 +112,7 @@ int main(int argc,char** argv){try {
  require(locks.unlock_all(3)==RCOK,"generic object release");
  require(locks.lock(4,LockMode::X,KeyRangeEnt::point(1),LockKind::Node)==RCOK,"generic object X after release");
  require(locks.unlock_all(4)==RCOK,"generic X release");
+ require(locks.unlock_all(4)==RCOK && locks.unlock_all(99999)==RCOK,"object empty cleanup is idempotent");
  std::vector<detail::HierarchyRequest> plan;plan.reserve(512);std::vector<IndexNodeSpan> scratch;scratch.reserve(256);
  TransactionTrace mixed;mixed.operations={{OperationKind::RangeRead,first.range.StartKey,first.range.EndKey,0},{OperationKind::Update,first.range.StartKey,0,9}};
  require(detail::leaf_plan(*index,mixed,scratch,plan),"actual leaf mixed plan");

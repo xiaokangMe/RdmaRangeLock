@@ -21,9 +21,10 @@ int main() {
     check(manager.unlock_all(1) == RCOK, "release");
     const auto p = manager.diagnostics();
     check(p.profile_enabled && p.lock_calls == 3 && p.cache_hits == 1, "logical calls and cache");
-    check(p.sync_calls == 13 && manager.rdma_operations() == 14, "synchronous calls differ from WR count");
-    check(p.phase_calls == std::array<std::uint64_t, 6>{0, 3, 3, 2, 2, 3}, "phase calls");
-    check(p.read_bytes == 152 && p.write_bytes == 80, "submitted data bytes exclude CAS");
+    // One extra read validates the immutable versioned header at connect.
+    check(p.sync_calls == 14 && manager.rdma_operations() == 15, "synchronous calls differ from WR count");
+    check(p.phase_calls == std::array<std::uint64_t, 6>{1, 3, 3, 2, 2, 3}, "phase calls");
+    check(p.read_bytes == 152+sizeof(RemoteLockHeader) && p.write_bytes == 80, "submitted data bytes exclude CAS");
     std::uint64_t sum = 0;
     for (auto ns : p.phase_ns) sum += ns;
     check(sum == p.sync_ns && p.sync_ns > 0 && p.gate_hold_ns >= p.sync_ns / 2,

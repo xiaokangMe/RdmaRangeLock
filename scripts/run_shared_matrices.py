@@ -32,6 +32,23 @@ def hierarchy_buckets(config, cc):
     return config["buckets"] if hierarchy_layout(config, cc)=="bucket" else [0]
 
 
+def lock_service_flags(cfg):
+    """Client options derived from the same per-case image as lock_server."""
+    flags=["--rdma-lock-slots-per-shard",str(cfg["rdma_lock_slots_per_shard"])]
+    if cfg["cc"]=="rdma-record-2pl":
+        flags += ["--native-object-locks",str(cfg.get("native_object_locks",1))]
+    return flags
+
+
+def validate_slot_geometry(row, config, shared):
+    if "rdma_lock_slots_per_shard" not in config:
+        return  # Historical manifests predate the versioned range region.
+    uses_range=shared and not int(row.get("native_object_locks",0)) and row.get("hierarchy_layout")!="leaf"
+    expected=config["rdma_lock_slots_per_shard"] if uses_range else 0
+    if int(row.get("rdma_lock_slots_per_shard",-1))!=expected:
+        raise ValueError("range lock capacity differs from campaign configuration")
+
+
 def cases(config, mode):
     for workload in config["workloads"]:
         for length in config["ranges"] if workload == "ycsb-e" else [0]:
@@ -43,7 +60,7 @@ def cases(config, mode):
                         yield workload, length, cc, bucket, threads, run, policy
 
 
-def validate_row(output, seconds, shared, expected_coordination=None, expected_layout=None, expected_behavior=None):
+def validate_row(output, seconds, shared, expected_coordination=None, expected_layout=None, expected_behavior=None, expected_native_objects=None):
     reader = csv.DictReader(io.StringIO(output)); rows = list(reader)
     if len(rows) != 1 or len(reader.fieldnames) != len(set(reader.fieldnames)) or None in rows[0] or None in rows[0].values():
         raise RuntimeError("invalid runner CSV schema")
@@ -52,7 +69,8 @@ def validate_row(output, seconds, shared, expected_coordination=None, expected_l
     behavior=row.get("hierarchy_behavior","strict")
     isolation=row.get("isolation_semantics","strict-2pl")
     native_objects=int(row.get("native_object_locks", "0"))
-    expected_native_objects=1 if shared and row.get("cc")=="rdma-record-2pl" else 0
+    if expected_native_objects is None:
+        expected_native_objects=1 if shared and row.get("cc")=="rdma-record-2pl" else 0
     if native_objects not in (0, 1) or native_objects != expected_native_objects:
         raise RuntimeError("native object-lock marker differs from the RDMA protocol path")
     if behavior not in ("strict","deneva") or isolation!={"strict":"strict-2pl","deneva":"deneva-early-release"}[behavior]:
@@ -71,6 +89,14 @@ def validate_row(output, seconds, shared, expected_coordination=None, expected_l
     if any(int(row[k]) for k in ERRORS): raise RuntimeError("hard error in measurement")
     if int(row["lock_capacity_aborts"]) or int(row["lock_gate_aborts"]):
         raise RuntimeError("capacity/gate saturation; formal case invalid")
+    if "rdma_lock_slots_per_shard" in row:
+        capacity=int(row["rdma_lock_slots_per_shard"])
+        if capacity<0 or capacity>1048576:raise RuntimeError("invalid range lock capacity")
+        for shard in range(16):
+            peak=int(row["rdma_lock_slot_peak_"+str(shard)])
+            required=int(row["rdma_lock_capacity_required_"+str(shard)])
+            if not 0<=peak<=capacity or required<0 or (required and required<=capacity):
+                raise RuntimeError("invalid range lock occupancy diagnostics")
     if int(row["transactions"]) <= 0: raise RuntimeError("no transaction attempts")
     if int(row["elapsed_ns"]) < seconds * 1000000000: raise RuntimeError("short measurement window")
     if "metrics_schema" in row:
@@ -127,6 +153,7 @@ def validate_resume_rows(rows, config, commit, kind, mode):
     expected_backend=config["coordination_backend"] if mode=="cross-host" else "native-local-state"
     expected_fingerprint=config_fingerprint(config)
     for row in rows:
+        validate_slot_geometry(row,config,mode=="cross-host")
         if row.get("hierarchy_behavior","strict")!=hierarchy_behavior(config,row["cc"]):
             raise ValueError("resume hierarchy behavior differs from configuration")
         if row.get("hierarchy_layout", "bucket" if row.get("cc") in ("hierarchical","rdma-hierarchical") else "none")!=hierarchy_layout(config,row["cc"]):
@@ -172,6 +199,7 @@ def config_from_environment():
                 server_roce=os.environ.get("RRL_SERVER_ROCE", "10.0.0.3"),
                 rdma_connections=os.environ.get("RRL_RDMA_CONNECTIONS", "auto"),
                 wait_timeout_ms=number("WAIT_TIMEOUT_MS","5000"), tree_latch_timeout_ms=number("TREE_LATCH_TIMEOUT_MS","10000"),
+                rdma_lock_slots_per_shard=number("RDMA_LOCK_SLOTS_PER_SHARD","8192"),
                 lock_budget=number("LOCK_BUDGET","16384"), local_gate=number("LOCAL_GATE","1"),
                 gate_retry=number("GATE_RETRY","64"), profile=0, slot_lookup=os.environ.get("RRL_SLOT_LOOKUP","linear"))
 
@@ -231,6 +259,9 @@ def main():
     config.setdefault("max_attempts", 1000)
     config.setdefault("order", 128); config.setdefault("tree_pages", 8192); config.setdefault("tree_records", 262144)
     config.setdefault("wait_timeout_ms",5000);config.setdefault("tree_latch_timeout_ms",10000)
+    config.setdefault("rdma_lock_slots_per_shard",8192)
+    if not isinstance(config["rdma_lock_slots_per_shard"],int) or isinstance(config["rdma_lock_slots_per_shard"],bool) or not 1<=config["rdma_lock_slots_per_shard"]<=1048576:
+        raise SystemExit("rdma_lock_slots_per_shard must be 1..1048576")
     config.setdefault("lock_budget",16384);config.setdefault("local_gate",1);config.setdefault("gate_retry",64)
     config.setdefault("profile",0);config.setdefault("slot_lookup","linear")
     if not 1<=config["wait_timeout_ms"]<=600000 or not 1<=config["tree_latch_timeout_ms"]<=600000 or not 1<=config["lock_budget"]<=1048576:
@@ -329,6 +360,7 @@ def main():
                    wait_policy=policy, max_attempts=config["max_attempts"], duration_seconds=duration,
                    execution_mode=config["execution_mode"],coroutines=config["coroutines"],coroutine_stack_bytes=config["coroutine_stack_bytes"],warmup_seconds=config["warmup_seconds"],
                    wait_timeout_ms=config["wait_timeout_ms"], tree_latch_timeout_ms=config["tree_latch_timeout_ms"], lock_budget=config["lock_budget"],
+                   rdma_lock_slots_per_shard=config["rdma_lock_slots_per_shard"],
                    native_object_locks=(config["native_object_locks"] if mode=="cross-host" and cc=="rdma-record-2pl" else 0))
         layout=hierarchy_layout(config,cc)
         behavior=hierarchy_behavior(config,cc)
@@ -352,6 +384,7 @@ def main():
         if cc != "none": flags += ["--wait-policy", policy, "--max-attempts", str(config["max_attempts"]),
                                     "--wait-timeout-ms",str(config["wait_timeout_ms"]),"--lock-budget",str(config["lock_budget"])]
         if mode == "cross-host":
+            flags += lock_service_flags(cfg)
             flags[1] = "rdma"
             with SharedServices(build, path, logs / label, env, native=config["coordination_backend"]=="native-rdma-state") as service:
                 flags += ["--tree-latch-timeout-ms",str(config["tree_latch_timeout_ms"]),"--data-port", str(service.data_port), "--rdma-port", str(service.lock_port),
@@ -360,7 +393,8 @@ def main():
                 output = command([remote_dir + "/rrl_workload_runner"] + flags, label, True, duration+config["warmup_seconds"]+180)
                 service.check()
         else: output = command([str(build / "rrl_workload_runner")] + flags, label, timeout=duration+config["warmup_seconds"]+180)
-        row = validate_row(output, duration, mode == "cross-host", config["coordination_backend"] if mode=="cross-host" else None,layout,behavior)
+        row = validate_row(output, duration, mode == "cross-host", config["coordination_backend"] if mode=="cross-host" else None,layout,behavior,cfg["native_object_locks"])
+        validate_slot_geometry(row,config,mode=="cross-host")
         if cc=="none":row["wait_policy"]="none"
         return dict(source_commit=commit, result_kind=kind, transport="rdma-cross-host-shared" if mode=="cross-host" else "local-no-rdma",
                     execution_stack_bytes=config["coroutine_stack_bytes"], ycsb_unique_keys=config["ycsb_unique_keys"],

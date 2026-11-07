@@ -6,7 +6,7 @@ import csv
 import json
 from pathlib import Path
 import statistics
-from run_shared_matrices import cases, ERRORS, validate_row, config_fingerprint, hierarchy_layout, hierarchy_behavior
+from run_shared_matrices import cases, ERRORS, validate_row, config_fingerprint, hierarchy_layout, hierarchy_behavior, validate_slot_geometry
 
 
 def load_campaign(path, allow_smoke=False):
@@ -32,7 +32,9 @@ def load_campaign(path, allow_smoke=False):
             buf=io.StringIO();writer=csv.DictWriter(buf,fieldnames=list(row));writer.writeheader();writer.writerow(row)
             validate_row(buf.getvalue(),state["config"]["duration_seconds"],mode=="cross-host",
                          state["config"].get("coordination_backend","tcp-control+rdma-slots") if mode=="cross-host" else None,
-                         hierarchy_layout(state["config"],row["cc"]),hierarchy_behavior(state["config"],row["cc"]))
+                         hierarchy_layout(state["config"],row["cc"]),hierarchy_behavior(state["config"],row["cc"]),
+                         (state["config"].get("native_object_locks",1) if mode=="cross-host" and row["cc"]=="rdma-record-2pl" else 0))
+            validate_slot_geometry(row,state["config"],mode=="cross-host")
             if int(row.get("coroutines",1))!=state["config"].get("coroutines",1) or int(row.get("warmup_seconds",0))!=state["config"].get("warmup_seconds",0) or int(row.get("execution_stack_bytes",262144))!=state["config"].get("coroutine_stack_bytes",262144):
                 raise ValueError("mixed runtime geometry/warmup")
             if state["config"].get("warmup_seconds",0) and int(row.get("warmup_elapsed_ns",0))<state["config"]["warmup_seconds"]*1000000000:

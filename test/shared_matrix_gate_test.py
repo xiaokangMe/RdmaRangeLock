@@ -8,7 +8,7 @@ import subprocess
 import sys
 root=Path(__file__).resolve().parent.parent
 sys.path.insert(0,str(root/"scripts"))
-from run_shared_matrices import cases,validate_row,config_fingerprint,validate_resume_rows,resume_keys,config_from_environment
+from run_shared_matrices import cases,validate_row,config_fingerprint,validate_resume_rows,resume_keys,config_from_environment,validate_slot_geometry
 from report_shared_matrices import load_campaign
 config=json.loads((root/"experiments/configs/formal_shared_10s.json").read_text())
 assert len(list(cases(config,"local")))==756
@@ -151,3 +151,18 @@ try:validate_row(text(source_row),0,True,expected_behavior="strict")
 except RuntimeError:pass
 else:raise AssertionError("source early-release result accepted into strict campaign")
 print("Campaign isolation between Deneva early release and strict behavior: OK")
+
+
+# Remote capacity must match the actual reported backend, not only a config hash.
+capacity_cfg=dict(config,rdma_lock_slots_per_shard=32768)
+range_row=dict(row,index="rdma",cc="rdma-gap-lock",hierarchy_layout="none",
+               native_object_locks="0",rdma_lock_slots_per_shard="32768")
+validate_slot_geometry(range_row,capacity_cfg,True)
+for actual in ("8192","0"):
+    try:validate_slot_geometry(dict(range_row,rdma_lock_slots_per_shard=actual),capacity_cfg,True)
+    except ValueError:pass
+    else:raise AssertionError("capacity mismatch accepted")
+object_row=dict(range_row,cc="rdma-record-2pl",native_object_locks="1",rdma_lock_slots_per_shard="0")
+validate_slot_geometry(object_row,capacity_cfg,True)
+bad=dict(row,rdma_lock_slot_peak_0="1");reject(bad)
+print("Capacity identity and occupancy schema validation: OK")

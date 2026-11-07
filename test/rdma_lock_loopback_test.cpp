@@ -44,6 +44,8 @@ int main() {
         return 1;
     }
 
+    check(locks.unlock_all(987654)==RCOK && locks.unlock_all(987654)==RCOK,"empty cleanup is idempotent");
+    check(locks.unlock(987654,KeyRangeEnt::point(1000))==Abort,"explicit missing unlock still aborts");
     const KeyRangeEnt point = KeyRangeEnt::point(1000);
     check(locks.lock(1, LockMode::S, point, LockKind::NextKey) == RCOK, "first lock succeeds");
     check(locks.get_lock_count(1) == 1, "one lock recorded");

@@ -105,6 +105,10 @@ int main() {
     check(locks.get_lock_count() == 2, "changing shard sets");
     check(locks.unlock_all(33) == RCOK && locks.unlock_all(34) == RCOK, "point release");
     check(locks.get_lock_count() == 0, "empty after release");
+    std::vector<KeyRangeEnt> batch;
+    for(std::size_t i=0;i<140;++i)batch.push_back(KeyRangeEnt::point(i*1024));
+    check(locks.lock_batch(35,LockMode::S,batch,LockKind::Record)==RCOK,"record batch");
+    check(locks.unlock_all(35)==RCOK && locks.get_lock_count()==0,"record batch cleanup");
     check(gate_visits > 280 && gate_allocations == 0 && !in_gate, "zero C++ new allocations while gates held");
 
     // A different QP must not release using a shard set that predates B.

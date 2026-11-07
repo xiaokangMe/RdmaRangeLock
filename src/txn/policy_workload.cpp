@@ -81,9 +81,11 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
     for(std::size_t w=0;w<count;++w){operation_txns[w].operations.resize(1);immediate_writes[w].reserve(1);}
     std::vector<std::vector<IndexMutation>> writes(count);
     std::vector<std::vector<KeyValue>> scans(count),rechecks(count);
+    std::vector<std::vector<KeyRangeEnt>> record_requests(count);
     const auto scan_capacity=trace.config().range_length;
     for(auto& v:scans)v.reserve(scan_capacity);
     for(auto& v:rechecks)v.reserve(scan_capacity);
+    for(auto& v:record_requests)v.reserve(scan_capacity);
     std::size_t maxops=0;for(const auto& t:trace.transactions())maxops=std::max(maxops,t.operations.size());
     for(auto& v:writes)v.reserve(maxops);
     std::vector<std::vector<IndexNodeSpan>> leaf_scratch(count);
@@ -183,7 +185,7 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                     outcome=r.result;
                     if(outcome!=TxnResult::Ok){p.call.add(ns(Clock::now()-began));return false;}
                     touched=true;
-                    const auto rc=nc ? RCOK : physical.lock(id,mode,range,kind);
+                    const auto rc=(nc || lc) ? RCOK : physical.lock(id,mode,range,kind);
                     p.call.add(ns(Clock::now()-began));
                     // Metadata grant excludes every coordinated conflict.
                     // A foreign/legacy client or physical-table failure is a
@@ -268,13 +270,27 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                             for(const auto& row:verified)account_value(row.key,static_cast<const std::uint64_t*>(row.value));
                             account_inserted(range,verified);
                         } else if(cfg.protocol==PolicyProtocol::Record || cfg.protocol==PolicyProtocol::Gap) {
-                            for(const auto& row:rows) {
-                                if(!acquire(LockMode::S,KeyRangeEnt::point(row.key),LockKind::Record))break;
-                                void* value=nullptr;
-                                if(!index.lookup(row.key,value)){outcome=TxnResult::Conflict;break;}
-                                account_value(row.key,static_cast<const std::uint64_t*>(value));
+                            auto& requests=record_requests[worker];requests.clear();
+                            for(const auto& row:rows)requests.push_back(KeyRangeEnt::point(row.key));
+                            if(!acquire_batch(LockMode::S,requests,LockKind::Record))break;
+                            // Re-read values only after record S locks are granted.
+                            // One scan replaces a fresh root descent for every row.
+                            auto& verified=rechecks[worker];index.scan_range_into(range,verified);
+                            s.rows_rechecked+=verified.size();
+                            if(cfg.protocol==PolicyProtocol::Gap && verified.size()!=rows.size()) {
+                                outcome=TxnResult::Conflict;break;
                             }
-                            if(outcome==TxnResult::Ok)account_inserted(range,rows);
+                            std::size_t n=0;
+                            for(const auto& row:rows) {
+                                while(n<verified.size() && verified[n].key<row.key)++n;
+                                if(n==verified.size() || verified[n].key!=row.key) {
+                                    outcome=TxnResult::Conflict;break;
+                                }
+                                account_value(row.key,static_cast<const std::uint64_t*>(verified[n].value));
+                            }
+                            // Record-only scans do not lock gaps. Newly inserted
+                            // keys are deliberately not consumed without a lock.
+                            if(outcome==TxnResult::Ok)account_inserted(range,verified);
                         } else {
                             for(const auto& row:rows)account_value(row.key,static_cast<const std::uint64_t*>(row.value));
                             account_inserted(range,rows);

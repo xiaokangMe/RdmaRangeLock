@@ -10,6 +10,7 @@
 #include <mutex>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <memory>
 #include <thread>
@@ -50,7 +51,7 @@ std::chrono::milliseconds recovery_timeout() {
     return std::chrono::milliseconds(ms);
 }
 
-void clear_owner_state(std::uint16_t port, std::uint64_t owner, RdmaOpTag failed_tag, bool native_fail_stop) {
+void clear_owner_state(std::uint16_t port, std::uint64_t owner, RdmaOpTag failed_tag, bool native_fail_stop, RemoteLockHeader layout) {
     if (owner == 0) return; // Unowned probes/recovery connections never publish locks.
     // Use NIC atomics for both ordinary clients and recovery. CPU atomics are
     // not a portable mutual exclusion mechanism against remote NIC atomics.
@@ -60,10 +61,10 @@ void clear_owner_state(std::uint16_t port, std::uint64_t owner, RdmaOpTag failed
     if (!recovery.connect_client("127.0.0.1", port)) recovery_failed(owner, "connect");
     const auto remote = recovery.remote_memory();
     const auto token = owner | (std::uint64_t{1} << 63);
-    std::vector<RemoteLockSlot> slots(kRemoteLockSlotsPerShard);
+    std::vector<RemoteLockSlot> slots(layout.slots_per_shard);
     for (std::size_t shard = 0; shard < kRemoteLockShards; ++shard) {
         const auto base = remote.address + offsetof(RemoteLockRegion, shards) +
-                          shard * sizeof(RemoteLockShard);
+                          shard * layout.shard_stride;
         const auto gate = base + offsetof(RemoteLockShard, gate);
         const auto deadline = budget.deadline;
         for (;;) {
@@ -88,11 +89,14 @@ void clear_owner_state(std::uint16_t port, std::uint64_t owner, RdmaOpTag failed
         }
         std::uint64_t count = 0;
         if (!recovery.read(base + offsetof(RemoteLockShard, active_slots), remote.rkey,
-                           &count, sizeof(count)) || count > kRemoteLockSlotsPerShard)
+                           &count, sizeof(count)) || count > layout.slots_per_shard)
             recovery_failed(owner, "count");
-        if (count && !recovery.read(base + offsetof(RemoteLockShard, slots), remote.rkey,
-                                    slots.data(), count * sizeof(RemoteLockSlot)))
-            recovery_failed(owner, "slots");
+        for(std::size_t offset=0;offset<count*sizeof(RemoteLockSlot);) {
+            const auto bytes=std::min<std::size_t>(1u<<20,count*sizeof(RemoteLockSlot)-offset);
+            if(!recovery.read(base+offsetof(RemoteLockShard,slots)+offset,remote.rkey,
+                reinterpret_cast<char*>(slots.data())+offset,bytes))recovery_failed(owner,"slots");
+            offset+=bytes;
+        }
         if (native_fail_stop) {
             for (std::uint64_t i = 0; i < count; ++i)
                 if (slots[i].owner == owner)
@@ -102,9 +106,12 @@ void clear_owner_state(std::uint16_t port, std::uint64_t owner, RdmaOpTag failed
         for (std::uint64_t i = 0; i < count; ++i)
             if (slots[i].owner != owner) slots[kept++] = slots[i];
         if (kept != count) {
-            if (kept && !recovery.write(base + offsetof(RemoteLockShard, slots), remote.rkey,
-                                        slots.data(), kept * sizeof(RemoteLockSlot)))
-                recovery_failed(owner, "compact");
+            for(std::size_t offset=0;offset<kept*sizeof(RemoteLockSlot);) {
+                const auto bytes=std::min<std::size_t>(1u<<20,kept*sizeof(RemoteLockSlot)-offset);
+                if(!recovery.write(base+offsetof(RemoteLockShard,slots)+offset,remote.rkey,
+                    reinterpret_cast<char*>(slots.data())+offset,bytes))recovery_failed(owner,"compact");
+                offset+=bytes;
+            }
             if (!recovery.write(base + offsetof(RemoteLockShard, active_slots), remote.rkey,
                                 &kept, sizeof(kept))) recovery_failed(owner, "publish count");
         }
@@ -132,39 +139,45 @@ int run(int argc, char** argv) {
         contexts=std::max(contexts,threads*coroutines+16);
         return run_object_lock_server(static_cast<std::uint16_t>(port),detail::object_record_keys(trace),t.page_capacity+2,contexts,budget);
     }
-    if (argc > 3 || (argc == 3 && std::string(argv[2]) != "--native-fail-stop"))
-        throw std::invalid_argument("usage: lock_server [port] [--native-fail-stop]");
-    const bool native_fail_stop = argc == 3;
+    bool native_fail_stop=false;
+    std::size_t capacity=kRemoteLockSlotsPerShard;
     const auto parsed = argc > 1 ? parse_unsigned(argv[1], "port") : 19876;
     if (!parsed || parsed > 65535) throw std::invalid_argument("port must be 1..65535");
-    const auto port = static_cast<std::uint16_t>(parsed);
+    const auto port=static_cast<std::uint16_t>(parsed);
+    for(int i=2;i<argc;++i) {
+        const std::string flag=argv[i];
+        if(flag=="--native-fail-stop" && !native_fail_stop)native_fail_stop=true;
+        else if(flag=="--slots-per-shard" && i+1<argc)capacity=parse_unsigned(argv[++i],"slots-per-shard");
+        else throw std::invalid_argument("usage: lock_server [port] [--native-fail-stop] [--slots-per-shard N]");
+    }
+    const auto layout=remote_lock_layout(capacity);
     (void)recovery_timeout();
     if (const char* value = std::getenv("RRL_RDMA_CONTROL_TIMEOUT_MS")) {
         const auto ms = parse_unsigned(value, "RRL_RDMA_CONTROL_TIMEOUT_MS");
         if (!ms || ms > 600000) throw std::invalid_argument("control timeout must be 1..600000 ms");
     }
-    auto region_owner = std::unique_ptr<RemoteLockRegion>(new RemoteLockRegion());
-    RemoteLockRegion& region = *region_owner;
+    std::vector<std::uint64_t> region(layout.bytes/sizeof(std::uint64_t),0);
+    std::memcpy(region.data(),&layout,sizeof(layout));
     RdmaListener listener(port);
     if (!listener.valid()) { std::cerr << "RDMA control listen failed\n"; return 2; }
-    std::cout << "RDMA lock server listening on port " << port << std::endl;
+    std::cout << "RDMA lock server listening on port " << port << ",slots_per_shard=" << capacity << ",bytes=" << layout.bytes << std::endl;
     for (;;) {
         auto* connection = new RdmaConnection();
-        if (!connection->accept_server(listener, &region, sizeof(region))) {
+        if (!connection->accept_server(listener, region.data(), layout.bytes)) {
             const bool rejected = connection->rejected_handshake();
             delete connection;
             if (rejected) { std::cerr << "RDMA control handshake rejected\n"; continue; }
             std::cerr << "RDMA lock server accept failed\n";
             return 2;
         }
-        std::thread([connection, port, native_fail_stop] {
+        std::thread([connection, port, native_fail_stop, layout] {
             connection->wait_for_disconnect();
             const auto owner = connection->peer_owner_token();
             const auto tag = connection->peer_failure_tag();
             // Destroy the server QP and invalidate its MR before any recovery
             // can acquire gates or read slots written through that connection.
             delete connection;
-            clear_owner_state(port, owner, tag, native_fail_stop);
+            clear_owner_state(port, owner, tag, native_fail_stop, layout);
         }).detach();
     }
 }

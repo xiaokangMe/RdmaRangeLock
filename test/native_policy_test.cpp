@@ -17,6 +17,13 @@ namespace {
 void require(bool b,const char* what){if(!b)throw std::runtime_error(what);}
 void ok(PolicyReply r){require(r.result==TxnResult::Ok,"expected transaction OK");}
 }
+struct PrefixFailure final : LockManager {
+    unsigned calls{0};
+    RC lock(txnid_t t,LockMode m,const KeyRangeEnt& r,LockKind k,std::vector<txnid_t>* c) override {
+        if(++calls==2)return AbortCapacity;
+        return LockManager::lock(t,m,r,k,c);
+    }
+};
 int main(int argc,char** argv) {
  try {
     const auto* hostenv=std::getenv("RRL_TEST_RDMA_HOST");
@@ -124,6 +131,15 @@ int main(int argc,char** argv) {
     if(policy!=WaitPolicy::NoWait)require(locks.unlock_all(older.id)==RCOK,"final release");
     ok(old.end(older.id));
     require(locks.get_lock_count()==0,"physical lock leak");
+    // Non-batch physical backends must retain a successful prefix even
+    // when a later request hits capacity.
+    PrefixFailure prefix;
+    NativePolicyClient prefix_client(host,stateport,prefix);
+    const auto prefix_tx=prefix_client.begin(policy,0,1000000000ULL);ok(prefix_tx);
+    require(prefix_client.acquire_batch(prefix_tx.id,LockMode::S,
+        {KeyRangeEnt::point(1),KeyRangeEnt::point(2)},LockKind::Record).result==TxnResult::Conflict,"batch prefix abort");
+    require(prefix_client.has_physical_locks() && prefix.get_lock_count(prefix_tx.id)==1,"native prefix tracked");
+    require(prefix.unlock_all(prefix_tx.id)==RCOK,"native prefix cleanup");ok(prefix_client.end(prefix_tx.id));
     // Unannounced active disconnect poisons the passive cohort via NIC.
     if(argc==1 || argc>2) {
     const auto child=fork();require(child>=0,"fork");

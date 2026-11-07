@@ -221,7 +221,7 @@ RC ObjectLockManager::unlock(txnid_t txn,const KeyRangeEnt& range,LockKind kind)
 RC ObjectLockManager::unlock_all(txnid_t txn) {
     auto& p=*impl_;if(p.failed || p.contexts.empty())return ERROR;
     // Every transaction is bound to its execution context for its full life.
-    auto& c=p.context();bool found=false;
+    auto& c=p.context();
     for(;;) {
         std::uint64_t object=0;
         {std::lock_guard<FifoMutex> guard(c.mutex);
@@ -230,9 +230,9 @@ RC ObjectLockManager::unlock_all(txnid_t txn) {
         const auto index=(object-p.header.object_base)/sizeof(Object);
         const bool record=index>=p.header.nodes;
         const auto key=record?p.records[index-p.header.nodes]:index;
-        if(unlock(txn,KeyRangeEnt::point(key),record?LockKind::Record:LockKind::Node)!=RCOK)return ERROR;found=true;
+        if(unlock(txn,KeyRangeEnt::point(key),record?LockKind::Record:LockKind::Node)!=RCOK)return ERROR;
     }
-    return found?RCOK:Abort;
+    return RCOK;
 }
 std::size_t ObjectLockManager::get_lock_count(txnid_t txn) const {
     auto& p=*impl_;if(p.failed || p.contexts.empty())throw std::runtime_error("object count unavailable");

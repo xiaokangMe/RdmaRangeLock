@@ -123,6 +123,10 @@ void load_config(const std::string& path, WorkloadConfig& config,
         } else if (key == "hierarchy_layout") {
             if(value.kind!=ConfigScalar::String || (value.text!="leaf" && value.text!="bucket"))throw std::invalid_argument("hierarchy_layout must be leaf or bucket");
             policy.leaf_hierarchy=value.text=="leaf";measured=true;
+        } else if (key == "rdma_lock_slots_per_shard") {
+            if(value.kind!=ConfigScalar::Number)throw std::invalid_argument("rdma_lock_slots_per_shard must be integer");
+            const auto slots=parse_unsigned(value.text,key);
+            (void)remote_lock_layout(slots);policy.rdma_lock_slots_per_shard=slots;
         } else if (key == "native_object_locks") {
             if (value.kind != ConfigScalar::Number) throw std::invalid_argument("native_object_locks: expected 0 or 1");
             const auto enabled = parse_unsigned(value.text, key);
@@ -203,6 +207,10 @@ int run(int argc, char** argv) {
         else if(option=="--hierarchy-layout") {
             if(value!="leaf" && value!="bucket")throw std::invalid_argument("hierarchy-layout must be leaf or bucket");
             policy.leaf_hierarchy=value=="leaf";measured=true;
+        }
+        else if (option == "--rdma-lock-slots-per-shard") {
+            const auto slots=parse_unsigned(value,option);
+            (void)remote_lock_layout(slots);policy.rdma_lock_slots_per_shard=slots;
         }
         else if (option == "--native-object-locks") {
             const auto enabled = parse_unsigned(value, option);
@@ -404,10 +412,12 @@ int run(int argc, char** argv) {
                 resolve_connection_count(config.threads,rdma_connections);
             locks.set_connection_count(active_connections);
             locks.set_bucket_width(config.hierarchy_bucket_width);
-            if (!locks.connect(rdma_host,rdma_port)) throw std::runtime_error("RDMA connect failed");
+            if (!locks.connect(rdma_host,rdma_port)) throw std::runtime_error("RDMA range lock connect/layout mismatch");
+            if(policy.rdma_lock_slots_per_shard && locks.diagnostics().slots_per_shard!=policy.rdma_lock_slots_per_shard)
+                throw std::runtime_error("RDMA range lock capacity differs from configuration");
             RemoteLockManager::Diagnostics before{};
             std::uint64_t ops_before=0;
-            policy.measurement_begin=[&] {snapshot_data();before=locks.diagnostics();ops_before=locks.rdma_operations();};
+            policy.measurement_begin=[&] {snapshot_data();locks.reset_slot_diagnostics();before=locks.diagnostics();ops_before=locks.rdma_operations();};
             stats = run_policy_workload(*index,locks,trace,policy);
             stats.rdma_timeouts=locks.rdma_timeouts(); stats.rdma_completion_errors=locks.rdma_completion_errors();
             stats.rdma_operations=locks.rdma_operations()-ops_before; rdma_diag=locks.diagnostics();
@@ -480,7 +490,11 @@ int run(int argc, char** argv) {
         if (measured) std::cout << ",metrics_schema,wait_policy,coordination,logical_started,logical_unfinished,logical_failed,retries,max_retries,wound_aborts,deadline_aborts,retry_exhausted,completed_retries,unfinished_retries";
         if (measured) for (const char* name : {"successful_attempt","logical_completion","lock_wait","lock_call","release"})
             for (const char* field : {"count","total_ns","p50_ns","p95_ns","p99_ns","p999_ns","max_ns"}) std::cout << "," << name << "_" << field;
-        std::cout << ",data_backend,data_rdma_operations,data_read_bytes,data_write_bytes,data_latch_wait_ns,coroutines,active_contexts,warmup_seconds,warmup_committed,warmup_aborted,warmup_elapsed_ns,coroutine_switches_total,state_rdma_operations,hierarchy_layout,native_object_locks,hierarchy_behavior,isolation_semantics,deneva_early_inserts,deneva_early_unlocks,deneva_split_aborts,deneva_partial_write_aborts,execution_mode\n";
+        std::cout << ",data_backend,data_rdma_operations,data_read_bytes,data_write_bytes,data_latch_wait_ns,coroutines,active_contexts,warmup_seconds,warmup_committed,warmup_aborted,warmup_elapsed_ns,coroutine_switches_total,state_rdma_operations,hierarchy_layout,native_object_locks,hierarchy_behavior,isolation_semantics,deneva_early_inserts,deneva_early_unlocks,deneva_split_aborts,deneva_partial_write_aborts,execution_mode";
+        std::cout << ",rdma_lock_slots_per_shard";
+        for(std::size_t shard=0;shard<kRemoteLockShards;++shard)
+            std::cout << ",rdma_lock_slot_peak_" << shard << ",rdma_lock_capacity_required_" << shard;
+        std::cout << '\n';
         std::cout << WorkloadTrace::name(config.kind) << ',' << index_name << ',' << cc << ',' << config.threads << ','
                   << stats.transactions << ',' << stats.committed << ',' << stats.aborted << ',' << stats.operations << ','
                   << stats.reads << ',' << stats.updates << ',' << stats.inserts << ',' << stats.deletes << ','
@@ -532,7 +546,11 @@ int run(int argc, char** argv) {
                   << ',' << (policy.deneva_insert_behavior?"deneva":"strict") << ',' << (policy.deneva_insert_behavior?"deneva-early-release":"strict-2pl")
                   << ',' << stats.policy.deneva_early_inserts << ',' << stats.policy.deneva_early_unlocks
                   << ',' << stats.policy.deneva_split_aborts << ',' << stats.policy.deneva_partial_write_aborts
-                  << ',' << (measured?(policy.use_coroutines?"coroutines":"threads"):"threads") << '\n';
+                  << ',' << (measured?(policy.use_coroutines?"coroutines":"threads"):"threads");
+        std::cout << ',' << rdma_diag.slots_per_shard;
+        for(std::size_t shard=0;shard<kRemoteLockShards;++shard)
+            std::cout << ',' << rdma_diag.slot_peaks[shard] << ',' << rdma_diag.capacity_required[shard];
+        std::cout << '\n';
     } else {
         std::cout << "execution_mode=" << (measured?(policy.use_coroutines?"coroutines":"threads"):"threads") << "\n";
         std::cout << "data_backend=" << (index_name=="rdma"?"shared-rdma":"local")

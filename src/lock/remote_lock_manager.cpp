@@ -70,24 +70,24 @@ struct RemoteLockManager::Workspace {
     std::array<RemoteLockSlot, kRemoteLockShards> payload{};
     std::array<std::size_t, kRemoteLockShards> owned{};
 
-    Workspace() : tables(kRemoteLockShards) {
+    explicit Workspace(std::size_t capacity) : tables(kRemoteLockShards) {
         for (auto& table : tables) {
-            table.slots.reserve(kRemoteLockSlotsPerShard);
-            table.index.reserve(kRemoteLockSlotsPerShard);
+            table.slots.reserve(capacity);
+            table.index.reserve(capacity);
         }
-        for (auto& slots : moved) slots.reserve(kRemoteLockSlotsPerShard);
+        for (auto& slots : moved) slots.reserve(capacity);
         acquired.reserve(kRemoteLockShards); previous.reserve(kRemoteLockShards);
-        swaps.reserve(kRemoteLockShards); reads.reserve(kRemoteLockShards);
+        swaps.reserve(kRemoteLockShards); reads.reserve(kRemoteBatchLimit);
         // Each removed slot moves at most one tail slot; each shard publishes
         // at most one count. Sources remain stable across write chunks.
-        writes.reserve(kRemoteLockShards * (kRemoteLockSlotsPerShard + 1));
+        writes.reserve(kRemoteLockShards * (capacity + 1));
         chunk.reserve(kRemoteBatchLimit);
         batch_payload.reserve(kRemoteLockShards * 64);
-        conflicts.reserve(kRemoteLockShards * kRemoteLockSlotsPerShard);
+        conflicts.reserve(kRemoteLockShards * capacity);
     }
 };
 
-RemoteLockManager::ConnectionSlot::ConnectionSlot() : workspace(std::make_unique<Workspace>()) {}
+RemoteLockManager::ConnectionSlot::ConnectionSlot(std::size_t capacity) : workspace(std::make_unique<Workspace>(capacity)) {}
 RemoteLockManager::ConnectionSlot::~ConnectionSlot() = default;
 
 class RemoteLockManager::RemoteGateGuard {
@@ -175,22 +175,34 @@ bool RemoteLockManager::connect(const std::string& host, std::uint16_t port) {
     namespace_token_ = make_token(this, connection_count_) & 0x0000ffffffffffffULL;
     if (namespace_token_ == 0) namespace_token_ = 1;
     txn_cache_.clear();
+    // Ownerless read-only probe: wrong-backend rejection cannot invoke owner
+    // recovery or write any bytes in a foreign lock region.
+    RdmaConnection probe;
+    RemoteLockHeader header{};
+    if (!probe.connect_client(host, port) ||
+        probe.remote_memory().length < sizeof(header) ||
+        !probe.read(probe.remote_memory().address, probe.remote_memory().rkey, &header, sizeof(header)) ||
+        !valid_remote_lock_header(header, probe.remote_memory().length)) return false;
+    const auto expected_address = probe.remote_memory().address;
+    slots_per_shard_ = header.slots_per_shard;
+    shard_stride_ = header.shard_stride;
+    shards_address_ = expected_address + sizeof(RemoteLockHeader);
+    probe.disconnect();
     connections_.reserve(connection_count_);
     for (std::size_t i = 0; i < connection_count_; ++i) {
-        auto slot = std::make_unique<ConnectionSlot>();
+        auto slot = std::make_unique<ConnectionSlot>(slots_per_shard_);
         slot->owner_token = make_token(this, i);
         slot->connection = std::make_unique<RdmaConnection>();
         if (!slot->connection->connect_client(host, port, slot->owner_token)) {
             connections_.clear();
             return false;
         }
-        if (i == 0) {
-            const auto& remote = slot->connection->remote_memory();
-            if (remote.length < sizeof(RemoteLockRegion)) {
-                connections_.clear();
-                return false;
-            }
-            shards_address_ = remote.address + offsetof(RemoteLockRegion, shards);
+        const auto& remote = slot->connection->remote_memory();
+        RemoteLockHeader observed{};
+        if (remote.address != expected_address || !slot->connection->read(remote.address, remote.rkey, &observed, sizeof(observed)) ||
+            !valid_remote_lock_header(observed, remote.length) ||
+            std::memcmp(&observed, &header, sizeof(header)) != 0) {
+            connections_.clear(); return false;
         }
         connections_.push_back(std::move(slot));
     }
@@ -238,6 +250,11 @@ std::uint64_t RemoteLockManager::rdma_operations() const {
 
 RemoteLockManager::Diagnostics RemoteLockManager::diagnostics() const {
     Diagnostics result;
+    result.slots_per_shard = connections_.empty() ? 0 : slots_per_shard_;
+    for (std::size_t i=0;i<kRemoteLockShards;++i) {
+        result.slot_peaks[i]=slot_peaks_[i].load(std::memory_order_relaxed);
+        result.capacity_required[i]=capacity_required_[i].load(std::memory_order_relaxed);
+    }
     result.gate_attempts = gate_attempts_.load(std::memory_order_relaxed);
     result.gate_retries = gate_retry_count_.load(std::memory_order_relaxed);
     result.gate_aborts = gate_abort_count_.load(std::memory_order_relaxed);
@@ -268,6 +285,22 @@ RemoteLockManager::Diagnostics RemoteLockManager::diagnostics() const {
     return result;
 }
 
+namespace {
+void update_peak(std::atomic<std::uint64_t>& peak, std::uint64_t value) {
+    auto old=peak.load(std::memory_order_relaxed);
+    while(old<value && !peak.compare_exchange_weak(old,value,std::memory_order_relaxed)) {}
+}
+}
+void RemoteLockManager::observe_slots(std::size_t shard,std::uint64_t slots) const {
+    update_peak(slot_peaks_[shard],slots);
+}
+void RemoteLockManager::observe_capacity(std::size_t shard,std::uint64_t required) const {
+    update_peak(capacity_required_[shard],required);
+}
+void RemoteLockManager::reset_slot_diagnostics() {
+    for(std::size_t i=0;i<kRemoteLockShards;++i) {slot_peaks_[i]=0;capacity_required_[i]=0;}
+}
+
 RdmaFailureInfo RemoteLockManager::last_failure() const {
     RdmaFailureInfo latest{};
     for (const auto& slot : connections_) {
@@ -282,8 +315,8 @@ std::int64_t RemoteLockManager::last_failure_shard() const {
     const RdmaFailureInfo failure = last_failure();
     if (failure.remote_address < shards_address_) return -1;
     const std::uint64_t offset = failure.remote_address - shards_address_;
-    if (offset >= kRemoteLockShards * sizeof(RemoteLockShard)) return -1;
-    return static_cast<std::int64_t>(offset / sizeof(RemoteLockShard));
+    if (offset >= kRemoteLockShards * shard_stride_) return -1;
+    return static_cast<std::int64_t>(offset / shard_stride_);
 }
 
 std::uint64_t RemoteLockManager::timeouts_by_tag(RdmaOpTag tag) const {
@@ -377,7 +410,7 @@ void RemoteLockManager::refresh_txn_shards(txnid_t txn_id) const {
 }
 
 std::uint64_t RemoteLockManager::shard_base(std::size_t shard) const {
-    return shards_address_ + shard * sizeof(RemoteLockShard);
+    return shards_address_ + shard * shard_stride_;
 }
 
 std::uint32_t RemoteLockManager::current_shards_rkey() const {
@@ -510,23 +543,25 @@ bool RemoteLockManager::load_tables(const std::vector<std::size_t>& ids,
     slot_reads.clear();
     std::size_t bytes = 0;
     for (std::size_t i = 0; i < ids.size(); ++i) {
-        if (counts[i] > kRemoteLockSlotsPerShard) return false;
+        if (counts[i] > slots_per_shard_) return false;
+        observe_slots(ids[i],counts[i]);
         tables[i].shard = ids[i];
         tables[i].slots.resize(static_cast<std::size_t>(counts[i]));
         if (tables[i].slots.empty()) continue;
         const std::size_t length = tables[i].slots.size() * sizeof(RemoteLockSlot);
-        // Keep the batch inside the transport scratch buffer; oversized tables
-        // are read one shard at a time.
-        if (bytes != 0 && bytes + length > (1u << 20)) {
-            connection.set_operation_tag(RdmaOpTag::LoadSlots);
-            if (!connection.read_batch(slot_reads)) return false;
-            batch_count_.fetch_add(1, std::memory_order_relaxed);
-            slot_reads.clear();
-            bytes = 0;
+        constexpr std::size_t limit=1u<<20;
+        for(std::size_t offset=0;offset<length;) {
+            const auto part=std::min(limit,length-offset);
+            if(bytes && (bytes+part>limit || slot_reads.size()==kRemoteBatchLimit)) {
+                connection.set_operation_tag(RdmaOpTag::LoadSlots);
+                if(!connection.read_batch(slot_reads))return false;
+                batch_count_.fetch_add(1,std::memory_order_relaxed);
+                slot_reads.clear();bytes=0;
+            }
+            slot_reads.push_back({shard_base(ids[i])+offsetof(RemoteLockShard,slots)+offset,rkey,
+                reinterpret_cast<char*>(tables[i].slots.data())+offset,part});
+            bytes+=part;offset+=part;
         }
-        slot_reads.push_back({shard_base(ids[i]) + offsetof(RemoteLockShard, slots), rkey,
-                              tables[i].slots.data(), length});
-        bytes += length;
     }
     if (!slot_reads.empty()) {
         connection.set_operation_tag(RdmaOpTag::LoadSlots);
@@ -718,7 +753,8 @@ RC RemoteLockManager::lock_impl(txnid_t txn_id, LockMode mode, const KeyRangeEnt
     // otherwise a later full shard would leave earlier copies behind.
     for (std::size_t n = 0; n < ids.size(); ++n) {
         if (owned_slot[n] != kNoSlot) continue;
-        if (tables[n].slots.size() >= kRemoteLockSlotsPerShard) {
+        if (tables[n].slots.size() >= slots_per_shard_) {
+            observe_capacity(ids[n], tables[n].slots.size()+1);
             profile_add(profile_enabled_, lookup_start, lookup_ns_);
             return gate.release() ? AbortCapacity : ERROR;
         }
@@ -755,6 +791,7 @@ RC RemoteLockManager::lock_impl(txnid_t txn_id, LockMode mode, const KeyRangeEnt
         gate.release();
         return ERROR;
     }
+    for (std::size_t n=0;n<ids.size();++n) observe_slots(ids[n], counts[n]);
     if (!gate.release()) return ERROR;
     local.release();
     if (before_cache_test_hook_) before_cache_test_hook_();
@@ -794,6 +831,12 @@ RC RemoteLockManager::lock_batch_impl(txnid_t txn_id, LockMode mode,
     }
     std::sort(ids.begin(), ids.end());
     ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    std::vector<std::vector<std::size_t>> request_shards;
+    request_shards.reserve(pending.size());
+    for (const auto& range : pending) request_shards.push_back(shard_ids(range, kind, mode));
+    std::vector<std::array<std::size_t, kRemoteLockShards>> owned(pending.size());
+    for (auto& row : owned) row.fill(kNoSlot);
+    current_slot().workspace->batch_payload.reserve(pending.size()*ids.size());
     const auto queued_gate = profile_start(profile_enabled_);
     LocalGateGuard local(gate_mutexes_, ids, local_gate_enabled_);
     profile_add(profile_enabled_, queued_gate, local_gate_wait_ns_);
@@ -819,9 +862,6 @@ RC RemoteLockManager::lock_batch_impl(txnid_t txn_id, LockMode mode,
     std::array<std::size_t, kRemoteLockShards> added{};
     std::uint64_t checks = 0;
     workspace.conflicts.clear();
-    std::vector<std::vector<std::size_t>> request_shards;
-    request_shards.reserve(pending.size());
-    for (const auto& range : pending) request_shards.push_back(shard_ids(range, kind, mode));
     const auto lookup_start = profile_start(profile_enabled_);
     for (std::size_t r = 0; r < pending.size(); ++r) {
         RangeLock request{id, mode, kind, pending[r]};
@@ -850,8 +890,6 @@ RC RemoteLockManager::lock_batch_impl(txnid_t txn_id, LockMode mode,
 
     // Determine upgrades and new-slot counts without publishing anything until
     // every request has passed conflict and capacity checks.
-    std::vector<std::array<std::size_t, kRemoteLockShards>> owned(pending.size());
-    for (auto& row : owned) row.fill(kNoSlot);
     for (std::size_t r = 0; r < pending.size(); ++r) {
         for (std::size_t n = 0; n < ids.size(); ++n) {
             if (!std::binary_search(request_shards[r].begin(), request_shards[r].end(), ids[n])) continue;
@@ -862,8 +900,9 @@ RC RemoteLockManager::lock_batch_impl(txnid_t txn_id, LockMode mode,
         }
     }
     for (std::size_t n = 0; n < ids.size(); ++n) {
-        if (added[n] > kRemoteLockSlotsPerShard ||
-            tables[n].slots.size() > kRemoteLockSlotsPerShard - added[n]) {
+        if (added[n] > slots_per_shard_ ||
+            tables[n].slots.size() > slots_per_shard_ - added[n]) {
+            observe_capacity(ids[n],tables[n].slots.size()+added[n]);
             if (!gate.release()) return ERROR;
             local.release();
             return AbortCapacity;
@@ -909,6 +948,7 @@ RC RemoteLockManager::lock_batch_impl(txnid_t txn_id, LockMode mode,
         gate.release();
         return ERROR;
     }
+    for (std::size_t n=0;n<ids.size();++n) observe_slots(ids[n], counts[n]);
     if (!gate.release()) return ERROR;
     local.release();
     txn_cache_.remember_shards(txn_id, ids);
@@ -993,7 +1033,9 @@ RC RemoteLockManager::release_impl(txnid_t txn_id, const KeyRangeEnt* range, Loc
         txn_cache_.forget(txn_id, *range, kind);
         refresh_txn_shards(txn_id);
     }
-    return removed ? RCOK : Abort;
+    // End-of-transaction cleanup is idempotent, matching LockManager.
+    // A missing explicit unlock(range) still reports Abort.
+    return (range == nullptr || removed) ? RCOK : Abort;
 }
 
 RC RemoteLockManager::unlock(txnid_t txn_id, const KeyRangeEnt& range, LockKind kind) {

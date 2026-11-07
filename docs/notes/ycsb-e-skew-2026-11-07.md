@@ -1,6 +1,30 @@
 # YCSB-E-skew 参数与实现依据（2026-11-07）
 
-## 本次确定的配置
+## 完整计划：A、E、E-skew 都保留
+
+此前五组是 E-skew 的分布对照，不是全部负载。完整第一轮包含两组基线与五组 E-skew：
+
+| 负载/组 | 读 | 更新 | scan | insert | 请求分布 |
+|---|---:|---:|---:|---:|---|
+| YCSB-A | 50% | 50% | 0 | 0 | Zipf theta=0.99 |
+| YCSB-E | 0 | 0 | 95% | 5% | Zipf theta=0.99 |
+| E-skew uniform 对照 | 0 | 0 | 95% | 5% | uniform |
+| E-skew 80/20 | 0 | 0 | 95% | 5% | hotspot p=0.8、f=0.2 |
+| E-skew 80/10 | 0 | 0 | 95% | 5% | hotspot p=0.8、f=0.1 |
+| E-skew 90/20 | 0 | 0 | 95% | 5% | hotspot p=0.9、f=0.2 |
+| E-skew 90/10 | 0 | 0 | 95% | 5% | hotspot p=0.9、f=0.1 |
+
+所有组固定 32 线程、execution_mode=threads、coroutines=1、2^21 键、10 请求/事务、10 秒预热、10 秒测量、3 个种子。A 不包含 scan，矩阵运行时 range=0；E/E-skew 固定 range=32。基础配置中的 ranges=[32] 对 A 不展开扫描维度。
+
+已补齐两个基线文件（同一目录 experiments/configs/ycsb_e_skew/）：
+- ycsb-a-zipf-0p99.json
+- ycsb-e-zipf-0p99.json
+
+两个基线加五个 E-skew，一共 7 组；本地 168 cases、RDMA 147 cases，总计 315 主 cases，门禁和容量预检另计。此为配置计数，不是已完成的实验。均匀组用于解释热点影响；不能声称 E 默认均匀。
+
+若后续正式考察“Zipf 偏斜率”，A 与 E 使用同一组 theta 参数，建议五档 0、0.6、0.8、0.9、0.99（更完整的七档加 0.3、0.95）。这是第二阶段扩展，当前补齐的两个基线均固定 theta=0.99，未自动扩成多档或启动实验。
+
+## E-skew 的五组分布配置
 
 用户指定：只给出配置，不启动实验；正式配置固定 32 个 worker 线程，execution_mode=threads、coroutines=1，不启用协程。
 推荐先比较 5 组。X/Y 统一表示 X% 请求访问 Y% 的数据，禁止倒置。

@@ -245,14 +245,23 @@ RunStats run_policy_workload(BTreeIndex& index,IRangeLockManager& physical,const
                         ++s.range_reads;
                         if(op.end_key<=op.key)continue;
                         const auto range=KeyRangeEnt::half_open(op.key,op.end_key);
+                        // Eswaran1976 section 3, single-key-interval language.
+                        // ExactRange is an equivalent compatibility tag.
                         if((cfg.protocol==PolicyProtocol::Predicate && !acquire(LockMode::S,range,LockKind::Predicate)) ||
                            (cfg.protocol==PolicyProtocol::ExactRange && !acquire(LockMode::S,range,LockKind::ExactRange))) break;
+                        // Project query-cover variant: these guards cover
+                        // [lo,hi], not actual neighboring-index-key gaps.
+                        // NOT InnoDB purely inhibitive gap compatibility.
                         if(cfg.protocol==PolicyProtocol::Gap) {
                             const std::vector<KeyRangeEnt> gaps{KeyRangeEnt::open(op.key,op.end_key),
                                 KeyRangeEnt::point(op.key),KeyRangeEnt::point(op.end_key)};
                             if(!acquire_batch(LockMode::S,gaps,LockKind::Gap))break;
                         }
                         auto& rows=scans[worker];index.scan_range_into(range,rows);s.rows_scanned+=rows.size();
+                        // Graefe2010 section 5 is the target, not a claim of
+                        // full reproduction: lo/hi are query bounds here.
+                        // True next-key requires actual neighbors and +inf.
+                        // See paper-reproduction-audit-2026-11-07.md, P0.
                         if(cfg.protocol==PolicyProtocol::NextKey) {
                             std::vector<KeyRangeEnt> next_ranges;next_ranges.reserve(rows.size()+2);
                             next_ranges.push_back(KeyRangeEnt::point(op.key));

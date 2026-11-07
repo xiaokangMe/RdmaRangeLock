@@ -1,6 +1,10 @@
 // Mechanism reference: Deneva system/txn.cpp RDMA_WAIT_DIE/RDMA_WOUND_WAIT
 // and concurrency_control/rdma_maat.cpp RdmaTxnTable. Exact-width CAS,
 // generation fencing and cohort poison adapt that mechanism to range slots.
+// Age rules: CMU 15-445/645 (Spring 2025), Two-Phase Locking,
+// slide 35; Deneva txn.cpp RDMA_WAIT_DIE / RDMA_WOUND_WAIT.
+// Attempt identity and wound/commit arbitration are correctness adaptations,
+// not a reproduction of a separate range-lock algorithm. See paper audit.
 #include "lock/native_policy.h"
 #include "lock/range_batch.h"
 #include "native_txn_layout.h"

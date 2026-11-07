@@ -565,8 +565,9 @@ RunStats run_next_key_lock(BTreeIndex& index, IRangeLockManager& locks,
                             previous = row.key;
                         }
                         if (ok) {
-                            // The supremum next-key interval protects the tail
-                            // gap, including an insertion at the range end.
+                            // Project tail guard: hi is a query endpoint,
+                            // NOT the index supremum described by Graefe2010.
+                            // It conservatively also covers insertion at hi.
                             const KeyRangeEnt tail = (previous == op.end_key)
                                 ? KeyRangeEnt::point(previous)
                                 : right_closed(previous, op.end_key);

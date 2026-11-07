@@ -97,6 +97,11 @@ struct RangeLock {
     LockKind kind{LockKind::Predicate};
     KeyRangeEnt range{};
 
+    // Eswaran et al. (CACM 1976), section 3, condition (14):
+    // same relation + at least one writer + jointly satisfiable predicates.
+    // Here the language is a single ordered-key interval; all records share
+    // one relation. Node intentions below implement the separate MGL subset.
+    // LockKind labels for non-Node locks do not isolate conflict namespaces.
     bool conflicts(const RangeLock& other) const {
         if (txn_id == other.txn_id || !range.overlaps(other.range) ||
             !lock_modes_conflict(mode, other.mode)) return false;

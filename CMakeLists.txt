@@ -302,3 +302,9 @@ if(RRL_PYTHON3)
 add_test(NAME rrl_rdma_range_capacity_test COMMAND ${RRL_PYTHON3} ${CMAKE_SOURCE_DIR}/test/rdma_range_capacity_test.py $<TARGET_FILE:rrl_rdma_range_capacity_test>)
 set_tests_properties(rrl_rdma_range_capacity_test PROPERTIES SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 180 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
+
+# Shared paper-derived histories also run inside the live RDMA loopback test.
+add_executable(rrl_locking_paper_contract_test test/locking_paper_contract_test.cpp)
+target_link_libraries(rrl_locking_paper_contract_test PRIVATE rrl_lock)
+target_compile_options(rrl_locking_paper_contract_test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME rrl_locking_paper_contract_test COMMAND rrl_locking_paper_contract_test)

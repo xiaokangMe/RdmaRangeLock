@@ -12,6 +12,9 @@ struct HierarchyRequest {
     LockKind kind;
     unsigned phase; // root=0, bucket=1, record=2
 };
+// Gray et al. (1976), Table 1 and root-to-leaf rules, instantiated as
+// root -> fixed partition -> record. Partitions are NOT B+ tree nodes and
+// do not implement Graefe's separator-key naming/SMO lock replication.
 // The generated trace is known before execution. Select the final mode once,
 // before holding any lock. Do not turn a shared read into an in-flight upgrade.
 inline std::vector<HierarchyRequest> hierarchy_plan(const TransactionTrace& txn, std::uint64_t width) {

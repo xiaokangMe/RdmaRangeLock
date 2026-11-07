@@ -1,19 +1,19 @@
-# v5 Next-Key Lock 阅读与实现笔记
+# v5 Next-Key 阅读与实现定位
 
-## 论文依据
+> 2026-11-07 校正：当前入口是分段查询区间保护的项目实现，不是完整经典 next-key / ARIES/KVL 复现。详见 [复现审计](paper-reproduction-audit-2026-11-07.md)。
 
-本项目先精读了 Berenson 等人的 *A Critique of ANSI SQL Isolation Levels*（SIGMOD 1995，PDF：`papers/berenson-1995-isolation-levels.pdf`）。论文把 phantom 定义为同一谓词两次执行得到不同的记录集合，并指出只锁住第一次读到的记录不足以保证谓词稳定性；并发插入必须与谓词对应的 key range 冲突。
+## 论文依据与差异
 
-Comer 的 *The Ubiquitous B-Tree*（ACM Computing Surveys 1979，PDF：`papers/comer-1979-ubiquitous-b-tree.pdf`）用于确认范围扫描的有序叶链和前驱/后继关系。实现中的 next-key 区间直接建立在 B+树扫描返回的有序 key 序列上。
+Graefe2010 §5.1 定义边界来自相邻现存索引键，末端使用 +∞。C. Mohan 的 ARIES/KVL 发表在 VLDB 1990 pp.392–405，包含 IX/SIX、instant 及 lock state replication；并非旧笔记所写的 VLDB 1992，全文现已纳入文献核查。Berenson1995 支撑 phantom/长谓词锁的语义要求；Comer1979 支撑树结构背景，都不能代替具体锁算法。
 
-ARIES/KVL 的书目信息为 C. Mohan et al., “ARIES/KVL: A Key-Value Locking Method for Concurrency Control of Multiaction Transactions Operating on B-Tree Indexes”, VLDB 1992。当前 VLDB 镜像对该 PDF 返回 403/404，因此本仓库不伪造下载文件；其 key-value locking 语义由 Berenson 的谓词保护结论和本地测试共同约束。
+当前 run_policy_workload 及 run_next_key_lock 对 [lo,hi) 先扫描，持 point(lo)、按记录分段的 (prev,k]、尾部 (last,hi]，锁后复扫验证键与读取值。点操作使用 S/X 点锁，写缓冲提交后统一释放。扫描保护并集为 [lo,hi]，保守多锁 hi。
 
-## 区间分解
+lo/hi 不必是索引键，hi 也不是 supremum。显式区间按数值保持覆盖，因此当前防护来自谓词锁的区间覆盖不变式，而非完整的索引键锁名、间隙继承与 KVL 模式。不可据现有吞吐证明原论文 next-key 性能。
 
-对半开扫描 `[lo, hi)`，扫描得到的有序 key `k_i` 被分解为 `(prev, k_i]`，其中 `prev` 初始为 `lo`；最后增加 `(last, hi]` 的 supremum 区间。这样插入一个落在扫描间隙中的 key 会与已有的 S next-key lock 相交。点读、更新、删除和插入使用闭区间点锁；写集合在提交时统一应用，锁在提交或回滚后释放，保持 strict 2PL。
+## 迁移要求
 
-实现位置：`src/txn/workload.cpp::run_next_key_lock`；锁对象和边界相交判断仍由 `LockManager` 与 `KeyRangeEnt` 统一处理。测试覆盖两个相邻 next-key 区间、间隙插入、范围外插入和空结果范围。
+按审计 P0：统一索引邻居快照能力 → 选定基础 S/X next-key → 完成各操作与无穷边界 → 锁后重定位/SMO 覆盖 → 本地/RDMA 相同交错验证。保持统一索引和事务骨架，不为协议另造一棵树，不改变公共锁管理器签名。
 
-## 限制
+## 当前验证与策略
 
-当前锁表采用 no-wait 冲突返回 `Abort`，没有等待图或死锁检测；这是为了让 v3-v6 在同一调度器下只比较锁粒度和冲突语义。前驱只取 workload 扫描下界，而不是从索引叶页提取全局前驱，因此实验接口不会暴露页结构，仍能验证范围内 phantom 防护。
+test/v5_next_key_test.cpp 验证显式半开区间防护；policy_scan/own_write/native 等检查读取及释放；这些不代表缺失的实际邻接键已实现。统一驱动支持 no-wait/wait-die/wound-wait；等待策略与锁对象是不同维度。

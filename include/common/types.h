@@ -37,14 +37,18 @@ enum class LockKind : std::uint8_t {
     NextKey,
     Predicate,
     Node,
-    // A single lock for the exact logical query interval.  Kept distinct
-    // from Predicate so experiments can compare the two representations and
-    // unlock/cache matching never aliases them accidentally.
+    // Compatibility tag for the same 1-D predicate-lock mechanism.
+    // It does not define a second algorithm or a different representation.
+    // Keep the wire value/cache identity for existing configs and results.
+    // Provenance: docs/notes/paper-reproduction-audit-2026-11-07.md.
     ExactRange,
 };
 
-// Multiple-granularity compatibility matrix. IS/IX are intention modes;
-// they are compatible with each other and with shared modes as in Gray et al.
+// Gray et al. (1976), Table 1 / requesting-node rules (PDF pp.4-5),
+// restricted to IS/IX/S/X. IS and IX coexist; IX conflicts with S.
+// Without SIX, S+IX conservatively joins to X (less concurrency, still safe).
+// This is a resource-tree protocol, not necessarily the physical B+ tree.
+// See docs/notes/paper-reproduction-audit-2026-11-07.md.
 inline bool lock_modes_conflict(LockMode lhs, LockMode rhs) {
     if (lhs == LockMode::X || rhs == LockMode::X) return true;
     if ((lhs == LockMode::IX && rhs == LockMode::S) ||

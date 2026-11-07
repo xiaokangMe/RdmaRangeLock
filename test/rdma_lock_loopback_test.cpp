@@ -6,6 +6,7 @@
 // retry, cache bookkeeping across lock/unlock, and the failure snapshot.
 
 #include "lock/remote_lock_manager.h"
+#include "locking_paper_contract.h"
 
 #include <cstdint>
 #include <cstdlib>
@@ -43,6 +44,8 @@ int main() {
         std::cerr << "FAIL: configured lock server is unreachable\n";
         return 1;
     }
+
+    paper_contract::check(locks);
 
     check(locks.unlock_all(987654)==RCOK && locks.unlock_all(987654)==RCOK,"empty cleanup is idempotent");
     check(locks.unlock(987654,KeyRangeEnt::point(1000))==Abort,"explicit missing unlock still aborts");

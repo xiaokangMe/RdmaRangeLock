@@ -9,6 +9,9 @@ inline std::vector<idx_key_t> object_record_keys(const WorkloadTrace& trace) {
         if(op.key>=trace.config().key_count)keys.push_back(op.key);
     std::sort(keys.begin(),keys.end());keys.erase(std::unique(keys.begin(),keys.end()),keys.end());return keys;
 }
+// Gray et al. (1976): ancestor intentions before descendant S/X.
+// Physical node naming + strict split protection are project adaptations,
+// not Graefe's logical separator-key protocol (see the reproduction audit).
 // Every newly published child remains behind a pre-existing X ancestor.
 // This is Deneva's leaf/parent CAS idea with recursive split protection and
 // strict lifetime. No global topology resource and no index/lock callbacks.

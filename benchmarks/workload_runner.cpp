@@ -117,6 +117,12 @@ void load_config(const std::string& path, WorkloadConfig& config,
                 policy.coordinator_port = static_cast<std::uint16_t>(n);
             } else if (n > 1) throw std::invalid_argument("latency must be 0 or 1");
             if (key != "latency" || n) measured = true;
+        } else if(key=="hierarchy_escalation_threshold" || key=="hierarchy_deescalate_after") {
+            if(value.kind!=ConfigScalar::Number)throw std::invalid_argument(key+": expected integer");
+            const auto n=parse_unsigned(value.text,key);
+            if(key=="hierarchy_escalation_threshold")policy.hierarchy_escalation_threshold=n;
+            else policy.hierarchy_deescalate_after=n;
+            measured=true;
         } else if (key == "hierarchy_behavior") {
             if(value.kind!=ConfigScalar::String || (value.text!="strict" && value.text!="deneva"))throw std::invalid_argument("hierarchy_behavior must be strict or deneva");
             policy.deneva_insert_behavior=value.text=="deneva";measured=true;
@@ -199,6 +205,12 @@ int run(int argc, char** argv) {
         else if (option == "--latency-histogram") {
             if (value.empty()) throw std::invalid_argument("latency-histogram: expected nonempty path");
             policy.histogram_path = value; measured = true;
+        }
+        else if(option=="--hierarchy-escalation-threshold" || option=="--hierarchy-deescalate-after") {
+            const auto n=parse_unsigned(value,option);
+            if(option=="--hierarchy-escalation-threshold")policy.hierarchy_escalation_threshold=n;
+            else policy.hierarchy_deescalate_after=n;
+            measured=true;
         }
         else if(option=="--hierarchy-behavior") {
             if(value!="strict" && value!="deneva")throw std::invalid_argument("hierarchy-behavior must be strict or deneva");
@@ -299,6 +311,10 @@ int run(int argc, char** argv) {
         throw std::invalid_argument("native object locks require rdma-record-2pl, shared RDMA data, native txn state, and no leaf hierarchy");
     if(policy.leaf_hierarchy && cc!="hierarchical" && cc!="rdma-hierarchical")throw std::invalid_argument("leaf layout requires hierarchical protocol");
     if(policy.leaf_hierarchy && policy.coordinator_port)throw std::invalid_argument("leaf layout requires local or native coordination");
+    if((policy.hierarchy_escalation_threshold || policy.hierarchy_deescalate_after) &&
+       ((cc!="hierarchical" && cc!="rdma-hierarchical") || policy.leaf_hierarchy ||
+        policy.coordinator_port || policy.hierarchy_escalation_threshold>1048576 || policy.hierarchy_deescalate_after>1048576))
+        throw std::invalid_argument("granularity conversion requires fixed buckets with local/native RDMA state and bounded thresholds");
     if (!protocols.count(cc)) throw std::invalid_argument("unknown cc: " + cc);
     if (cc == "predicate" || cc == "rdma-predicate" || cc == "exact-range" || cc == "rdma-exact-range" || policy.warmup_seconds || policy.coroutines>1) measured = true;
     if(!policy.coroutines || policy.coroutines>4096 || config.threads>4096/policy.coroutines ||
@@ -496,6 +512,7 @@ int run(int argc, char** argv) {
         if (measured) for (const char* name : {"successful_attempt","logical_completion","lock_wait","lock_call","release"})
             for (const char* field : {"count","total_ns","p50_ns","p95_ns","p99_ns","p999_ns","max_ns"}) std::cout << "," << name << "_" << field;
         std::cout << ",data_backend,data_rdma_operations,data_read_bytes,data_write_bytes,data_latch_wait_ns,coroutines,active_contexts,warmup_seconds,warmup_committed,warmup_aborted,warmup_elapsed_ns,coroutine_switches_total,state_rdma_operations,hierarchy_layout,native_object_locks,hierarchy_behavior,isolation_semantics,deneva_early_inserts,deneva_early_unlocks,deneva_split_aborts,deneva_partial_write_aborts,execution_mode";
+        std::cout << ",hierarchy_escalation_threshold,hierarchy_deescalate_after,escalation_attempts,escalations,escalation_failures,deescalation_attempts,deescalations,deescalation_failures";
         std::cout << ",rdma_lock_slots_per_shard";
         for(std::size_t shard=0;shard<kRemoteLockShards;++shard)
             std::cout << ",rdma_lock_slot_peak_" << shard << ",rdma_lock_capacity_required_" << shard;
@@ -552,6 +569,9 @@ int run(int argc, char** argv) {
                   << ',' << stats.policy.deneva_early_inserts << ',' << stats.policy.deneva_early_unlocks
                   << ',' << stats.policy.deneva_split_aborts << ',' << stats.policy.deneva_partial_write_aborts
                   << ',' << (measured?(policy.use_coroutines?"coroutines":"threads"):"threads");
+        std::cout << ',' << policy.hierarchy_escalation_threshold << ',' << policy.hierarchy_deescalate_after
+            << ',' << stats.policy.escalation_attempts << ',' << stats.policy.escalations << ',' << stats.policy.escalation_failures
+            << ',' << stats.policy.deescalation_attempts << ',' << stats.policy.deescalations << ',' << stats.policy.deescalation_failures;
         std::cout << ',' << rdma_diag.slots_per_shard;
         for(std::size_t shard=0;shard<kRemoteLockShards;++shard)
             std::cout << ',' << rdma_diag.slot_peaks[shard] << ',' << rdma_diag.capacity_required[shard];

@@ -76,6 +76,16 @@ def validate_row(output, seconds, shared, expected_coordination=None, expected_l
     if behavior not in ("strict","deneva") or isolation!={"strict":"strict-2pl","deneva":"deneva-early-release"}[behavior]:
         raise RuntimeError("hierarchy behavior/isolation mismatch")
     if expected_behavior is not None and behavior!=expected_behavior:raise RuntimeError("hierarchy behavior differs from configuration")
+    escalation=int(row.get("hierarchy_escalation_threshold",0))
+    deescalation=int(row.get("hierarchy_deescalate_after",0))
+    conversion_counts=[int(row.get(k,0)) for k in ("escalation_attempts","escalations","escalation_failures","deescalation_attempts","deescalations","deescalation_failures")]
+    if any(n<0 for n in [escalation,deescalation]+conversion_counts):raise RuntimeError("negative conversion metadata")
+    if conversion_counts[0]!=conversion_counts[1]+conversion_counts[2] or conversion_counts[3]!=conversion_counts[4]+conversion_counts[5]:
+        raise RuntimeError("conversion attempt accounting")
+    if escalation or deescalation:
+        if layout!="bucket" or behavior!="strict" or (shared and expected_coordination=="tcp-control+rdma-slots"):
+            raise RuntimeError("unsupported granularity conversion path")
+    elif any(conversion_counts):raise RuntimeError("conversion counters without conversion configuration")
     counters=("deneva_early_inserts","deneva_early_unlocks","deneva_split_aborts","deneva_partial_write_aborts")
     if behavior=="strict" and any(int(row.get(k,0)) for k in counters):raise RuntimeError("early-release counters on strict path")
     if behavior=="deneva":
@@ -228,6 +238,10 @@ def main():
     config = config_from_environment() if args.environment_config else json.loads((root / args.config).read_text())
     config.setdefault("hierarchy_behavior","strict")
     if config["hierarchy_behavior"] not in ("strict","deneva"):raise SystemExit("hierarchy_behavior must be strict or deneva")
+    config.setdefault("hierarchy_escalation_threshold",0)
+    config.setdefault("hierarchy_deescalate_after",0)
+    for k in ("hierarchy_escalation_threshold","hierarchy_deescalate_after"):
+        if type(config[k]) is not int or not 0<=config[k]<=1048576:raise SystemExit("invalid "+k)
     config.setdefault("hierarchy_layout","bucket")
     if config["hierarchy_layout"] not in ("leaf","bucket"):raise SystemExit("hierarchy_layout must be leaf or bucket")
     config.setdefault("coordination_backend","native-rdma-state")
@@ -365,6 +379,9 @@ def main():
         layout=hierarchy_layout(config,cc)
         behavior=hierarchy_behavior(config,cc)
         if layout!="none":cfg["hierarchy_layout"]=layout
+        if layout=="bucket":
+            cfg["hierarchy_escalation_threshold"]=config["hierarchy_escalation_threshold"]
+            cfg["hierarchy_deescalate_after"]=config["hierarchy_deescalate_after"]
         if layout=="leaf":cfg["hierarchy_behavior"]=behavior
         path = logs / (label + ".json"); path.write_text(json.dumps(cfg, indent=2))
         flags = ["--index", "v2", "--cc", cc, "--workload", workload, "--keys", str(config["keys"]),

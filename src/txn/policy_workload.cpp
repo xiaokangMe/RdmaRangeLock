@@ -7,6 +7,7 @@
 #include "hierarchical_plan.h"
 #include "leaf_hierarchy.h"
 #include "key_range_plan.h"
+#include "bucket_runtime.h"
 #include <atomic>
 #include <algorithm>
 #include <thread>
@@ -32,6 +33,11 @@ struct Worker {
 static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& physical,const WorkloadTrace& trace,const PolicyRunConfig& cfg,std::size_t worker_threads) {
     if((cfg.protocol==PolicyProtocol::None && cfg.wait_policy!=WaitPolicy::NoWait) ||
        !worker_threads || !cfg.max_attempts || !cfg.wait_timeout_ms || cfg.wait_timeout_ms>600000)throw std::invalid_argument("invalid retry/wait bound");
+    const bool conversions=cfg.hierarchy_escalation_threshold || cfg.hierarchy_deescalate_after;
+    auto* converter=dynamic_cast<ILockModeConversion*>(&physical);
+    if(conversions && (cfg.protocol!=PolicyProtocol::Hierarchy || cfg.leaf_hierarchy ||
+       !converter || (!cfg.coordinator_host.empty() && !cfg.txn_state_port)))
+        throw std::invalid_argument("granularity conversion requires fixed buckets and local/native RDMA state");
     std::unordered_map<idx_key_t,std::uint64_t> seed;
     if(!index.preloaded() && !seed_index(index,trace,seed)){RunStats s;s.index_errors=1;return s;}
     const auto total=trace.transactions().size();
@@ -52,7 +58,7 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
     std::vector<std::unique_ptr<LocalNativePolicyClient>> local_native;
     std::vector<Worker> parts(count);
     std::vector<std::vector<detail::HierarchyRequest>> plans;
-    if(cfg.protocol==PolicyProtocol::Hierarchy && !cfg.leaf_hierarchy)for(const auto& t:trace.transactions())
+    if(cfg.protocol==PolicyProtocol::Hierarchy && !cfg.leaf_hierarchy && !conversions)for(const auto& t:trace.transactions())
         plans.push_back(detail::hierarchy_plan(t,trace.config().hierarchy_bucket_width));
     for(std::size_t w=0;w<count;++w) {
         if(cfg.protocol==PolicyProtocol::None) {
@@ -94,6 +100,19 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
     }
     std::size_t maxops=0;for(const auto& t:trace.transactions())maxops=std::max(maxops,t.operations.size());
     for(auto& v:writes)v.reserve(maxops);
+    std::vector<std::vector<std::vector<detail::HierarchyRequest>>> operation_plans;
+    std::vector<detail::RuntimeBuckets> runtime_buckets(count);
+    if(conversions) {
+        std::size_t bucket_capacity=0;
+        for(const auto& txn:trace.transactions()) {
+            const auto full=detail::hierarchy_plan(txn,trace.config().hierarchy_bucket_width);
+            bucket_capacity=std::max(bucket_capacity,static_cast<std::size_t>(std::count_if(full.begin(),full.end(),[](const auto& r){return r.phase==1;})));
+            std::vector<std::vector<detail::HierarchyRequest>> ops;
+            for(const auto& op:txn.operations){TransactionTrace one;one.operations.push_back(op);ops.push_back(detail::hierarchy_plan(one,trace.config().hierarchy_bucket_width));}
+            operation_plans.push_back(std::move(ops));
+        }
+        for(auto& runtime:runtime_buckets)runtime.reserve(bucket_capacity,maxops);
+    }
     std::vector<std::vector<IndexNodeSpan>> leaf_scratch(count);
     std::vector<std::vector<detail::HierarchyRequest>> leaf_plans(count),leaf_checks(count);
     if(cfg.leaf_hierarchy)for(std::size_t w=0;w<count;++w) {
@@ -231,7 +250,8 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
                     }
                     return true;
                 };
-                if(cfg.protocol==PolicyProtocol::Hierarchy) {
+                if(conversions)runtime_buckets[worker].reset();
+                if(cfg.protocol==PolicyProtocol::Hierarchy && !conversions) {
                     if(cfg.leaf_hierarchy && !cfg.deneva_insert_behavior) {
                         if(!detail::leaf_plan(index,txn,leaf_scratch[worker],leaf_plans[worker]))outcome=TxnResult::Error;
                         else {
@@ -243,6 +263,7 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
                         }
                     }else if(!cfg.leaf_hierarchy)for(const auto& r:plans[i%total])if(!acquire(r.mode,r.range,r.kind))break;
                 }
+                std::size_t operation_index=0;
                 for(const auto& op:txn.operations) {
                     if(outcome!=TxnResult::Ok)break;
                     if(Clock::now()>=deadline){outcome=TxnResult::Deadline;break;}
@@ -250,6 +271,8 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
                         outcome=check(id).result;
                         if(outcome!=TxnResult::Ok)break;
                     }
+                    if(conversions && !runtime_buckets[worker].acquire_operation(op,operation_plans[i%total][operation_index],acquire))break;
+                    ++operation_index;
                     if(cfg.deneva_insert_behavior) {
                         auto& one=operation_txns[worker];one.operations[0]=op;
                         if(!detail::leaf_plan(index,one,leaf_scratch[worker],leaf_plans[worker],true)) {outcome=TxnResult::Error;break;}
@@ -356,6 +379,21 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
                                 ++m.deneva_early_unlocks;
                             }else pending.push_back({op.key,&op.value,op.kind==OperationKind::Delete});
                         }
+                    }
+                    if(conversions && outcome==TxnResult::Ok) {
+                        auto convert=[&](LockMode mode,const KeyRangeEnt& range) {
+                            outcome=check(id).result;
+                            if(outcome!=TxnResult::Ok)return ERROR;
+                            const auto rc=converter->convert_lock(id,mode,range,LockKind::Node);
+                            if(rc!=RCOK && rc!=AbortConflict && rc!=AbortCapacity && rc!=AbortGate)outcome=TxnResult::Error;
+                            else if(rc==RCOK)outcome=check(id).result;
+                            return outcome==TxnResult::Ok?rc:ERROR;
+                        };
+                        auto release_fine=[&](const detail::HierarchyRequest& r) {
+                            if(physical.unlock(id,r.range,r.kind)==RCOK)return true;
+                            ++s.lock_release_failures;outcome=TxnResult::Error;return false;
+                        };
+                        if(!runtime_buckets[worker].finish_operation(cfg,m,acquire,convert,release_fine))break;
                     }
                 }
                 if(!index.healthy())throw std::runtime_error("data backend failed; retain active transaction");
@@ -480,6 +518,8 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
         SUM(lock_errors);SUM(index_errors);SUM(lock_release_failures);SUM(failed_transactions);
         SUM(lock_capacity_aborts);SUM(lock_gate_aborts);
 #undef SUM
+        pm.escalation_attempts+=m.escalation_attempts;pm.escalations+=m.escalations;pm.escalation_failures+=m.escalation_failures;
+        pm.deescalation_attempts+=m.deescalation_attempts;pm.deescalations+=m.deescalations;pm.deescalation_failures+=m.deescalation_failures;
         pm.warmup_committed+=m.warmup_committed;pm.warmup_aborted+=m.warmup_aborted;
         pm.state_rdma_operations+=m.state_rdma_operations;
         pm.deneva_early_inserts+=m.deneva_early_inserts;pm.deneva_early_unlocks+=m.deneva_early_unlocks;

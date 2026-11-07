@@ -67,3 +67,10 @@ for protocol in ("gap-lock","next-key","prior-key"):
     import csv,io
     row=next(csv.DictReader(io.StringIO(subprocess.run(cmd,check=True,capture_output=True,text=True,timeout=15).stdout)))
     assert int(row["transactions"])==12 and int(row["committed"])+int(row["aborted"])==12
+
+for flags in (["--cc","next-key","--hierarchy-escalation-threshold","2"],
+              ["--hierarchy-layout","leaf","--hierarchy-deescalate-after","4"],
+              ["--hierarchy-escalation-threshold","1048577"]):
+    cmd=[runner,"--keys","32","--txns","4","--ops","4","--cc","hierarchical"]
+    if "--cc" in flags:cmd=cmd[:-2]
+    assert subprocess.run(cmd+flags,capture_output=True,text=True,timeout=10).returncode!=0

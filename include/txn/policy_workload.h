@@ -11,6 +11,9 @@ struct PolicyRunConfig {
     std::size_t lock_budget{16384};
     std::size_t rdma_lock_slots_per_shard{0}; // 0 accepts server-advertised geometry
     bool leaf_hierarchy{false};
+    // Zero keeps static preplanning. Conversion releases only redundant
+    // physical representation after equivalent logical protection exists.
+    std::size_t hierarchy_escalation_threshold{0},hierarchy_deescalate_after{0};
     // Deneva-style per-record object metadata. This is an explicit native
     // path for rdma-record-2pl; range protocols keep the range-table fallback.
     bool native_object_locks{false};
@@ -29,6 +32,8 @@ struct PolicyRunConfig {
 };
 struct PolicyStats {
     bool enabled{false};
+    std::uint64_t escalation_attempts{0},escalations{0},escalation_failures{0};
+    std::uint64_t deescalation_attempts{0},deescalations{0},deescalation_failures{0};
     std::uint64_t warmup_committed{0},warmup_aborted{0},warmup_elapsed_ns{0};
     std::uint64_t coroutine_switches{0},state_rdma_operations{0};
     std::uint64_t deneva_early_inserts{0},deneva_early_unlocks{0},deneva_split_aborts{0},deneva_partial_write_aborts{0};

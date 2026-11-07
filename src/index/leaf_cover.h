@@ -58,4 +58,58 @@ inline bool host_hierarchy_cover(BTreePage* root,const KeyRangeEnt& query,
     visit(visit,root,0,KeyRangeEnt::from_left(0));return true;
 }
 
+// Retain each parent while choosing/following its child; no upward latch
+// acquisition or simultaneous right->left sibling latches. At most O(height)
+// nodes for each extreme, including a cross-leaf predecessor/successor.
+inline bool host_key_neighbors(BTreePage* root,idx_key_t key,IndexKeyNeighbors& out,bool concurrent) {
+    out={};if(!root)return true;
+    auto extreme=[&](auto&& self,BTreePage* page,bool largest)->idx_key_t {
+        std::shared_lock<std::shared_mutex> held;
+        if(concurrent)held=std::shared_lock<std::shared_mutex>(page->latch);
+        if(page->is_leaf) {
+            if(page->keys.empty())throw std::runtime_error("empty nonroot neighbor page");
+            return largest?page->keys.back():page->keys.front();
+        }
+        return self(self,(largest?page->children.back():page->children.front()).get(),largest);
+    };
+    auto search=[&](auto&& self,BTreePage* page)->void {
+        std::shared_lock<std::shared_mutex> held;
+        if(concurrent)held=std::shared_lock<std::shared_mutex>(page->latch);
+        if(page->is_leaf) {
+            auto it=std::lower_bound(page->keys.begin(),page->keys.end(),key);
+            out.present=it!=page->keys.end() && *it==key;
+            if(it!=page->keys.begin()){out.has_predecessor=true;out.predecessor=*(it-1);}
+            if(out.present)++it;
+            if(it!=page->keys.end()){out.has_successor=true;out.successor=*it;}
+            return;
+        }
+        const auto slot=static_cast<std::size_t>(std::upper_bound(page->keys.begin(),page->keys.end(),key)-page->keys.begin());
+        self(self,page->children[slot].get());
+        if(!out.has_predecessor && slot){out.predecessor=extreme(extreme,page->children[slot-1].get(),true);out.has_predecessor=true;}
+        if(!out.has_successor && slot+1<page->children.size()){out.successor=extreme(extreme,page->children[slot+1].get(),false);out.has_successor=true;}
+    };
+    search(search,root);return true;
+}
+inline bool host_key_range(BTreePage* root,const KeyRangeEnt& range,std::vector<idx_key_t>& out,bool concurrent) {
+    out.clear();if(!root || range.empty())return true;
+    auto* page=root;std::shared_lock<std::shared_mutex> held;
+    if(concurrent)held=std::shared_lock<std::shared_mutex>(page->latch);
+    while(!page->is_leaf) {
+        const auto slot=range.has_start?std::upper_bound(page->keys.begin(),page->keys.end(),range.StartKey)-page->keys.begin():0;
+        auto* child=page->children[slot].get();std::shared_lock<std::shared_mutex> next;
+        if(concurrent)next=std::shared_lock<std::shared_mutex>(child->latch);
+        held=std::move(next);page=child;
+    }
+    for(;;) {
+        for(auto key:page->keys) {
+            if(range.has_end && (key>range.EndKey || (key==range.EndKey && range.end_bound==Bound::Open)))return true;
+            if(range.contains(key))out.push_back(key);
+        }
+        auto* next=page->next;if(!next)return true;
+        std::shared_lock<std::shared_mutex> guard;
+        if(concurrent)guard=std::shared_lock<std::shared_mutex>(next->latch);
+        held=std::move(guard);page=next;
+    }
+}
+
 }

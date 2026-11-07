@@ -30,6 +30,13 @@ struct IndexNodeSpan {
     bool leaf{false}, start_key_present{false};
 };
 
+// Strict neighboring physical index keys. Missing endpoints mean -/+infinity;
+// UINT64_MAX remains a normal key. Retained ghost keys participate on RDMA.
+struct IndexKeyNeighbors {
+    idx_key_t predecessor{0}, successor{0};
+    bool has_predecessor{false}, has_successor{false}, present{false};
+};
+
 struct KeyValue {
     idx_key_t key{0};
     void* value{nullptr};
@@ -86,6 +93,10 @@ public:
     virtual bool lookup(idx_key_t key, void*& value) const = 0;
     virtual std::vector<KeyValue> scan_range(const KeyRangeEnt& range) const = 0;
     virtual std::size_t size() const = 0;
+    // Structural metadata only; transaction locking belongs to src/txn.
+    // Unsupported test/custom backends fail explicitly, never full-table scan.
+    virtual bool key_neighbors(idx_key_t, IndexKeyNeighbors&) const { return false; }
+    virtual bool key_range_into(const KeyRangeEnt&, std::vector<idx_key_t>&) const { return false; }
     // Snapshot uses short index latches. Callers revalidate after locking IDs.
     virtual bool leaf_cover_into(const KeyRangeEnt&,std::vector<LeafSpan>&) const { return false; }
     virtual bool hierarchy_cover_into(const KeyRangeEnt&,std::vector<IndexNodeSpan>&) const { return false; }
@@ -118,6 +129,8 @@ public:
     bool lookup(idx_key_t key, void*& value) const override;
     std::vector<KeyValue> scan_range(const KeyRangeEnt& range) const override;
     std::size_t size() const override { return size_; }
+    bool key_neighbors(idx_key_t, IndexKeyNeighbors&) const override;
+    bool key_range_into(const KeyRangeEnt&, std::vector<idx_key_t>&) const override;
     bool leaf_cover_into(const KeyRangeEnt&,std::vector<LeafSpan>&) const override;
     bool hierarchy_cover_into(const KeyRangeEnt&,std::vector<IndexNodeSpan>&) const override;
     bool validate() const;
@@ -154,6 +167,8 @@ public:
     bool lookup(idx_key_t key, void*& value) const override;
     std::vector<KeyValue> scan_range(const KeyRangeEnt& range) const override;
     std::size_t size() const override;
+    bool key_neighbors(idx_key_t, IndexKeyNeighbors&) const override;
+    bool key_range_into(const KeyRangeEnt&, std::vector<idx_key_t>&) const override;
     bool leaf_cover_into(const KeyRangeEnt&,std::vector<LeafSpan>&) const override;
     bool hierarchy_cover_into(const KeyRangeEnt&,std::vector<IndexNodeSpan>&) const override;
     bool validate() const;

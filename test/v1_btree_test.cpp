@@ -57,5 +57,13 @@ int main() {
     if (!require(tree.size() == 85, "size after erase") ||
         !require(tree.erase(0) == Abort, "erase absent") ||
         !require(tree.validate(), "final validate")) return 1;
+    // Delete every remaining record, including whole leaves/subtrees.
+    // The old refresh-only path left empty leaves with stale separators.
+    for(std::uint64_t key=0;key<values.size();++key)if(key%3) {
+        if(!require(tree.erase(key)==RCOK,"erase remaining") ||
+           !require(tree.validate(),"empty-leaf pruning invariants"))return 1;
+    }
+    if(!require(tree.size()==0 && tree.height()==0,"collapse empty root"))return 1;
+    if(!require(tree.insert(0,&values[0])==RCOK && tree.validate(),"reuse after empty"))return 1;
     std::cout << "v1 B+ tree: OK\n";
 }

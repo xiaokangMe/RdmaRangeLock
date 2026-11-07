@@ -42,6 +42,8 @@ public:
     void prepare_write_capacity(std::size_t) override;
     bool healthy() const override;
     RC apply_batch(const std::vector<IndexMutation>&) override;
+    bool key_neighbors(idx_key_t, IndexKeyNeighbors&) const override;
+    bool key_range_into(const KeyRangeEnt&, std::vector<idx_key_t>&) const override;
     bool leaf_cover_into(const KeyRangeEnt&,std::vector<LeafSpan>&) const override;
     bool hierarchy_cover_into(const KeyRangeEnt&,std::vector<IndexNodeSpan>&) const override;
     bool validate() const;

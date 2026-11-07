@@ -308,3 +308,8 @@ add_executable(rrl_locking_paper_contract_test test/locking_paper_contract_test.
 target_link_libraries(rrl_locking_paper_contract_test PRIVATE rrl_lock)
 target_compile_options(rrl_locking_paper_contract_test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME rrl_locking_paper_contract_test COMMAND rrl_locking_paper_contract_test)
+
+add_executable(rrl_key_neighbors_test test/key_neighbors_test.cpp)
+target_link_libraries(rrl_key_neighbors_test PRIVATE rrl_index rrl_index_latch)
+target_compile_options(rrl_key_neighbors_test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME rrl_key_neighbors_test COMMAND rrl_key_neighbors_test)

@@ -28,6 +28,19 @@ int main(int argc,char** argv){try {
     RdmaConnection probe;CHECK(probe.connect_client(host,data_port));OffsetBTreeHeader h;
     CHECK(probe.read(probe.remote_memory().address,probe.remote_memory().rkey,&h,sizeof(h)));fingerprint=h.seed_fingerprint;
     BTreeRdma a,b;RemoteLockManager la,lb;open(a,la);open(b,lb);
+    // Exercise the public neighbor API over real RDMA, including retained
+    // physical keys. Do not confuse a tombstone boundary with a live row.
+    if(argc==1) {
+        a.prepare_thread(0,1024);std::vector<idx_key_t> keys;
+        CHECK(a.key_range_into(KeyRangeEnt::unbounded(),keys));
+        for(std::size_t i=0;i<keys.size();++i) {
+            IndexKeyNeighbors n;CHECK(a.key_neighbors(keys[i],n) && n.present);
+            CHECK(n.has_predecessor==(i!=0) && n.has_successor==(i+1<keys.size()));
+            if(i)CHECK(n.predecessor==keys[i-1]);
+            if(i+1<keys.size())CHECK(n.successor==keys[i+1]);
+        }
+        a.finish_thread();
+    }
     if(argc==4 && std::string(argv[1])=="--read") {
         a.prepare_thread(0,1024);void* value=nullptr;CHECK(a.lookup(std::stoull(argv[2]),value));
         CHECK(*static_cast<std::uint64_t*>(value)==std::stoull(argv[3]));a.finish_thread();CHECK(a.validate());

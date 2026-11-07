@@ -3,6 +3,7 @@
 #include <iostream>
 #include <map>
 #include <random>
+#include <set>
 #define CHECK(x) do {if(!(x))throw std::runtime_error(#x);} while(0)
 struct Memory : rrl::detail::TreeIO {
     char* p;std::size_t bytes;bool fail{false};
@@ -21,12 +22,24 @@ int main() {try {
         Memory memory(image.data(),image.bytes());OffsetBTreeHeader h;
         CHECK(memory.read(0,&h,sizeof(h)));CHECK(detail::valid_header(h,image.bytes()));
         detail::TreeCore tree(memory,h);std::map<idx_key_t,std::uint64_t> reference;
-        std::mt19937_64 rng(71);
+        std::mt19937_64 rng(71);std::set<idx_key_t> physical;
         for(unsigned step=0;step<12000;++step) {
             auto key=step%97==0?UINT64_MAX:rng()%2048;auto value=rng();bool remove=rng()%4==0;
             std::vector<IndexMutation> changes{{key,&value,remove}};
             CHECK(tree.capacity(changes));tree.mutate(changes[0]);tree.publish();
-            if(remove)reference.erase(key);else reference[key]=value;
+            if(remove)reference.erase(key);else {reference[key]=value;physical.insert(key);}
+            IndexKeyNeighbors neighbors;tree.key_neighbors(key,neighbors);
+            auto at=physical.lower_bound(key);
+            CHECK(neighbors.present==(at!=physical.end() && *at==key));
+            CHECK(neighbors.has_predecessor==(at!=physical.begin()));
+            if(neighbors.has_predecessor)CHECK(neighbors.predecessor==*std::prev(at));
+            auto after=at;if(neighbors.present)++after;
+            CHECK(neighbors.has_successor==(after!=physical.end()));
+            if(neighbors.has_successor)CHECK(neighbors.successor==*after);
+            if(step%251==0) {
+                std::vector<idx_key_t> keys;tree.key_range(KeyRangeEnt::unbounded(),keys);
+                CHECK(keys==std::vector<idx_key_t>(physical.begin(),physical.end()));
+            }
             std::uint64_t got=0;CHECK(tree.lookup(key,got)==bool(reference.count(key)));
             if(reference.count(key))CHECK(got==reference.at(key));
             if(step%251==0) {

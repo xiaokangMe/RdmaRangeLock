@@ -160,6 +160,38 @@ public:
         };
         visit(visit,h.root,0,KeyRangeEnt::from_left(0));
     }
+    void key_neighbors(idx_key_t key,IndexKeyNeighbors& out) {
+        out={};const auto depth=descend(key);auto& leaf=path[depth];
+        const auto slot=slots[depth];out.present=slot<leaf.head.count && leaf.keys[slot]==key;
+        if(slot){out.has_predecessor=true;out.predecessor=leaf.keys[slot-1];}
+        else if(leaf.head.prev) {
+            auto& neighbor=path[64];read_node(leaf.head.prev,neighbor);
+            if(!neighbor.head.leaf || !neighbor.head.count)throw TreeFault("neighbor predecessor page");
+            out.has_predecessor=true;out.predecessor=neighbor.keys[neighbor.head.count-1];
+        }
+        const auto after=slot+(out.present?1:0);
+        if(after<leaf.head.count){out.has_successor=true;out.successor=leaf.keys[after];}
+        else if(leaf.head.next) {
+            auto& neighbor=path[64];read_node(leaf.head.next,neighbor);
+            if(!neighbor.head.leaf || !neighbor.head.count)throw TreeFault("neighbor successor page");
+            out.has_successor=true;out.successor=neighbor.keys[0];
+        }
+    }
+    void key_range(const KeyRangeEnt& range,std::vector<idx_key_t>& out) {
+        out.clear();if(range.empty())return;
+        auto d=descend(range.has_start?range.StartKey:0);auto off=offsets[d];auto& leaf=path[0];
+        std::uint64_t visited=0;
+        while(off) {
+            if(++visited>h.pages_used)throw TreeFault("key range cycle");
+            read_node(off,leaf);if(!leaf.head.leaf)throw TreeFault("key range nonleaf");
+            for(std::size_t i=0;i<leaf.head.count;++i) {
+                const auto key=leaf.keys[i];
+                if(range.has_end && (key>range.EndKey || (key==range.EndKey && range.end_bound==Bound::Open)))return;
+                if(range.contains(key))out.push_back(key);
+            }
+            off=leaf.head.next;
+        }
+    }
     bool lookup(idx_key_t key,std::uint64_t& value) {
         auto d=descend(key);auto& n=path[d];auto slot=slots[d];
         if(slot==n.head.count || n.keys[slot]!=key)return false;

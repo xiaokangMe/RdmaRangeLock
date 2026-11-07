@@ -122,16 +122,26 @@ RC BTreeSingle::insert(idx_key_t key, void* value) {
 
 bool BTreeSingle::refresh_separators(Page& page, idx_key_t& first_key) {
     if (page.is_leaf) {
-        if (page.keys.empty()) return false;
-        first_key = page.keys.front();
-        return true;
+        if (page.keys.empty()) {
+            // A dead leaf cannot remain as a routing boundary. Unlink before
+            // its owning parent removes it; otherwise predecessor/successor
+            // queries can encounter an empty sibling or stale separator.
+            if(page.prev)page.prev->next=page.next;
+            if(page.next)page.next->prev=page.prev;
+            return false;
+        }
+        first_key = page.keys.front();return true;
     }
-    bool have_first = false;
-    idx_key_t child_first = 0;
-    for (std::size_t i = 0; i < page.children.size(); ++i) {
-        if (!refresh_separators(*page.children[i], child_first)) continue;
-        if (!have_first) { first_key = child_first; have_first = true; }
-        if (i > 0) page.keys[i - 1] = child_first;
+    page.keys.clear();bool have_first=false;
+    for(std::size_t i=0;i<page.children.size();) {
+        idx_key_t child_first=0;
+        if(!refresh_separators(*page.children[i],child_first)) {
+            page.children.erase(page.children.begin()+static_cast<std::ptrdiff_t>(i));
+            continue;
+        }
+        if(!have_first){first_key=child_first;have_first=true;}
+        else page.keys.push_back(child_first);
+        ++i;
     }
     return have_first;
 }
@@ -146,7 +156,11 @@ RC BTreeSingle::erase(idx_key_t key) {
     leaf->values.erase(leaf->values.begin() + static_cast<std::ptrdiff_t>(index));
     --size_;
     idx_key_t first_key = 0;
-    refresh_separators(*root_, first_key);
+    if(!refresh_separators(*root_, first_key))root_.reset();
+    while(root_ && !root_->is_leaf && root_->children.size()==1) {
+        auto child=std::move(root_->children.front());
+        child->parent=nullptr;root_=std::move(child);
+    }
     return RCOK;
 }
 
@@ -240,4 +254,10 @@ bool BTreeSingle::hierarchy_cover_into(const KeyRangeEnt& range,std::vector<Inde
     return detail::host_hierarchy_cover(root_.get(),range,out,order_,false);
 }
 
+bool BTreeSingle::key_neighbors(idx_key_t key,IndexKeyNeighbors& out) const {
+    return detail::host_key_neighbors(root_.get(),key,out,false);
+}
+bool BTreeSingle::key_range_into(const KeyRangeEnt& range,std::vector<idx_key_t>& out) const {
+    return detail::host_key_range(root_.get(),range,out,false);
+}
 }  // namespace rrl

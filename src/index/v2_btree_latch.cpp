@@ -530,4 +530,12 @@ bool BTreeLatch::hierarchy_cover_into(const KeyRangeEnt& range,std::vector<Index
     return detail::host_hierarchy_cover(root_.get(),range,out,order_,true);
 }
 
+bool BTreeLatch::key_neighbors(idx_key_t key,IndexKeyNeighbors& out) const {
+    std::shared_lock<std::shared_mutex> guard(root_guard_);
+    return detail::host_key_neighbors(root_.get(),key,out,true);
+}
+bool BTreeLatch::key_range_into(const KeyRangeEnt& range,std::vector<idx_key_t>& out) const {
+    std::shared_lock<std::shared_mutex> guard(root_guard_);
+    return detail::host_key_range(root_.get(),range,out,true);
+}
 }  // namespace rrl

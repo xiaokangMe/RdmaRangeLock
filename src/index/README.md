@@ -37,3 +37,9 @@
 
 
 返回值生命周期：远端 lookup 的 void* 指向本 worker 的单值缓冲，下一次 lookup 会复用；scan 返回值指向该 worker 的扫描缓冲，下一次扫描会复用。统一事务驱动立即读取值、只在下一次扫描前保留 key，不把临时值地址当成记录身份或跨操作缓存。需要长期保存结果的调用方必须自行复制值，不能保留这些指针。
+
+## Griffin 本地混合索引
+
+griffin.cpp / include/index/griffin.h 依据 arXiv:2407.13294 §III、算法1/2、§IV，实现分片 hash 点访问、现有 BTreeLatch 仅存 key、单 sync manager FIFO 复制。已提交尚未复制的 key 用 pending 元数据保护；覆盖它们的扫描抛 IndexSyncPending，禁止 stale scan。索引不保存 txn ID 或事务锁；事务 Lp/Lu 在 lock/txn 层。
+
+本实现以统一私有写集延迟发布替代 abort 回滚，以结构 fence 和分片 latch 替代原文 lock-free 结构。不是 Griffin-PPL，不宣称原文扩展性。仅支持本地 index=griffin,cc=griffin-pl；远端入口目前仅 PL 锁机制。详见 [复现记录](../../docs/notes/precision-griffin-reproduction-2026-11-08.md)。

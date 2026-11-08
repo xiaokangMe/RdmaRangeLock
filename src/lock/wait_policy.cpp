@@ -74,7 +74,7 @@ PolicyReply TransactionCoordinator::begin(std::uint64_t session, WaitPolicy poli
 }
 PolicyReply TransactionCoordinator::acquire(std::uint64_t session, txnid_t id, LockMode mode,
                                            const KeyRangeEnt& range, LockKind kind) {
-    if (!range.valid() || range.empty() || !valid_lock_mode(mode) || kind > LockKind::HierarchyPredicate) return {};
+    if (!range.valid() || range.empty() || !valid_lock_mode(mode) || kind > LockKind::GriffinUpdate || !valid_precision_request(mode,kind,range)) return {};
     std::unique_lock<std::mutex> guard(impl_->mutex);
     auto* txn = impl_->owned(session,id);
     const auto initial = impl_->status(txn);

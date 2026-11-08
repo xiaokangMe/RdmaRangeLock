@@ -32,7 +32,7 @@ int main(){try {
             else if(op.kind==OperationKind::Delete)model.erase(op.key);
             else model[op.key]=op.value;
         }
-        for(auto protocol:{PolicyProtocol::Record,PolicyProtocol::Gap,PolicyProtocol::NextKey,PolicyProtocol::PriorKey,PolicyProtocol::Hierarchy,PolicyProtocol::Predicate,PolicyProtocol::ExactRange})
+        for(auto protocol:{PolicyProtocol::Record,PolicyProtocol::Gap,PolicyProtocol::NextKey,PolicyProtocol::PriorKey,PolicyProtocol::Hierarchy,PolicyProtocol::Predicate,PolicyProtocol::ExactRange,PolicyProtocol::Precision,PolicyProtocol::Griffin})
             for(auto policy:{WaitPolicy::NoWait,WaitPolicy::WaitDie,WaitPolicy::WoundWait}) {
                 BTreeLatch index;CHECK(index.init(16)==RCOK);LockManager locks;
                 PolicyRunConfig run;run.protocol=protocol;run.wait_policy=policy;

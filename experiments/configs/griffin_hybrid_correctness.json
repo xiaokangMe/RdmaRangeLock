@@ -1,0 +1,22 @@
+{
+  "workload": "ycsb-e",
+  "index": "griffin",
+  "cc": "griffin-pl",
+  "key_count": 128,
+  "transaction_count": 96,
+  "operations_per_transaction": 4,
+  "range_length": 8,
+  "threads": 32,
+  "seed": 7,
+  "zipf": 0.4,
+  "order": 16,
+  "execution_mode": "threads",
+  "coroutines": 1,
+  "wait_policy": "wait-die",
+  "max_attempts": 1000,
+  "wait_timeout_ms": 5000,
+  "tree_pages": 8192,
+  "tree_records": 16384,
+  "rdma_lock_slots_per_shard": 8192,
+  "griffin_queue_capacity": 8192
+}

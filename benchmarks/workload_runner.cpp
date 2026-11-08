@@ -1,4 +1,5 @@
 #include "txn/workload.h"
+#include "index/griffin.h"
 #include "lock/remote_lock_manager.h"
 #include "lock/object_lock_manager.h"
 #include "../src/txn/leaf_hierarchy.h"
@@ -59,7 +60,7 @@ void load_config(const std::string& path, WorkloadConfig& config,
                  std::string& index_name, std::string& cc, std::size_t& order,
                  std::string& host, std::uint16_t& port, std::size_t& connections,
                  bool& bucket_auto, PolicyRunConfig& policy, bool& measured,
-                 std::uint16_t& data_port, std::size_t& tree_timeout) {
+                 std::uint16_t& data_port, std::size_t& tree_timeout, std::size_t& griffin_queue) {
     std::ifstream input(path);
     if (!input) throw std::invalid_argument("failed to read config: " + path);
     const std::string text((std::istreambuf_iterator<char>(input)), {});
@@ -74,7 +75,7 @@ void load_config(const std::string& path, WorkloadConfig& config,
         {"threads", &config.threads}, {"duration", &config.duration_seconds}, {"duration_seconds", &config.duration_seconds},
         {"hierarchy_bucket_width", &config.hierarchy_bucket_width}, {"bucket", &config.hierarchy_bucket_width},
         {"tpcc_items_per_order", &config.tpcc_items_per_order}, {"items", &config.tpcc_items_per_order},
-        {"coroutines", &policy.coroutines}, {"coroutine_stack_bytes", &policy.coroutine_stack_bytes},
+        {"griffin_queue_capacity", &griffin_queue}, {"coroutines", &policy.coroutines}, {"coroutine_stack_bytes", &policy.coroutine_stack_bytes},
         {"warmup_seconds", &policy.warmup_seconds}, {"tree_latch_timeout_ms", &tree_timeout}, {"seed", &config.seed}, {"order", &order}, {"rdma_connections", &connections}};
     std::set<std::size_t*> assigned;
     bool zipf_seen = false, port_seen = false, distribution_seen = false;
@@ -198,7 +199,7 @@ int run(int argc, char** argv) {
     std::string cc = "none";
     std::string rdma_host = "127.0.0.1";
     std::uint16_t rdma_port = 19876, data_port = 0;
-    std::size_t tree_timeout = 10000;
+    std::size_t tree_timeout = 10000, griffin_queue=8192;
     // 0 selects the documented default (min(threads, 2)); a value forces it.
     std::size_t rdma_connections = 0;
     bool csv = false;
@@ -211,7 +212,7 @@ int run(int argc, char** argv) {
             config_path = argv[i + 1];
         }
     if (!config_path.empty()) load_config(config_path, config, index_name, cc, order,
-                                         rdma_host, rdma_port, rdma_connections, bucket_auto, policy, measured, data_port, tree_timeout);
+                                         rdma_host, rdma_port, rdma_connections, bucket_auto, policy, measured, data_port, tree_timeout, griffin_queue);
     std::set<std::string> options;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string option = argv[i];
@@ -220,6 +221,7 @@ int run(int argc, char** argv) {
         if (option == "--config") continue;
         if (option == "--workload") config.kind = WorkloadTrace::parse_kind(value);
         else if (option == "--index") index_name = value;
+        else if(option=="--griffin-queue-capacity")griffin_queue=parse_unsigned(value,option);
         else if (option == "--cc") cc = value;
         else if (option == "--latency-histogram") {
             if (value.empty()) throw std::invalid_argument("latency-histogram: expected nonempty path");
@@ -332,8 +334,10 @@ int run(int argc, char** argv) {
     if (index_name == "btree_latch_coupling") index_name = "v2";
     if (index_name == "btree_single") index_name = "v1";
     if (cc == "record-level-strict-2pl") cc = "record-2pl";
-    const std::set<std::string> protocols{"none", "record-2pl", "gap-lock", "next-key", "prior-key", "hierarchical", "predicate", "exact-range", "rdma-next-key", "rdma-prior-key", "rdma-hierarchical", "rdma-predicate", "rdma-exact-range", "rdma-record-2pl", "rdma-gap-lock"};
-    if (index_name != "v1" && index_name != "v2" && index_name != "blink" && index_name != "rdma") throw std::invalid_argument("unknown index: " + index_name);
+    const std::set<std::string> protocols{"none", "record-2pl", "gap-lock", "next-key", "prior-key", "hierarchical", "predicate", "exact-range", "rdma-next-key", "rdma-prior-key", "rdma-hierarchical", "rdma-predicate", "rdma-exact-range", "rdma-record-2pl", "rdma-gap-lock", "precision-lock", "griffin-pl", "rdma-precision-lock", "rdma-griffin-pl"};
+    if (index_name != "v1" && index_name != "v2" && index_name != "blink" && index_name != "griffin" && index_name != "rdma") throw std::invalid_argument("unknown index: " + index_name);
+    if(index_name=="griffin" && cc!="griffin-pl")
+        throw std::invalid_argument("index griffin requires cc griffin-pl; RDMA uses the shared remote backend");
     if(policy.deneva_insert_behavior && (!policy.leaf_hierarchy || policy.separator_hierarchy || cc!="rdma-hierarchical" || index_name!="rdma" || !policy.txn_state_port))throw std::invalid_argument("deneva behavior requires native RDMA leaf hierarchy");
     if(policy.native_object_locks && (cc!="rdma-record-2pl" || index_name!="rdma" || !policy.txn_state_port || policy.leaf_hierarchy))
         throw std::invalid_argument("native object locks require rdma-record-2pl, shared RDMA data, native txn state, and no leaf hierarchy");
@@ -344,7 +348,7 @@ int run(int argc, char** argv) {
         policy.coordinator_port || policy.hierarchy_escalation_threshold>1048576 || policy.hierarchy_deescalate_after>1048576))
         throw std::invalid_argument("granularity conversion requires fixed buckets with local/native RDMA state and bounded thresholds");
     if (!protocols.count(cc)) throw std::invalid_argument("unknown cc: " + cc);
-    if (cc == "predicate" || cc == "rdma-predicate" || cc == "exact-range" || cc == "rdma-exact-range" || policy.warmup_seconds || policy.coroutines>1) measured = true;
+    if (cc == "precision-lock" || cc == "griffin-pl" || cc == "rdma-precision-lock" || cc == "rdma-griffin-pl" || cc == "predicate" || cc == "rdma-predicate" || cc == "exact-range" || cc == "rdma-exact-range" || policy.warmup_seconds || policy.coroutines>1) measured = true;
     if(!policy.coroutines || policy.coroutines>4096 || config.threads>4096/policy.coroutines ||
        policy.coroutine_stack_bytes<65536 || policy.coroutine_stack_bytes>16777216 || policy.warmup_seconds>600000)
         throw std::invalid_argument("runtime geometry bounds");
@@ -401,11 +405,15 @@ int run(int argc, char** argv) {
     BTreeSingle v1;
     BTreeLatch v2;
     BTreeBlink blink;
+    BTreeGriffin griffin(griffin_queue);
     BTreeRdma remote_index;
     BTreeIndex* index = nullptr;
     if (index_name == "v1") {
         if (v1.init(order) != RCOK) throw std::invalid_argument("v1 init failed");
         index = &v1;
+    } else if (index_name == "griffin") {
+        if (griffin.init(order) != RCOK) throw std::invalid_argument("griffin init failed");
+        index = &griffin;
     } else if (index_name == "blink") {
         if (blink.init(order) != RCOK) throw std::invalid_argument("blink init failed");
         index = &blink;
@@ -438,7 +446,8 @@ int run(int argc, char** argv) {
         const auto plain = cc.rfind("rdma-",0) == 0 ? cc.substr(5) : cc;
         policy.protocol = plain == "none" ? PolicyProtocol::None : plain == "record-2pl" ? PolicyProtocol::Record : plain == "gap-lock" ? PolicyProtocol::Gap :
             plain == "next-key" ? PolicyProtocol::NextKey : plain == "prior-key" ? PolicyProtocol::PriorKey : plain == "predicate" ? PolicyProtocol::Predicate :
-            plain == "exact-range" ? PolicyProtocol::ExactRange : PolicyProtocol::Hierarchy;
+            plain == "exact-range" ? PolicyProtocol::ExactRange : plain == "precision-lock" ? PolicyProtocol::Precision :
+            plain == "griffin-pl" ? PolicyProtocol::Griffin : PolicyProtocol::Hierarchy;
         if(policy.leaf_hierarchy || policy.dag_hierarchy || policy.native_object_locks) {
             ObjectLockManager locks;
             if(policy.dag_hierarchy && !locks.configure_dag(config.hierarchy_bucket_width,policy.hierarchy_index_paths))
@@ -533,7 +542,7 @@ int run(int argc, char** argv) {
     const auto data_wait=remote_index.latch_wait_ns()-data_wait_start;
     if (measured && !(index_name=="rdma" ? remote_index.healthy() && remote_index.validate() :
                      index_name=="v1" ? v1.validate() :
-                     index_name=="blink" ? blink.validate() : v2.validate())) ++stats.index_errors;
+                     index_name=="blink" ? blink.validate() : index_name=="griffin" ? griffin.validate() : v2.validate())) ++stats.index_errors;
 
     if (measured && !csv) {
         const auto& m=stats.policy;
@@ -559,6 +568,7 @@ int run(int argc, char** argv) {
         std::cout << ",rdma_lock_slots_per_shard";
         for(std::size_t shard=0;shard<kRemoteLockShards;++shard)
             std::cout << ",rdma_lock_slot_peak_" << shard << ",rdma_lock_capacity_required_" << shard;
+        std::cout << ",index_sync_pending_aborts";
         std::cout << '\n';
         std::cout << WorkloadTrace::name(config.kind) << ',' << index_name << ',' << cc << ',' << config.threads << ','
                   << stats.transactions << ',' << stats.committed << ',' << stats.aborted << ',' << stats.operations << ','
@@ -626,8 +636,10 @@ int run(int argc, char** argv) {
         std::cout << ',' << rdma_diag.slots_per_shard;
         for(std::size_t shard=0;shard<kRemoteLockShards;++shard)
             std::cout << ',' << rdma_diag.slot_peaks[shard] << ',' << rdma_diag.capacity_required[shard];
+        std::cout << ',' << stats.policy.index_pending_aborts;
         std::cout << '\n';
     } else {
+        std::cout << "index_sync_pending_aborts=" << stats.policy.index_pending_aborts << "\n";
         std::cout << "execution_mode=" << (measured?(policy.use_coroutines?"coroutines":"threads"):"threads") << "\n";
         std::cout << "data_backend=" << (index_name=="rdma"?"shared-rdma":"local")
                   << ",data_rdma_operations=" << data_ops << ",data_read_bytes=" << data_reads

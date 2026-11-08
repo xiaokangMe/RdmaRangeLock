@@ -91,6 +91,15 @@ private:
     }
 };
 
+// Jordan1981 section 4.1: Lu contains actual tuples, never write ranges.
+inline bool valid_precision_request(LockMode mode, LockKind kind, const KeyRangeEnt& range) {
+    if(kind==LockKind::PrecisionPredicate || kind==LockKind::GriffinPredicate)return mode==LockMode::S;
+    if(kind==LockKind::PrecisionUpdate || kind==LockKind::GriffinUpdate)
+        return mode==LockMode::X && range.has_start && range.has_end &&
+            range.StartKey==range.EndKey && range.start_bound==Bound::Closed && range.end_bound==Bound::Closed;
+    return true;
+}
+
 struct RangeLock {
     txnid_t txn_id{0};
     LockMode mode{LockMode::S};
@@ -103,8 +112,28 @@ struct RangeLock {
     // one relation. Node intentions below implement the separate MGL subset.
     // LockKind labels for non-Node locks do not isolate conflict namespaces.
     bool conflicts(const RangeLock& other) const {
-        if (txn_id == other.txn_id || !range.overlaps(other.range) ||
-            !lock_modes_conflict(mode, other.mode)) return false;
+        if(txn_id==other.txn_id)return false;
+        const auto predicate=[](LockKind k) {
+            return k==LockKind::PrecisionPredicate || k==LockKind::GriffinPredicate;
+        };
+        const auto update=[](LockKind k) {
+            return k==LockKind::PrecisionUpdate || k==LockKind::GriffinUpdate;
+        };
+        if((predicate(kind) || update(kind)) && (predicate(other.kind) || update(other.kind))) {
+            // Lp x Lu only. Neither Lp/Lp satisfiability nor Lu/Lu checking.
+            if(predicate(kind)==predicate(other.kind))return false;
+            const auto& p=predicate(kind)?range:other.range;
+            const auto& tuple=update(kind)?range:other.range;
+            return p.contains(tuple.StartKey);
+        }
+        const auto griffin=[](LockKind k) {
+            return k==LockKind::GriffinPredicate || k==LockKind::GriffinUpdate;
+        };
+        // Griffin protects key membership; record locks protect contents.
+        // A value-only update cannot cause a phantom (Griffin §V-A).
+        if((griffin(kind) && other.kind==LockKind::Record) ||
+           (griffin(other.kind) && kind==LockKind::Record))return false;
+        if (!range.overlaps(other.range) || !lock_modes_conflict(mode, other.mode)) return false;
         // MySQL 8.4 17.7.1: gap guards are purely inhibitive.
         // They coexist regardless of S/X and do not lock existing records.
         // InsertIntent reserves an actual insert position; distinct positions

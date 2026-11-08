@@ -127,7 +127,7 @@ int run_wait_coordinator(std::uint16_t port,std::size_t lock_budget,std::uint64_
                 else if(op==Acquire) {
                     KeyRangeEnt r;r.StartKey=m[5];r.EndKey=m[6];r.has_start=m[7]!=0;r.has_end=m[8]!=0;
                     r.start_bound=static_cast<Bound>(m[9]);r.end_bound=static_cast<Bound>(m[10]);
-                    if(m[3]<=static_cast<std::uint64_t>(LockMode::UIX) && m[4]<=static_cast<std::uint64_t>(LockKind::HierarchyPredicate) && m[7]<=1 && m[8]<=1 && m[9]<=1 && m[10]<=1)
+                    if(m[3]<=static_cast<std::uint64_t>(LockMode::UIX) && m[4]<=static_cast<std::uint64_t>(LockKind::GriffinUpdate) && m[7]<=1 && m[8]<=1 && m[9]<=1 && m[10]<=1)
                         reply=engine->acquire(sid,m[2],static_cast<LockMode>(m[3]),r,static_cast<LockKind>(m[4]));
                 } else if(op==Check)reply=engine->check(sid,m[2]);
                 else if(op==Prepare)reply=engine->prepare_commit(sid,m[2]);

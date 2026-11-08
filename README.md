@@ -169,3 +169,9 @@ YCSB 请求数遵循 Deneva 的可配置模型，默认 `REQ_PER_QUERY=10` 对�
 定向验证：`python3 scripts/check_leaf_runtime.py --build build-shared --cross-host`。完整候选维度在 `experiments/configs/formal_native_leaf_2m_10s.json`，本轮不启动完整正式矩阵。细节见 [真实叶移植](docs/notes/deneva-leaf-migration-2026-11-04.md)。远端数据格式为 2，记录含短 latch 共 32 字节，旧服务须重建，不能连接旧格式的 24 字节记录区。
 
 `--hierarchy-behavior deneva` / 配置 `hierarchy_behavior: "deneva"` 是用户指定的 Deneva 源码行为移植：远端叶接近满时按源码尝试父保护并提前 Abort，不执行原不可达的分裂；普通插入即时写回，并在插入路径内提前释放叶。结果标记 `isolation_semantics=deneva-early-release`，记录提前插入、提前释放、分裂中止及提前写后又中止的次数。默认 `strict` 保留完整分裂和严格事务释放。兼容路径复现早写留存，无后续 abort 回滚，不标为 strict 2PL；两种结果不能混组。详见 [实际祖先与源码行为](docs/notes/deneva-ancestor-locks-2026-11-05.md)。
+
+## Precision Locks 与 Griffin（2026-11-08）
+
+新增 --cc precision-lock|griffin-pl|rdma-precision-lock|rdma-griffin-pl，共用事务骨架与三种等待策略。Jordan 1981 PL 使用读谓词 Lp / 实际更新 Lu，所有写先登记隐含点读；Griffin PL 保护成员变动，record 2PL 补齐多操作事务值隔离。
+
+--index griffin --cc griffin-pl 提供本地 hash + key-only B+ 树 + 异步同步线程；同步未完成的提交持续阻挡相交扫描。RDMA 的 rdma-griffin-pl 只复现锁机制，数据仍走共享远端 B+ 树，不代表远端完整混合 Griffin。Griffin-PPL 尚无全文，未实现。配置与验收见 [论文复现记录](docs/notes/precision-griffin-reproduction-2026-11-08.md)；本次不启动正式矩阵。

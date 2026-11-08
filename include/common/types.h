@@ -45,6 +45,10 @@ enum class LockKind : std::uint8_t {
     InsertIntent, // InnoDB-style insertion at one key, distinct from gap guard
     PriorKey,
     HierarchyPredicate, // exact descendant predicate used during granularity conversion
+    PrecisionPredicate, // Jordan1981 Lp: read predicate, mode S
+    PrecisionUpdate,    // Jordan1981 Lu: actual tuple key, mode X
+    GriffinPredicate,   // Griffin Lp: membership-only scan guard
+    GriffinUpdate,      // Griffin Lu: insert/delete membership key
 };
 
 // Gray1976 Table 1: IS/IX/S/SIX/X. Microsoft SQL Server locking guide,

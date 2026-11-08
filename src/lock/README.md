@@ -77,3 +77,9 @@ RDMA 的 `rdma-record-2pl` 与 `rdma-gap-lock` 复用统一策略驱动及共享
 本节记录 2026-11-03 的初始实现。当前正式候选采用 `coordination_backend=native-rdma-state`，不启动逐事务授权的 `rrl_wait_coordinator`，锁与事务状态走 RDMA。`tcp-control+rdma-slots` 是保留的兼容路径：每轮专用服务，活跃 holder 断线会 poison 协调器并拒绝后续授权，需要结束失败 run 并重启，不能与 native 结果混组。
 
 `--cc predicate|rdma-predicate` 在扫描前获取完整半开区间 S，点写/插入/删除取 Predicate X，保护空结果区间。这是单键区间谓词。两套延迟、重试、超时和使用命令详见 [实现记录](../../docs/notes/wait-policies-and-latency-2026-11-03.md)。
+
+## Precision Locks / Griffin PL
+
+Jordan 1981 §4.1–4.3 对应 PrecisionPredicate/PrecisionUpdate：Lp 只允许 S，Lu 只允许 X 单个闭点；冲突仅为 Lp × Lu 的 contains 判定。写前隐含点读在 src/txn/precision_plan.h，不得因 Lu/Lu 不冲突而删掉该步骤。
+
+Griffin 的 GriffinPredicate/GriffinUpdate 只负责 scan 与 insert/delete/upsert 成员冲突；Record S/X 另保记录值，value-only Update 不取 Lu。两种协议均接入现有本地分片锁表、远端区间锁槽与三等待策略，不改公共接口签名。纯锁比较固定索引后端；混合索引另列。详见 [论文复现与边界](../../docs/notes/precision-griffin-reproduction-2026-11-08.md)。

@@ -10,6 +10,8 @@
 #include "key_range_plan.h"
 #include "bucket_runtime.h"
 #include "dag_hierarchy.h"
+#include "precision_plan.h"
+#include "index/griffin.h"
 #include <atomic>
 #include <algorithm>
 #include <thread>
@@ -35,6 +37,8 @@ struct Worker {
 static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& physical,const WorkloadTrace& trace,const PolicyRunConfig& cfg,std::size_t worker_threads) {
     if((cfg.protocol==PolicyProtocol::None && cfg.wait_policy!=WaitPolicy::NoWait) ||
        !worker_threads || !cfg.max_attempts || !cfg.wait_timeout_ms || cfg.wait_timeout_ms>600000)throw std::invalid_argument("invalid retry/wait bound");
+    if(dynamic_cast<BTreeGriffin*>(&index) && cfg.protocol!=PolicyProtocol::Griffin)
+        throw std::invalid_argument("Griffin hybrid index requires Griffin phantom and record protocol");
     const bool conversions=cfg.hierarchy_escalation_threshold || cfg.hierarchy_deescalate_after;
     auto* converter=dynamic_cast<ILockModeConversion*>(&physical);
     if(conversions && (cfg.protocol!=PolicyProtocol::Hierarchy || cfg.leaf_hierarchy || cfg.separator_hierarchy || cfg.dag_hierarchy ||
@@ -187,7 +191,7 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
                 if(begun.result!=TxnResult::Ok){++s.lock_errors;++s.failed_transactions;hard=true;stopped=true;break;}
                 const auto id=begun.id;age=begun.age;active_attempt=true;
                 TxnResult outcome=TxnResult::Ok;
-                bool touched=false;
+                bool touched=false,pending_stale=false;
                 std::uint64_t early_in_attempt=0;
                 pending.clear();
                 const auto own_write=[&](idx_key_t key)->const IndexMutation* {
@@ -304,6 +308,8 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
                         // ExactRange is an equivalent compatibility tag.
                         if((cfg.protocol==PolicyProtocol::Predicate && !acquire(LockMode::S,range,LockKind::Predicate)) ||
                            (cfg.protocol==PolicyProtocol::ExactRange && !acquire(LockMode::S,range,LockKind::ExactRange))) break;
+                        if((cfg.protocol==PolicyProtocol::Precision || cfg.protocol==PolicyProtocol::Griffin) &&
+                           !acquire(LockMode::S,range,cfg.protocol==PolicyProtocol::Griffin?LockKind::GriffinPredicate:LockKind::PrecisionPredicate))break;
                         if(classic) {
                             auto& before=key_before[worker];auto& after=key_after[worker];
                             if(!detail::observe_keys(index,op,before)){outcome=TxnResult::Conflict;break;}
@@ -317,6 +323,21 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
                             auto& verified=rechecks[worker];index.scan_range_into(range,verified);s.rows_rechecked+=verified.size();
                             for(const auto& row:verified)account_value(row.key,static_cast<const std::uint64_t*>(row.value));
                             account_inserted(range,verified);
+                        } else if(cfg.protocol==PolicyProtocol::Griffin) {
+                            auto& rows=scans[worker];
+                            try {index.scan_range_into(range,rows);}
+                            catch(const IndexSyncPending&) {++m.index_pending_aborts;pending_stale=true;outcome=TxnResult::Conflict;break;}
+                            s.rows_scanned+=rows.size();
+                            auto& requests=record_requests[worker];requests.clear();
+                            for(const auto& row:rows)requests.push_back(KeyRangeEnt::point(row.key));
+                            if(!acquire_batch(LockMode::S,requests,LockKind::Record))break;
+                            for(const auto& row:rows) {
+                                void* value=nullptr;
+                                if(own_write(row.key))account_value(row.key,nullptr);
+                                else if(index.lookup(row.key,value))account_value(row.key,static_cast<const std::uint64_t*>(value));
+                                else {outcome=TxnResult::Error;break;}
+                            }
+                            if(outcome==TxnResult::Ok)account_inserted(range,rows);
                         } else if(cfg.protocol==PolicyProtocol::Record) {
                             auto& rows=scans[worker];index.scan_range_into(range,rows);s.rows_scanned+=rows.size();
                             auto& requests=record_requests[worker];requests.clear();
@@ -356,7 +377,23 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
                             if(!detail::observe_keys(index,op,after) ||
                                !detail::same_observation(before,after,false)){outcome=TxnResult::Conflict;break;}
                         }
-                        if(!classic && cfg.protocol!=PolicyProtocol::Hierarchy && cfg.protocol!=PolicyProtocol::None && !acquire(read?LockMode::S:LockMode::X,KeyRangeEnt::point(op.key),kind))break;
+                        if(cfg.protocol==PolicyProtocol::Precision) {
+                            if(!detail::precision_point(op,acquire))break;
+                        } else if(cfg.protocol==PolicyProtocol::Griffin) {
+                            // Griffin is phantom avoidance, not value isolation.
+                            // The paper explicitly measured only single-operation
+                            // index transactions (§V-A). Add record 2PL for our
+                            // common multi-operation transaction harness.
+                            if(!acquire(read?LockMode::S:LockMode::X,KeyRangeEnt::point(op.key),LockKind::Record))break;
+                            bool membership=!read && op.kind!=OperationKind::Update;
+                            if(op.kind==OperationKind::Update) {
+                                void* old=nullptr;
+                                const auto* own=own_write(op.key);
+                                membership=own?own->remove:!index.lookup(op.key,old);
+                            }
+                            if(membership && !acquire(LockMode::X,KeyRangeEnt::point(op.key),LockKind::GriffinUpdate))break;
+                        } else if(!classic && cfg.protocol!=PolicyProtocol::Hierarchy && cfg.protocol!=PolicyProtocol::None &&
+                                  !acquire(read?LockMode::S:LockMode::X,KeyRangeEnt::point(op.key),kind))break;
                         if(read) {
                             ++s.reads;void* value=nullptr;
                             if(own_write(op.key))account_value(op.key,nullptr);
@@ -435,7 +472,7 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
                 }
                 if(early_in_attempt)++m.deneva_partial_write_aborts;
                 ++s.aborted;
-                if(outcome==TxnResult::Conflict)++s.lock_conflicts;
+                if(outcome==TxnResult::Conflict && !pending_stale)++s.lock_conflicts;
                 if(outcome==TxnResult::Wounded)++m.wound_aborts;
                 if(outcome==TxnResult::Deadline)++m.deadline_aborts;
                 if(attempt+1==cfg.max_attempts)++m.retry_exhausted;
@@ -536,6 +573,7 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
         pm.deescalation_attempts+=m.deescalation_attempts;pm.deescalations+=m.deescalations;pm.deescalation_failures+=m.deescalation_failures;
         pm.warmup_committed+=m.warmup_committed;pm.warmup_aborted+=m.warmup_aborted;
         pm.state_rdma_operations+=m.state_rdma_operations;
+        pm.index_pending_aborts+=m.index_pending_aborts;
         pm.deneva_early_inserts+=m.deneva_early_inserts;pm.deneva_early_unlocks+=m.deneva_early_unlocks;
         pm.deneva_split_aborts+=m.deneva_split_aborts;pm.deneva_partial_write_aborts+=m.deneva_partial_write_aborts;
         pm.logical_started+=m.logical_started;pm.unfinished+=m.unfinished;pm.logical_failed+=m.logical_failed;

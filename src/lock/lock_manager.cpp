@@ -98,7 +98,7 @@ bool is_point_range(const KeyRangeEnt& range) {
 
 RC LockManager::lock(txnid_t txn_id, LockMode mode, const KeyRangeEnt& range,
                      LockKind kind, std::vector<txnid_t>* conflicts) {
-    if (!txn_id || !valid_lock_mode(mode) || kind>LockKind::HierarchyPredicate || range.empty() || !range.valid()) return ERROR;
+    if (!txn_id || !valid_lock_mode(mode) || kind>LockKind::GriffinUpdate || range.empty() || !range.valid() || !valid_precision_request(mode,kind,range)) return ERROR;
     if (conflicts) conflicts->clear();
     const auto ids = shard_ids(range, kind, mode);
     std::vector<std::unique_lock<std::mutex>> guards;

@@ -3,7 +3,7 @@
 #include "common/latency_histogram.h"
 #include <functional>
 namespace rrl {
-enum class PolicyProtocol { Record, Gap, NextKey, Hierarchy, Predicate, None, ExactRange, PriorKey };
+enum class PolicyProtocol { Record, Gap, NextKey, Hierarchy, Predicate, None, ExactRange, PriorKey, Precision, Griffin };
 struct PolicyRunConfig {
     WaitPolicy wait_policy{WaitPolicy::NoWait};
     PolicyProtocol protocol{PolicyProtocol::Hierarchy};
@@ -38,6 +38,7 @@ struct PolicyStats {
     std::uint64_t warmup_committed{0},warmup_aborted{0},warmup_elapsed_ns{0};
     std::uint64_t coroutine_switches{0},state_rdma_operations{0};
     std::uint64_t deneva_early_inserts{0},deneva_early_unlocks{0},deneva_split_aborts{0},deneva_partial_write_aborts{0};
+    std::uint64_t index_pending_aborts{0};
     std::uint64_t logical_started{0},unfinished{0},logical_failed{0},retries{0},max_retries{0};
     std::uint64_t completed_retries{0},unfinished_retries{0};
     std::uint64_t wound_aborts{0},deadline_aborts{0},retry_exhausted{0};

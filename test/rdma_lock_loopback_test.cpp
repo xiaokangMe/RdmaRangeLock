@@ -10,6 +10,7 @@
 #include "classic_range_contract.h"
 #include "full_mgl_contract.h"
 #include "granularity_contract.h"
+#include "precision_contract.h"
 
 #include <cstdint>
 #include <cstdlib>
@@ -49,6 +50,7 @@ int main() {
     }
 
     paper_contract::check(locks);
+    precision_contract::check(locks);
     classic_contract::check(locks);
     full_mgl_contract::check(locks);
     granularity_contract::check(locks);

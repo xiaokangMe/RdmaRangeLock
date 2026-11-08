@@ -731,7 +731,7 @@ RC RemoteLockManager::convert_impl(txnid_t txn_id,LockMode mode,const KeyRangeEn
 
 RC RemoteLockManager::lock_impl(txnid_t txn_id, LockMode mode, const KeyRangeEnt& range,
                            LockKind kind, std::vector<txnid_t>* conflicts) {
-    if (!connected() || !txn_id || !valid_lock_mode(mode) || kind>LockKind::HierarchyPredicate || range.empty() || !range.valid()) return ERROR;
+    if (!connected() || !txn_id || !valid_lock_mode(mode) || kind>LockKind::GriffinUpdate || range.empty() || !range.valid() || !valid_precision_request(mode,kind,range)) return ERROR;
     if (conflicts) conflicts->clear();
     if (profile_enabled_) lock_calls_.fetch_add(1, std::memory_order_relaxed);
     if (txn_cache_.satisfies(txn_id, mode, range, kind)) {
@@ -857,7 +857,7 @@ RC RemoteLockManager::lock_impl(txnid_t txn_id, LockMode mode, const KeyRangeEnt
 RC RemoteLockManager::lock_batch_impl(txnid_t txn_id, LockMode mode,
                                            const std::vector<KeyRangeEnt>& ranges,
                                            LockKind kind, std::vector<txnid_t>* conflicts) {
-    if (!connected() || !txn_id || !valid_lock_mode(mode) || kind>LockKind::HierarchyPredicate || ranges.empty()) return ERROR;
+    if (!connected() || !txn_id || !valid_lock_mode(mode) || kind>LockKind::GriffinUpdate || ranges.empty()) return ERROR;
     if (conflicts) conflicts->clear();
     if (profile_enabled_) lock_calls_.fetch_add(ranges.size(), std::memory_order_relaxed);
 
@@ -867,7 +867,7 @@ RC RemoteLockManager::lock_batch_impl(txnid_t txn_id, LockMode mode,
     std::vector<KeyRangeEnt> pending;
     pending.reserve(ranges.size());
     for (const auto& range : ranges) {
-        if (range.empty() || !range.valid()) return ERROR;
+        if (range.empty() || !range.valid() || !valid_precision_request(mode,kind,range)) return ERROR;
         if (txn_cache_.satisfies(txn_id, mode, range, kind)) {
             if (profile_enabled_) cache_hits_.fetch_add(1, std::memory_order_relaxed);
             continue;

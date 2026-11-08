@@ -116,3 +116,20 @@ YCSB-E，t=1，committed txn/s：
 记录/间隙/next-key/层级/谓词决定“锁什么”，no-wait / wait-die / wound-wait 决定“冲突时如何处理”，是两个独立维度。新统一事务驱动在三种策略间保留协议的锁对象差异，重试继承逻辑年龄，并区分成功 attempt 延迟、含重试完成延迟与未完成比例。谓词模式先锁完整半开区间再扫描，保护空结果区间；范围仅限一维 key。
 
 当前 native 本地与 RDMA 共享事务语义，RDMA 使用单边状态槽；旧 TCP 兼容协调路径另行标注，不是 native 每事务必经层。比较应固定后端与控制面，原历史 NO_WAIT 图不作为新路径基线。确定性用例和小型双机检查仅验证实现，不形成新的吞吐或尾延迟结论。代码与证据入口见 [实现记录](../notes/wait-policies-and-latency-2026-11-03.md)。
+
+## Precision Locks 与 Griffin：复现补充（2026-11-08）
+
+本补充回答以下问题：
+
+- [x] PL 与区间谓词锁的检查对象有什么差异？
+- [x] 为何不检查 Lu/Lu 仍须保护写写冲突？
+- [x] Griffin 如何避免异步有序索引返回旧结果？
+- [x] 哪些是论文机制，哪些是统一架构适配？
+
+Jordan 的 Precision Locks 把读谓词放入 Lp，把实际更新元组放入 Lu，双向检查 P(t)，避免谓词与谓词的可满足性判断；原文允许任意可独立求值的谓词 [@jordan1981precision]。写写互斥依赖写操作隐含的读谓词，包括唯一键插入前的不存在检查，不能仅实现两张列表便省略这一步。本系统实现 uint64 单键区间子集，Lu 只允许实际更新点；所有修改、删除与插入均先登记点 Lp。
+
+Griffin 继承 PL 的成员集合防幻读机制，将点查放到 hash、范围查放到仅存 key 的 B+ 树，专用线程异步传播已提交插入/删除。已提交 Lu 在树同步完成前不能回收，否则扫描可漏掉已提交的新 key [@nakazono2024griffin]。本系统以无事务身份的 pending 复制元数据保留这项保护，并在扫描时独立统计同步滞后中止。
+
+原 Griffin 的实验没有实现记录内容隔离，YCSB-A 对索引而言全部为 Lookup。本系统保留标准 A 的实际更新和多操作事务，因此在 Griffin membership PL 外补上 record strict 2PL，并采用统一私有写集延迟写入代替 abort 物理回滚。原文 lock-free hash / BwTree / 链表换成项目的分片 hash、共用 BTreeLatch 与分片锁表；这是机制复现，不是原系统性能复刻。纯锁机制比较固定同一索引后端，混合索引单独比较。
+
+实现、原文页码、源码搜索结果、正确性用例与 RDMA 边界见 [复现验收记录](../notes/precision-griffin-reproduction-2026-11-08.md)。RDMA 当前复现 PL 部件，未实现远端 hash 混合 Griffin；Griffin-PPL 未获得全文，未实现。不将任何旧矩阵结果归到这两种新协议。

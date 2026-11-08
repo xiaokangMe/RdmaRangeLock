@@ -38,7 +38,7 @@ void load_shared_dataset_config(const std::string& path,WorkloadConfig& c,RdmaTr
         {"tpcc_items_per_order",&c.tpcc_items_per_order},{"items",&c.tpcc_items_per_order},
         {"seed",&c.seed},{"order",&t.order},{"tree_pages",&t.page_capacity},{"tree_records",&t.record_capacity},
         {"tree_latch_timeout_ms",&t.latch_timeout_ms}};
-    const std::set<std::string> ignored{"name","index","cc","threads","duration","duration_seconds",
+    const std::set<std::string> ignored{"name","index","cc","griffin_queue_capacity","threads","duration","duration_seconds",
         "hierarchy_bucket_width","bucket","rdma_host","rdma_port","lock_server_port","rdma_connections",
         "coordinator_port","txn_state_port","execution_mode","coroutines","coroutine_stack_bytes","warmup_seconds","wait_policy","wait_timeout_ms","max_attempts","lock_budget","latency",
         "hierarchy_index_paths","hierarchy_read_path","hierarchy_escalation_threshold","hierarchy_deescalate_after","latency_histogram","hierarchy_diagnostics","hierarchy_layout","hierarchy_behavior","native_object_locks","rdma_lock_slots_per_shard"};

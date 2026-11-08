@@ -271,7 +271,9 @@ public:
             }
             n.head.count=middle;
             n.head.right_link=right_off;n.head.high_key=separator;n.head.has_high_key=1;
-            write_node(off,n);write_node(right_off,right);
+            // Lehman-Yao publication order: materialize the right page first,
+            // then publish the left fence/link, and only then update the parent.
+            write_node(right_off,right);write_node(off,n);
             if(!depth) {
                 auto& root=path[65];root.head=OffsetBTreePage{};root.head.leaf=0;root.head.count=1;
                 root.keys[0]=separator;root.links[0]=off;root.links[1]=right_off;

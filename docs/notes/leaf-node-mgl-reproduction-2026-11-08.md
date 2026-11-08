@@ -49,3 +49,14 @@
 - 删除导致根收缩后的 stale-plan 拒绝。
 
 记录锁阶段使用无符号最大值，保证无论树高如何都在所有祖先之后获取。
+
+## 双机 RDMA 正确性验收（2026-11-08）
+
+在 .66 控制、.67 执行客户端完成 scripts/check_leaf_runtime.py --cross-host --only cross，共 24 项通过：
+
+- strict/root/Deneva/partial/split-abort 祖先与结构修改交错；
+- clean/running/committing/gate 四种锁服务断连故障；
+- no-wait、wait-die、wound-wait 三种策略；
+- YCSB-A、YCSB-E、TPC-C Payment、TPC-C New Order。
+
+这是正确性和通信路径检查，不是正式性能矩阵；正式矩阵数据仍需单独按配置生成。

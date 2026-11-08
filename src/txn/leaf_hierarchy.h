@@ -37,7 +37,7 @@ inline bool leaf_plan(BTreeIndex& index,const TransactionTrace& txn,std::vector<
         if(!index.hierarchy_cover_into(range,scratch))return false;
         for(const auto& node:scratch)
             add(node.leaf && scan?LockMode::S:write?LockMode::IX:LockMode::IS,node.id,LockKind::Node,node.depth+1);
-        if(!scan && !(deneva && op.kind==OperationKind::Insert))add(write?LockMode::X:LockMode::S,op.key,LockKind::Record,66);
+        if(!scan && !(deneva && op.kind==OperationKind::Insert))add(write?LockMode::X:LockMode::S,op.key,LockKind::Record,std::numeric_limits<unsigned>::max());
         if(scan || !write)continue;
         const bool removing=op.kind==OperationKind::Delete;
         const bool inserting=op.kind==OperationKind::Insert ||

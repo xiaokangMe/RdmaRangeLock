@@ -170,7 +170,7 @@ def validate_row(output, seconds, shared, expected_coordination=None, expected_l
         if int(row["deneva_early_inserts"])!=int(row["deneva_early_unlocks"]):raise RuntimeError("Deneva insertion/release mismatch")
         if any(int(row[k])>int(row["aborted"]) for k in ("deneva_split_aborts","deneva_partial_write_aborts")):raise RuntimeError("Deneva abort counters mismatch")
     if expected_layout is not None and layout!=expected_layout:raise RuntimeError("hierarchy layout differs from configuration")
-    if layout not in ("leaf","bucket","dag","none"):raise RuntimeError("unknown hierarchy layout")
+    if layout not in ("leaf","bucket","dag","separator","none"):raise RuntimeError("unknown hierarchy layout")
     if layout in ("leaf","dag") and row.get("cc") not in ("hierarchical","rdma-hierarchical"):raise RuntimeError("leaf layout on another protocol")
     if layout in ("leaf","dag") and shared and row.get("coordination")!="native-rdma-state":raise RuntimeError("leaf objects require native coordination")
     if layout=="dag":
@@ -343,7 +343,7 @@ def main():
     for k in ("hierarchy_escalation_threshold","hierarchy_deescalate_after"):
         if type(config[k]) is not int or not 0<=config[k]<=1048576:raise SystemExit("invalid "+k)
     config.setdefault("hierarchy_layout","bucket")
-    if config["hierarchy_layout"] not in ("leaf","bucket","dag"):raise SystemExit("hierarchy_layout must be leaf, bucket or dag")
+    if config["hierarchy_layout"] not in ("leaf","bucket","dag","separator"):raise SystemExit("hierarchy_layout must be leaf, bucket, dag or separator")
     config.setdefault("hierarchy_index_paths",2)
     config.setdefault("hierarchy_read_path",0)
     if type(config["hierarchy_index_paths"]) is not int or type(config["hierarchy_read_path"]) is not int or not 2<=config["hierarchy_index_paths"]<=32 or not 0<=config["hierarchy_read_path"]<config["hierarchy_index_paths"]:

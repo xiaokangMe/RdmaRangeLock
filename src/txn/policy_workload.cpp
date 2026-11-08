@@ -37,7 +37,7 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
        !worker_threads || !cfg.max_attempts || !cfg.wait_timeout_ms || cfg.wait_timeout_ms>600000)throw std::invalid_argument("invalid retry/wait bound");
     const bool conversions=cfg.hierarchy_escalation_threshold || cfg.hierarchy_deescalate_after;
     auto* converter=dynamic_cast<ILockModeConversion*>(&physical);
-    if(conversions && (cfg.protocol!=PolicyProtocol::Hierarchy || cfg.leaf_hierarchy || cfg.dag_hierarchy ||
+    if(conversions && (cfg.protocol!=PolicyProtocol::Hierarchy || cfg.leaf_hierarchy || cfg.separator_hierarchy || cfg.dag_hierarchy ||
        !converter || (!cfg.coordinator_host.empty() && !cfg.txn_state_port)))
         throw std::invalid_argument("granularity conversion requires fixed buckets and local/native RDMA state");
     if(cfg.dag_hierarchy) {
@@ -68,7 +68,7 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
     std::vector<std::unique_ptr<LocalNativePolicyClient>> local_native;
     std::vector<Worker> parts(count);
     std::vector<std::vector<detail::HierarchyRequest>> plans;
-    if(cfg.protocol==PolicyProtocol::Hierarchy && !cfg.leaf_hierarchy && !conversions)for(const auto& t:trace.transactions())
+    if(cfg.protocol==PolicyProtocol::Hierarchy && !cfg.leaf_hierarchy && !cfg.separator_hierarchy && !conversions)for(const auto& t:trace.transactions())
         plans.push_back(cfg.dag_hierarchy?detail::dag_plan(t,trace.config().hierarchy_bucket_width,cfg.hierarchy_index_paths,cfg.hierarchy_read_path):
             detail::hierarchy_plan(t,trace.config().hierarchy_bucket_width));
     for(std::size_t w=0;w<count;++w) {
@@ -90,7 +90,7 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
             clients.emplace_back(new PolicyClient(cfg.coordinator_host,cfg.coordinator_port,cfg.wait_timeout_ms+5000));
         }
     }
-    if(cfg.deneva_insert_behavior && (!cfg.leaf_hierarchy || cfg.protocol!=PolicyProtocol::Hierarchy || !cfg.txn_state_port))
+    if(cfg.deneva_insert_behavior && (!cfg.leaf_hierarchy || cfg.separator_hierarchy || cfg.protocol!=PolicyProtocol::Hierarchy || !cfg.txn_state_port))
         throw std::invalid_argument("Deneva insert behavior requires native RDMA leaf hierarchy");
     std::vector<TransactionTrace> operation_txns(count);
     std::vector<std::vector<IndexMutation>> immediate_writes(count);
@@ -126,7 +126,7 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
     }
     std::vector<std::vector<IndexNodeSpan>> leaf_scratch(count);
     std::vector<std::vector<detail::HierarchyRequest>> leaf_plans(count),leaf_checks(count);
-    if(cfg.leaf_hierarchy)for(std::size_t w=0;w<count;++w) {
+    if(cfg.leaf_hierarchy || cfg.separator_hierarchy)for(std::size_t w=0;w<count;++w) {
         if(scan_capacity>SIZE_MAX/64-2 || (maxops && 64*(scan_capacity+2)>SIZE_MAX/maxops))throw std::invalid_argument("hierarchy workspace overflow");
         const auto capacity=std::min<std::size_t>(cfg.lock_budget+1,maxops*64*(scan_capacity+2)+1);
         leaf_scratch[w].reserve(64*(scan_capacity+2));
@@ -263,16 +263,19 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
                 };
                 if(conversions)runtime_buckets[worker].reset();
                 if(cfg.protocol==PolicyProtocol::Hierarchy && !conversions) {
-                    if(cfg.leaf_hierarchy && !cfg.deneva_insert_behavior) {
-                        if(!detail::leaf_plan(index,txn,leaf_scratch[worker],leaf_plans[worker]))outcome=TxnResult::Error;
+                    if((cfg.leaf_hierarchy || cfg.separator_hierarchy) && !cfg.deneva_insert_behavior) {
+                        if(cfg.separator_hierarchy ? !detail::separator_plan(index,txn,leaf_scratch[worker],leaf_plans[worker]) :
+                            !detail::leaf_plan(index,txn,leaf_scratch[worker],leaf_plans[worker]))outcome=TxnResult::Error;
                         else {
                             for(const auto& r:leaf_plans[worker])if(!acquire(r.mode,r.range,r.kind))break;
                             if(outcome==TxnResult::Ok) {
-                                if(!detail::leaf_plan(index,txn,leaf_scratch[worker],leaf_checks[worker]))outcome=TxnResult::Error;
-                                else if(!detail::covers_hierarchy_plan(leaf_plans[worker],leaf_checks[worker]))outcome=TxnResult::Conflict;
+                                if(cfg.separator_hierarchy ? !detail::separator_plan(index,txn,leaf_scratch[worker],leaf_checks[worker]) :
+                                    !detail::leaf_plan(index,txn,leaf_scratch[worker],leaf_checks[worker]))outcome=TxnResult::Error;
+                                else if(cfg.separator_hierarchy ? !detail::covers_separator_plan(leaf_plans[worker],leaf_checks[worker]) :
+                                    !detail::covers_hierarchy_plan(leaf_plans[worker],leaf_checks[worker]))outcome=TxnResult::Conflict;
                             }
                         }
-                    }else if(!cfg.leaf_hierarchy)for(const auto& r:plans[i%total])if(!acquire(r.mode,r.range,r.kind))break;
+                    }else if(!cfg.leaf_hierarchy && !cfg.separator_hierarchy)for(const auto& r:plans[i%total])if(!acquire(r.mode,r.range,r.kind))break;
                 }
                 std::size_t operation_index=0;
                 for(const auto& op:txn.operations) {

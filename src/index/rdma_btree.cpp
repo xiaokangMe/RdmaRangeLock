@@ -327,9 +327,12 @@ struct Validation {
         const auto id=(off-sizeof(OffsetBTreeHeader))/tree.h.page_bytes;
         if(pages[id])throw TreeFault("duplicate/cyclic page");
         pages[id]=true;++seen_pages;
+        if(n.head.has_high_key && !n.head.right_link)throw TreeFault("B-link fence without sibling");
+        if(!n.head.has_high_key && n.head.right_link)throw TreeFault("B-link sibling without fence");
         if(!n.head.count && (off!=tree.h.root || !n.head.leaf))throw TreeFault("empty nonroot page");
         if(n.head.leaf) {
             if(depth+1!=tree.h.height || n.head.prev!=last_leaf || (last_leaf && next_leaf!=off))throw TreeFault("leaf depth/chain");
+            if(n.head.right_link!=n.head.next)throw TreeFault("leaf B-link chain");
             last_leaf=off;next_leaf=n.head.next;
             for(std::uint64_t k=0;k<n.head.count;++k) {
                 OffsetBTreeRecord r;tree.read_record(n.links[k],r);

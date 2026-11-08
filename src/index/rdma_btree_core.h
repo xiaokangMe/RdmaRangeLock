@@ -35,7 +35,7 @@ inline OffsetBTreeHeader make_header(const RdmaTreeConfig& c) {
     h.root=sizeof(h);h.pages_used=1;return h;
 }
 inline bool valid_header(const OffsetBTreeHeader& h,std::uint64_t length) {
-    if(h.magic!=tree_magic || h.format!=2 || h.order<3 || h.order>4096 ||
+    if(h.magic!=tree_magic || h.format!=3 || h.order<3 || h.order>4096 ||
        h.page_bytes!=page_bytes(h.order) || !h.page_capacity || !h.record_capacity)return false;
     try {
         const auto expected=make_header(RdmaTreeConfig{static_cast<std::size_t>(h.order),
@@ -101,6 +101,11 @@ public:
         auto off=h.root;
         for(std::size_t depth=0;depth<64;++depth) {
             auto& n=path[depth];read_node(off,n);offsets[depth]=off;
+            std::size_t hops=0;
+            while(n.head.has_high_key && key>=n.head.high_key) {
+                if(!n.head.right_link || ++hops>h.pages_used)throw TreeFault("B-link right cycle");
+                off=n.head.right_link;read_node(off,n);offsets[depth]=off;
+            }
             if(n.head.leaf) {
                 slots[depth]=std::lower_bound(n.keys.begin(),n.keys.begin()+n.head.count,key)-n.keys.begin();
                 return depth;
@@ -117,6 +122,11 @@ public:
         for(std::size_t depth=0;;++depth) {
             if(depth>=64)throw TreeFault("leaf cover depth");
             auto& n=path[0];read_node(off,n);
+            std::size_t hops=0;
+            while(n.head.has_high_key && key>=n.head.high_key) {
+                if(!n.head.right_link || ++hops>h.pages_used)throw TreeFault("leaf cover right cycle");
+                lower=n.head.high_key;off=n.head.right_link;read_node(off,n);
+            }
             if(n.head.leaf)break;
             const auto slot=std::upper_bound(n.keys.begin(),n.keys.begin()+n.head.count,key)-n.keys.begin();
             if(slot)lower=n.keys[slot-1];
@@ -147,6 +157,10 @@ public:
         auto visit=[&](auto&& self,std::uint64_t off,std::size_t depth,const KeyRangeEnt& fence)->void {
             if(depth>=64)throw TreeFault("hierarchy depth");
             auto& n=path[depth];read_node(off,n);
+            while(n.head.has_high_key && query.has_start && query.StartKey>=n.head.high_key) {
+                if(!n.head.right_link)throw TreeFault("hierarchy right link missing");
+                off=n.head.right_link;read_node(off,n);
+            }
             if(out.size()==out.capacity())throw TreeFault("hierarchy workspace capacity");
             const bool present=n.head.leaf && query.has_start && std::binary_search(n.keys.begin(),n.keys.begin()+n.head.count,query.StartKey);
             out.push_back({(off-sizeof(h))/h.page_bytes+2,fence,depth,n.head.count,n.head.leaf?0:n.head.count+1,h.order-1,n.head.leaf!=0,present});
@@ -240,6 +254,9 @@ public:
             const auto right_off=new_page();
             const auto middle=n.head.count/2;
             const auto separator=n.keys[middle];
+            right.head.right_link=n.head.right_link;
+            right.head.high_key=n.head.high_key;
+            right.head.has_high_key=n.head.has_high_key;
             if(n.head.leaf) {
                 right.head.count=n.head.count-middle;
                 std::copy_n(n.keys.begin()+middle,right.head.count,right.keys.begin());
@@ -252,7 +269,9 @@ public:
                 std::copy_n(n.keys.begin()+middle+1,right.head.count,right.keys.begin());
                 std::copy_n(n.links.begin()+middle+1,right.head.count+1,right.links.begin());
             }
-            n.head.count=middle;write_node(off,n);write_node(right_off,right);
+            n.head.count=middle;
+            n.head.right_link=right_off;n.head.high_key=separator;n.head.has_high_key=1;
+            write_node(off,n);write_node(right_off,right);
             if(!depth) {
                 auto& root=path[65];root.head=OffsetBTreePage{};root.head.leaf=0;root.head.count=1;
                 root.keys[0]=separator;root.links[0]=off;root.links[1]=right_off;

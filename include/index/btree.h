@@ -54,20 +54,22 @@ struct IndexMutation {
 // portable remote page. Keys use the same unsigned ordering in both formats.
 struct OffsetBTreeHeader {
     std::uint64_t latch{0}, poison{0};
-    std::uint64_t magic{0}, format{2}, bytes{0}, order{0}, page_bytes{0};
+    std::uint64_t magic{0}, format{3}, bytes{0}, order{0}, page_bytes{0};
     std::uint64_t page_capacity{0}, record_capacity{0}, record_base{0};
     std::uint64_t root{0}, pages_used{0}, records_used{0}, live_records{0}, height{1};
     std::uint64_t seed_fingerprint{0};
 };
 struct OffsetBTreePage {
     std::uint64_t leaf{1}, count{0}, next{0}, prev{0};
+    // Lehman-Yao remote fence metadata. A zero has_high_key means +infinity.
+    std::uint64_t right_link{0}, high_key{0}, has_high_key{0};
     // Followed by order keys and order+1 child/record offsets.
 };
 struct OffsetBTreeRecord {
     std::uint64_t key{0}, value{0}, valid{0}, latch{0};
 };
 static_assert(sizeof(OffsetBTreeHeader) == 128, "stable RDMA header");
-static_assert(sizeof(OffsetBTreePage) == 32, "stable RDMA page prefix");
+static_assert(sizeof(OffsetBTreePage) == 56, "stable RDMA page prefix");
 static_assert(sizeof(OffsetBTreeRecord) == 32, "stable RDMA record");
 
 // Common page layout for v1 and v2. v1 leaves latch unused; v2 uses it for
@@ -81,6 +83,11 @@ struct BTreePage {
     BTreePage* parent{nullptr};
     BTreePage* prev{nullptr};
     BTreePage* next{nullptr};
+    // Lehman-Yao B-link metadata. Non-B-link implementations leave these
+    // fields at their defaults; the common page layout is shared.
+    BTreePage* right_link{nullptr};
+    idx_key_t high_key{0};
+    bool has_high_key{false};
     mutable std::shared_mutex latch;
 };
 
@@ -201,6 +208,47 @@ private:
     // Guards the root pointer only. Structural writes latch pages, and the
     // exclusive mode is used just for root creation, root split and root
     // collapse. There is no tree-wide writer mutex any more.
+    mutable std::shared_mutex root_guard_;
+};
+
+// Local Lehman-Yao B-link B+ tree. Every node has a right link and an
+// exclusive high fence. Readers follow right links after a concurrent split;
+// ordinary inserts use a shared root guard and only serialize the split path.
+class BTreeBlink final : public BTreeIndex {
+public:
+    BTreeBlink() = default;
+    ~BTreeBlink() override = default;
+    RC init(std::size_t order) override;
+    RC insert(idx_key_t, void*) override;
+    RC erase(idx_key_t) override;
+    bool lookup(idx_key_t, void*&) const override;
+    std::vector<KeyValue> scan_range(const KeyRangeEnt&) const override;
+    std::size_t size() const override;
+    bool key_neighbors(idx_key_t, IndexKeyNeighbors&) const override;
+    bool key_range_into(const KeyRangeEnt&, std::vector<idx_key_t>&) const override;
+    bool leaf_cover_into(const KeyRangeEnt&,std::vector<LeafSpan>&) const override;
+    bool hierarchy_cover_into(const KeyRangeEnt&,std::vector<IndexNodeSpan>&) const override;
+    bool validate() const;
+    std::size_t height() const;
+    std::size_t order() const { return order_; }
+
+private:
+    using Page=BTreePage;
+    std::unique_ptr<Page> make_page(bool leaf) const;
+    Page* find_leaf_blink(idx_key_t) const;
+    RC insert_fast(idx_key_t,void*);
+    RC insert_exclusive(idx_key_t,void*);
+    std::unique_ptr<Page> insert_recursive(Page&,idx_key_t,void*,idx_key_t&);
+    void rebuild_links();
+    static std::size_t page_slot(const Page&,const Page*);
+    static idx_key_t first_key(const Page&);
+    static bool range_ended(const KeyRangeEnt&,idx_key_t);
+    bool validate_page(const Page*,const Page*,std::size_t,idx_key_t*,std::size_t*,std::size_t*,std::size_t*) const;
+
+    mutable std::atomic<std::uint64_t> next_page_identity_{2};
+    std::size_t order_{0};
+    std::atomic<std::size_t> size_{0};
+    std::unique_ptr<Page> root_;
     mutable std::shared_mutex root_guard_;
 };
 

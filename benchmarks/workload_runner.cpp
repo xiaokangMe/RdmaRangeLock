@@ -333,7 +333,7 @@ int run(int argc, char** argv) {
     if (index_name == "btree_single") index_name = "v1";
     if (cc == "record-level-strict-2pl") cc = "record-2pl";
     const std::set<std::string> protocols{"none", "record-2pl", "gap-lock", "next-key", "prior-key", "hierarchical", "predicate", "exact-range", "rdma-next-key", "rdma-prior-key", "rdma-hierarchical", "rdma-predicate", "rdma-exact-range", "rdma-record-2pl", "rdma-gap-lock"};
-    if (index_name != "v1" && index_name != "v2" && index_name != "rdma") throw std::invalid_argument("unknown index: " + index_name);
+    if (index_name != "v1" && index_name != "v2" && index_name != "blink" && index_name != "rdma") throw std::invalid_argument("unknown index: " + index_name);
     if(policy.deneva_insert_behavior && (!policy.leaf_hierarchy || policy.separator_hierarchy || cc!="rdma-hierarchical" || index_name!="rdma" || !policy.txn_state_port))throw std::invalid_argument("deneva behavior requires native RDMA leaf hierarchy");
     if(policy.native_object_locks && (cc!="rdma-record-2pl" || index_name!="rdma" || !policy.txn_state_port || policy.leaf_hierarchy))
         throw std::invalid_argument("native object locks require rdma-record-2pl, shared RDMA data, native txn state, and no leaf hierarchy");
@@ -400,11 +400,15 @@ int run(int argc, char** argv) {
     const auto trace = WorkloadTrace::generate(config);
     BTreeSingle v1;
     BTreeLatch v2;
+    BTreeBlink blink;
     BTreeRdma remote_index;
     BTreeIndex* index = nullptr;
     if (index_name == "v1") {
         if (v1.init(order) != RCOK) throw std::invalid_argument("v1 init failed");
         index = &v1;
+    } else if (index_name == "blink") {
+        if (blink.init(order) != RCOK) throw std::invalid_argument("blink init failed");
+        index = &blink;
     } else if(index_name=="rdma") {
         const auto seed=make_shared_seed(trace);
         if(!remote_index.connect(rdma_host,data_port,std::min(config.threads*policy.coroutines,config.transaction_count),tree_seed_fingerprint(seed),tree_timeout) ||
@@ -528,7 +532,8 @@ int run(int argc, char** argv) {
     const auto data_reads=remote_index.read_bytes()-data_reads_start,data_writes=remote_index.write_bytes()-data_writes_start;
     const auto data_wait=remote_index.latch_wait_ns()-data_wait_start;
     if (measured && !(index_name=="rdma" ? remote_index.healthy() && remote_index.validate() :
-                     index_name=="v1" ? v1.validate() : v2.validate())) ++stats.index_errors;
+                     index_name=="v1" ? v1.validate() :
+                     index_name=="blink" ? blink.validate() : v2.validate())) ++stats.index_errors;
 
     if (measured && !csv) {
         const auto& m=stats.policy;

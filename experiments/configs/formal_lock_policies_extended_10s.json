@@ -1,24 +1,17 @@
 {
   "name": "formal-lock-policies-extended-10s",
-  "description": "旧七策略之外加入 prior/exact-range/precision/Griffin 锁语义；Citron 使用独立配置",
+  "description": "单次、32线程、无协程的扩展锁策略正式矩阵；加入 YCSB-E-skew",
   "duration_seconds": 10,
   "warmup_seconds": 10,
   "transactions": 5000,
   "keys": 10000,
   "operations": 10,
-  "runs": 3,
-  "repetition_policy": "repeated",
+  "runs": 1,
+  "repetition_policy": "single-run",
   "seeds": [
-    8,
-    9,
-    10
+    8
   ],
   "threads": [
-    1,
-    2,
-    4,
-    8,
-    16,
     32
   ],
   "execution_mode": "threads",
@@ -26,7 +19,8 @@
   "coroutine_stack_bytes": 262144,
   "workloads": [
     "ycsb-a",
-    "ycsb-e"
+    "ycsb-e",
+    "ycsb-e-skew"
   ],
   "ranges": [
     8,
@@ -88,6 +82,6 @@
   "tree_records": 262144,
   "coordination_backend": "native-rdma-state",
   "native_object_locks": 1,
-  "expected_local_cases": 2232,
-  "expected_cross_host_cases": 2160
+  "expected_local_cases": 217,
+  "expected_cross_host_cases": 210
 }

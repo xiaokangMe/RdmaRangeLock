@@ -419,10 +419,14 @@ def main():
         raise SystemExit("zipf must be finite and nonnegative")
     if any(w in ("ycsb-e","ycsb-e-skew") for w in config["workloads"]) and any(type(n) is not int or n<1 for n in config["ranges"]):
         raise SystemExit("YCSB-E scan widths must be positive integers")
-    if set(config["local_ccs"]) - {"none", "record-2pl", "gap-lock", "next-key", "prior-key", "hierarchical", "predicate", "exact-range"}: raise SystemExit("invalid local protocols")
+    if set(config["local_ccs"]) - {"none", "record-2pl", "gap-lock", "next-key", "prior-key", "hierarchical", "predicate", "exact-range", "precision-lock", "griffin-pl", "citron"}: raise SystemExit("invalid local protocols")
     if args.mode in ("local","both") and not config["local_ccs"]:raise SystemExit("empty local protocols")
     if args.mode in ("cross-host","both") and not config["rdma_ccs"]:raise SystemExit("empty RDMA protocols")
-    if set(config["rdma_ccs"]) - {"rdma-record-2pl", "rdma-gap-lock", "rdma-next-key", "rdma-prior-key", "rdma-hierarchical", "rdma-predicate", "rdma-exact-range"}: raise SystemExit("invalid RDMA protocols")
+    if set(config["rdma_ccs"]) - {"rdma-record-2pl", "rdma-gap-lock", "rdma-next-key", "rdma-prior-key", "rdma-hierarchical", "rdma-predicate", "rdma-exact-range", "rdma-precision-lock", "rdma-griffin-pl"}: raise SystemExit("invalid RDMA protocols")
+    if "citron" in config["local_ccs"] and (config["execution_mode"] != "threads" or config.get("coroutines", 1) != 1 or set(config["wait_policies"]) != {"no-wait"}):
+        raise SystemExit("Citron formal config requires threads, coroutines=1, and no-wait only")
+    if "rdma-citron" in config["rdma_ccs"]:
+        raise SystemExit("rdma-citron uses its dedicated remote lock-tree driver, not the shared-data matrix")
     if subprocess.check_output(["git", "diff", "HEAD", "--"], text=True).strip() and not args.smoke:
         raise SystemExit("commit source/config before formal run")
     untracked = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard", "include", "src", "benchmarks", "test", "experiments/configs"], text=True)

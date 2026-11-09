@@ -726,7 +726,7 @@ int run(int argc, char** argv) {
             for (const auto* q : {&m.successful_attempt,&m.logical_completion,&m.lock_wait,&m.lock_call,&m.release})
                 std::cout << ',' << q->count << ',' << q->total_ns << ',' << q->p50_ns << ',' << q->p95_ns << ',' << q->p99_ns << ',' << q->p999_ns << ',' << q->max_ns;
         }
-        std::cout << ',' << (index_name=="rdma"?"shared-rdma":"local") << ',' << data_ops << ',' << data_reads
+        std::cout << ',' << (index_name=="rdma"?"shared-rdma":index_name=="rolex-rdma"?"remote-rolex-rdma":"local") << ',' << data_ops << ',' << data_reads
                   << ',' << data_writes << ',' << data_wait
                   << ',' << policy.coroutines << ',' << std::min(config.threads*policy.coroutines,config.transaction_count)
                   << ',' << policy.warmup_seconds << ',' << stats.policy.warmup_committed << ',' << stats.policy.warmup_aborted

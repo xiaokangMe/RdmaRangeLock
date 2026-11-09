@@ -1,3 +1,4 @@
+#include "lock/backend_lifecycle.h"
 #include "txn/workload.h"
 #include "txn/policy_workload.h"
 #include "txn/coroutine.h"
@@ -170,6 +171,7 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
         bool active_attempt=false,arrived=false;
         try {
         index.prepare_thread(worker,scan_capacity);index.prepare_write_capacity(maxops);
+        if(auto* lifecycle=dynamic_cast<ILockBackendLifecycle*>(&physical))lifecycle->prepare_lock_thread(worker);
         arrived=true;arrive(1);
         std::size_t cursor=worker;
         auto run_phase=[&] {
@@ -574,6 +576,13 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
         pm.warmup_committed+=m.warmup_committed;pm.warmup_aborted+=m.warmup_aborted;
         pm.state_rdma_operations+=m.state_rdma_operations;
         pm.index_pending_aborts+=m.index_pending_aborts;
+        if(m.logical_started) {
+            if(!pm.active_workers)pm.worker_min_committed=s.committed;
+            else pm.worker_min_committed=std::min(pm.worker_min_committed,s.committed);
+            ++pm.active_workers;
+            if(!s.committed)++pm.workers_without_commit;
+            pm.worker_max_committed=std::max(pm.worker_max_committed,s.committed);
+        }
         pm.deneva_early_inserts+=m.deneva_early_inserts;pm.deneva_early_unlocks+=m.deneva_early_unlocks;
         pm.deneva_split_aborts+=m.deneva_split_aborts;pm.deneva_partial_write_aborts+=m.deneva_partial_write_aborts;
         pm.logical_started+=m.logical_started;pm.unfinished+=m.unfinished;pm.logical_failed+=m.logical_failed;

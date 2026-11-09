@@ -1,5 +1,8 @@
 #include "txn/workload.h"
 #include "index/griffin.h"
+#include "index/rolex.h"
+// ROLEX declarations are dependency-free; definitions are linked only when enabled.
+#include "citron/citron_lock_manager.h"
 #include "lock/remote_lock_manager.h"
 #include "lock/object_lock_manager.h"
 #include "../src/txn/leaf_hierarchy.h"
@@ -56,11 +59,32 @@ std::size_t resolve_connection_count(std::size_t threads, std::size_t requested)
     return std::max<std::size_t>(1, std::min<std::size_t>(threads, kDefaultRdmaConnections));
 }
 
+int derive_citron_tree_height(std::uint64_t keys) {
+    std::uint64_t units = 64;
+    int height = 0;
+    while (units < keys + 64 && height < 15) {
+        units *= 4;
+        ++height;
+    }
+    return std::max(1, height);
+}
+
+struct IntegrationOptions {
+    std::size_t citron_tree_height{0},citron_k{2},citron_m{4},citron_wait_us{50};
+    std::size_t rolex_epsilon{32},rolex_segment_keys{2048},rolex_arena_leaves{0},rolex_hugepages{0};
+    std::map<std::string,std::size_t*> fields() {
+        return {{"citron_tree_height",&citron_tree_height},{"citron_k",&citron_k},
+            {"citron_m",&citron_m},{"citron_wait_us",&citron_wait_us},
+            {"rolex_epsilon",&rolex_epsilon},{"rolex_segment_keys",&rolex_segment_keys},
+            {"rolex_arena_leaves",&rolex_arena_leaves},{"rolex_hugepages",&rolex_hugepages}};
+    }
+};
+
 void load_config(const std::string& path, WorkloadConfig& config,
                  std::string& index_name, std::string& cc, std::size_t& order,
                  std::string& host, std::uint16_t& port, std::size_t& connections,
                  bool& bucket_auto, PolicyRunConfig& policy, bool& measured,
-                 std::uint16_t& data_port, std::size_t& tree_timeout, std::size_t& griffin_queue) {
+                 std::uint16_t& data_port, std::size_t& tree_timeout, std::size_t& griffin_queue, IntegrationOptions& extra) {
     std::ifstream input(path);
     if (!input) throw std::invalid_argument("failed to read config: " + path);
     const std::string text((std::istreambuf_iterator<char>(input)), {});
@@ -84,6 +108,11 @@ void load_config(const std::string& path, WorkloadConfig& config,
         const auto& key = entry.first;
         const auto& value = entry.second;
         if (metadata.count(key)) continue;
+        const auto extra_fields=extra.fields();
+        if(const auto f=extra_fields.find(key);f!=extra_fields.end()) {
+            if(value.kind!=ConfigScalar::Number)throw std::invalid_argument(key+": expected integer");
+            *f->second=parse_unsigned(value.text,key);continue;
+        }
         const auto number = integers.find(key);
         if (number != integers.end()) {
             if (!assigned.insert(number->second).second) throw std::invalid_argument("duplicate aliases: " + key);
@@ -191,6 +220,7 @@ void load_config(const std::string& path, WorkloadConfig& config,
 
 int run(int argc, char** argv) {
     WorkloadConfig config;
+    IntegrationOptions extra;
     PolicyRunConfig policy;
     bool measured = false;
     bool lock_only = false;
@@ -212,13 +242,18 @@ int run(int argc, char** argv) {
             config_path = argv[i + 1];
         }
     if (!config_path.empty()) load_config(config_path, config, index_name, cc, order,
-                                         rdma_host, rdma_port, rdma_connections, bucket_auto, policy, measured, data_port, tree_timeout, griffin_queue);
+                                         rdma_host, rdma_port, rdma_connections, bucket_auto, policy, measured, data_port, tree_timeout, griffin_queue, extra);
     std::set<std::string> options;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string option = argv[i];
         const std::string value = argv[i + 1];
         if (!options.insert(option).second) throw std::invalid_argument("duplicate option: " + option);
         if (option == "--config") continue;
+        auto extra_name=option.substr(2);std::replace(extra_name.begin(),extra_name.end(),'-','_');
+        const auto extra_fields=extra.fields();
+        if(const auto f=extra_fields.find(extra_name);f!=extra_fields.end()) {
+            *f->second=parse_unsigned(value,option);continue;
+        }
         if (option == "--workload") config.kind = WorkloadTrace::parse_kind(value);
         else if (option == "--index") index_name = value;
         else if(option=="--griffin-queue-capacity")griffin_queue=parse_unsigned(value,option);
@@ -331,11 +366,22 @@ int run(int argc, char** argv) {
         } else throw std::invalid_argument("unknown option: " + option);
     }
 
+    if(extra.citron_tree_height>10 || !extra.citron_k || extra.citron_k>2 || !extra.citron_m || extra.citron_m>16 ||
+       !extra.citron_wait_us || extra.citron_wait_us>1000000 || extra.rolex_hugepages>1 ||
+       !extra.rolex_segment_keys || extra.rolex_segment_keys>16777216 || extra.rolex_epsilon>16777216)
+        throw std::invalid_argument("Citron/ROLEX geometry bounds");
+    if((cc=="citron" || cc=="rdma-citron") && (policy.wait_policy!=WaitPolicy::NoWait || policy.use_coroutines ||
+       policy.coordinator_port || policy.leaf_hierarchy || policy.dag_hierarchy || policy.separator_hierarchy ||
+       (cc=="citron" && lock_only)))
+        throw std::invalid_argument("Citron requires no-wait and thread execution; rdma-citron lock-only uses the remote lock tree");
+    if(index_name=="rolex" && (policy.leaf_hierarchy || policy.separator_hierarchy))
+        throw std::invalid_argument("ROLEX does not expose B+ tree physical hierarchy metadata");
+    if(index_name=="rolex")measured=true;
     if (index_name == "btree_latch_coupling") index_name = "v2";
     if (index_name == "btree_single") index_name = "v1";
     if (cc == "record-level-strict-2pl") cc = "record-2pl";
-    const std::set<std::string> protocols{"none", "record-2pl", "gap-lock", "next-key", "prior-key", "hierarchical", "predicate", "exact-range", "rdma-next-key", "rdma-prior-key", "rdma-hierarchical", "rdma-predicate", "rdma-exact-range", "rdma-record-2pl", "rdma-gap-lock", "precision-lock", "griffin-pl", "rdma-precision-lock", "rdma-griffin-pl"};
-    if (index_name != "v1" && index_name != "v2" && index_name != "blink" && index_name != "griffin" && index_name != "rdma") throw std::invalid_argument("unknown index: " + index_name);
+    const std::set<std::string> protocols{"none", "record-2pl", "gap-lock", "next-key", "prior-key", "hierarchical", "predicate", "exact-range", "citron", "rdma-citron", "rdma-next-key", "rdma-prior-key", "rdma-hierarchical", "rdma-predicate", "rdma-exact-range", "rdma-record-2pl", "rdma-gap-lock", "precision-lock", "griffin-pl", "rdma-precision-lock", "rdma-griffin-pl"};
+    if (index_name != "v1" && index_name != "v2" && index_name != "blink" && index_name != "griffin" && index_name != "rolex" && index_name != "rdma") throw std::invalid_argument("unknown index: " + index_name);
     if(index_name=="griffin" && cc!="griffin-pl")
         throw std::invalid_argument("index griffin requires cc griffin-pl; RDMA uses the shared remote backend");
     if(policy.deneva_insert_behavior && (!policy.leaf_hierarchy || policy.separator_hierarchy || cc!="rdma-hierarchical" || index_name!="rdma" || !policy.txn_state_port))throw std::invalid_argument("deneva behavior requires native RDMA leaf hierarchy");
@@ -348,7 +394,7 @@ int run(int argc, char** argv) {
         policy.coordinator_port || policy.hierarchy_escalation_threshold>1048576 || policy.hierarchy_deescalate_after>1048576))
         throw std::invalid_argument("granularity conversion requires fixed buckets with local/native RDMA state and bounded thresholds");
     if (!protocols.count(cc)) throw std::invalid_argument("unknown cc: " + cc);
-    if (cc == "precision-lock" || cc == "griffin-pl" || cc == "rdma-precision-lock" || cc == "rdma-griffin-pl" || cc == "predicate" || cc == "rdma-predicate" || cc == "exact-range" || cc == "rdma-exact-range" || policy.warmup_seconds || policy.coroutines>1) measured = true;
+    if (cc == "precision-lock" || cc == "griffin-pl" || cc == "rdma-precision-lock" || cc == "rdma-griffin-pl" || cc == "predicate" || cc == "rdma-predicate" || cc == "exact-range" || cc == "rdma-exact-range" || cc == "citron" || cc == "rdma-citron" || policy.warmup_seconds || policy.coroutines>1) measured = true;
     if(!policy.coroutines || policy.coroutines>4096 || config.threads>4096/policy.coroutines ||
        policy.coroutine_stack_bytes<65536 || policy.coroutine_stack_bytes>16777216 || policy.warmup_seconds>600000)
         throw std::invalid_argument("runtime geometry bounds");
@@ -372,8 +418,9 @@ int run(int argc, char** argv) {
     if (measured && cc == "none" && policy.wait_policy!=WaitPolicy::NoWait) throw std::invalid_argument("wait-policy/latency requires a lock protocol");
     if (measured && config.hierarchy_diagnostics) throw std::invalid_argument("legacy hierarchy diagnostics are separate from latency mode");
     if (measured && cc.rfind("rdma-",0) == 0) {
-        if (!policy.coordinator_port && !policy.txn_state_port) throw std::invalid_argument("RDMA policy requires --txn-state-port or explicit legacy --coordinator-port");
-        policy.coordinator_host = rdma_host;
+        const bool citron_lock_only = cc == "rdma-citron" && lock_only;
+        if (!citron_lock_only && !policy.coordinator_port && !policy.txn_state_port) throw std::invalid_argument("RDMA policy requires --txn-state-port or explicit legacy --coordinator-port");
+        if (!citron_lock_only) policy.coordinator_host = rdma_host;
     }
     if (bucket_auto) config.hierarchy_bucket_width = auto_bucket_width(config.kind);
     if(policy.dag_hierarchy) {
@@ -406,6 +453,9 @@ int run(int argc, char** argv) {
     BTreeLatch v2;
     BTreeBlink blink;
     BTreeGriffin griffin(griffin_queue);
+#ifdef RRL_ENABLE_ROLEX
+    rolex::port::RolexIndex rolex_index(extra.rolex_epsilon,64,extra.rolex_hugepages!=0,extra.rolex_segment_keys,extra.rolex_arena_leaves);
+#endif
     BTreeRdma remote_index;
     BTreeIndex* index = nullptr;
     if (index_name == "v1") {
@@ -414,6 +464,13 @@ int run(int argc, char** argv) {
     } else if (index_name == "griffin") {
         if (griffin.init(order) != RCOK) throw std::invalid_argument("griffin init failed");
         index = &griffin;
+    } else if (index_name == "rolex") {
+#ifdef RRL_ENABLE_ROLEX
+        if (rolex_index.init(order) != RCOK) throw std::invalid_argument("rolex init failed");
+        index = &rolex_index;
+#else
+        throw std::invalid_argument("index rolex requires CMake RRL_ENABLE_ROLEX=ON (GPL-3.0)");
+#endif
     } else if (index_name == "blink") {
         if (blink.init(order) != RCOK) throw std::invalid_argument("blink init failed");
         index = &blink;
@@ -431,6 +488,11 @@ int run(int argc, char** argv) {
     auto data_reads_start=remote_index.read_bytes(),data_writes_start=remote_index.write_bytes();
     auto data_wait_start=remote_index.latch_wait_ns();
     auto snapshot_data=[&] {
+        // Workers are quiescent here; drain warm-up replication before the
+        // timed window and reset diagnostics so no warm-up events leak in.
+#ifdef RRL_ENABLE_ROLEX
+        if(index_name=="rolex")rolex_index.reset_diagnostics();
+#endif
         data_ops_start=remote_index.rdma_operations();
         data_reads_start=remote_index.read_bytes();data_writes_start=remote_index.write_bytes();
         data_wait_start=remote_index.latch_wait_ns();
@@ -438,6 +500,8 @@ int run(int argc, char** argv) {
     policy.measurement_begin=snapshot_data;
     RunStats stats;
     RemoteLockManager::Diagnostics rdma_diag{};
+    citron::CitronLockManager::Diagnostics citron_diag{};
+    rolex::port::RolexDiagnostics rolex_diag{};
     // 0 on every non-RDMA protocol: no connection was opened for this run.
     std::size_t active_connections = 0;
     RdmaFailureInfo rdma_failure{};
@@ -447,8 +511,32 @@ int run(int argc, char** argv) {
         policy.protocol = plain == "none" ? PolicyProtocol::None : plain == "record-2pl" ? PolicyProtocol::Record : plain == "gap-lock" ? PolicyProtocol::Gap :
             plain == "next-key" ? PolicyProtocol::NextKey : plain == "prior-key" ? PolicyProtocol::PriorKey : plain == "predicate" ? PolicyProtocol::Predicate :
             plain == "exact-range" ? PolicyProtocol::ExactRange : plain == "precision-lock" ? PolicyProtocol::Precision :
-            plain == "griffin-pl" ? PolicyProtocol::Griffin : PolicyProtocol::Hierarchy;
-        if(policy.leaf_hierarchy || policy.dag_hierarchy || policy.native_object_locks) {
+            plain == "griffin-pl" ? PolicyProtocol::Griffin : plain == "citron" ? PolicyProtocol::Predicate : PolicyProtocol::Hierarchy;
+        if (cc == "citron" || cc == "rdma-citron") {
+            if (policy.wait_policy != WaitPolicy::NoWait)
+                throw std::invalid_argument("Citron currently supports no-wait plus transaction retry only");
+            citron::LockManagerConfig citron_config;
+            citron_config.server_host = cc == "rdma-citron" ? rdma_host : std::string{};
+            citron_config.server_port = rdma_port;
+            citron_config.tree_height = extra.citron_tree_height ? static_cast<int>(extra.citron_tree_height) : derive_citron_tree_height(trace.max_key());
+            if(trace.max_key()>=citron::SegmentTree(citron_config.tree_height).units())
+                throw std::invalid_argument("Citron tree capacity does not cover workload keys");
+            citron_config.lock_budget=policy.lock_budget;
+            citron_config.client.k=extra.citron_k;citron_config.client.m=extra.citron_m;
+            citron_config.max_sessions = std::max<std::size_t>(1, config.threads * policy.coroutines);
+            citron_config.client.t_wait_ns = extra.citron_wait_us*1000;
+            citron_config.client.lock_deadline_ns = std::max<std::uint64_t>(20000000,citron_config.client.t_wait_ns);
+            citron_config.client.leaf_starvation_ns = 2000000;
+            citron_config.no_wait = true;
+            citron::CitronLockManager locks(citron_config);
+            std::uint64_t citron_ops_start=0;
+            policy.measurement_begin=[&]{snapshot_data();locks.reset_diagnostics();citron_ops_start=locks.diagnostics().rdma_operations;};
+            stats = run_policy_workload(*index, locks, trace, policy);
+            citron_diag = locks.diagnostics();citron_diag.rdma_operations-=citron_ops_start;
+            stats.rdma_operations=citron_diag.rdma_operations;
+            if(cc=="rdma-citron")active_connections=citron_diag.sessions;
+            if(locks.get_lock_count())++stats.lock_release_failures;
+        } else if(policy.leaf_hierarchy || policy.dag_hierarchy || policy.native_object_locks) {
             ObjectLockManager locks;
             if(policy.dag_hierarchy && !locks.configure_dag(config.hierarchy_bucket_width,policy.hierarchy_index_paths))
                 throw std::invalid_argument("DAG object topology");
@@ -536,13 +624,21 @@ int run(int argc, char** argv) {
         stats = run_workload(*index, trace, config.threads);
     }
 
+    // Snapshot before validate() drains the remaining replication queue.
     // Quiescent structure validation is outside the recorded workload window.
     const auto data_ops=remote_index.rdma_operations()-data_ops_start;
     const auto data_reads=remote_index.read_bytes()-data_reads_start,data_writes=remote_index.write_bytes()-data_writes_start;
     const auto data_wait=remote_index.latch_wait_ns()-data_wait_start;
     if (measured && !(index_name=="rdma" ? remote_index.healthy() && remote_index.validate() :
                      index_name=="v1" ? v1.validate() :
-                     index_name=="blink" ? blink.validate() : index_name=="griffin" ? griffin.validate() : v2.validate())) ++stats.index_errors;
+                     index_name=="blink" ? blink.validate() : index_name=="griffin" ? griffin.validate() :
+#ifdef RRL_ENABLE_ROLEX
+                     index_name=="rolex" ? rolex_index.validate() :
+#endif
+                     v2.validate())) ++stats.index_errors;
+#ifdef RRL_ENABLE_ROLEX
+    if (index_name == "rolex") rolex_diag = rolex_index.diagnostics();
+#endif
 
     if (measured && !csv) {
         const auto& m=stats.policy;
@@ -569,6 +665,10 @@ int run(int argc, char** argv) {
         for(std::size_t shard=0;shard<kRemoteLockShards;++shard)
             std::cout << ",rdma_lock_slot_peak_" << shard << ",rdma_lock_capacity_required_" << shard;
         std::cout << ",index_sync_pending_aborts";
+        std::cout << ",active_workers,workers_without_commit,worker_min_committed,worker_max_committed";
+        std::cout << ",citron_lock_calls,citron_grants,citron_aborts,citron_errors,citron_unlock_calls,citron_unlock_failures,citron_rdma_operations,citron_sessions,citron_shared_mapped_to_exclusive";
+        std::cout << ",rolex_segments,rolex_leaves,rolex_live_keys,rolex_splits,rolex_removals,rolex_model_exact,rolex_model_corrected,rolex_model_fallbacks,rolex_arena_bytes,rolex_build_ns,rolex_mapping";
+        std::cout << ",citron_tree_height,citron_k,citron_m,citron_wait_us,citron_lock_semantics,rolex_epsilon,rolex_segment_keys,rolex_arena_leaves,rolex_hugepages";
         std::cout << '\n';
         std::cout << WorkloadTrace::name(config.kind) << ',' << index_name << ',' << cc << ',' << config.threads << ','
                   << stats.transactions << ',' << stats.committed << ',' << stats.aborted << ',' << stats.operations << ','
@@ -637,9 +737,40 @@ int run(int argc, char** argv) {
         for(std::size_t shard=0;shard<kRemoteLockShards;++shard)
             std::cout << ',' << rdma_diag.slot_peaks[shard] << ',' << rdma_diag.capacity_required[shard];
         std::cout << ',' << stats.policy.index_pending_aborts;
+        std::cout << ',' << stats.policy.active_workers << ',' << stats.policy.workers_without_commit << ',' << stats.policy.worker_min_committed << ',' << stats.policy.worker_max_committed;
+        std::cout << ',' << citron_diag.lock_calls << ',' << citron_diag.lock_grants << ',' << citron_diag.lock_aborts
+                  << ',' << citron_diag.lock_errors << ',' << citron_diag.unlock_calls << ',' << citron_diag.unlock_failures
+                  << ',' << citron_diag.rdma_operations << ',' << citron_diag.sessions << ',' << citron_diag.shared_mapped_to_exclusive;
+        std::cout << ',' << rolex_diag.segments << ',' << rolex_diag.leaf_allocations << ',' << rolex_diag.live_keys
+                  << ',' << rolex_diag.leaf_splits << ',' << rolex_diag.leaf_removals << ',' << rolex_diag.model_exact_pages
+                  << ',' << rolex_diag.model_corrected_pages << ',' << rolex_diag.model_fallbacks << ',' << rolex_diag.arena_bytes
+                  << ',' << rolex_diag.build_ns << ',' << rolex_diag.mapping;
+        const bool citron_run=cc=="citron" || cc=="rdma-citron";
+        std::cout << ',' << (citron_run?(extra.citron_tree_height?extra.citron_tree_height:derive_citron_tree_height(trace.max_key())):0)
+                  << ',' << (citron_run?extra.citron_k:0) << ',' << (citron_run?extra.citron_m:0)
+                  << ',' << (citron_run?extra.citron_wait_us:0) << ',' << (citron_run?"exclusive-range-S-as-X":"none")
+                  << ',' << (index_name=="rolex"?extra.rolex_epsilon:0) << ',' << (index_name=="rolex"?extra.rolex_segment_keys:0)
+                  << ',' << (index_name=="rolex"?extra.rolex_arena_leaves:0) << ',' << (index_name=="rolex"?extra.rolex_hugepages:0);
         std::cout << '\n';
     } else {
+        std::cout<<"active_workers="<<stats.policy.active_workers<<",workers_without_commit="<<stats.policy.workers_without_commit<<",worker_min_committed="<<stats.policy.worker_min_committed<<",worker_max_committed="<<stats.policy.worker_max_committed<<"\n";
         std::cout << "index_sync_pending_aborts=" << stats.policy.index_pending_aborts << "\n";
+        if (cc == "citron" || cc == "rdma-citron")
+            std::cout << "citron_lock_calls=" << citron_diag.lock_calls
+                      << ",citron_grants=" << citron_diag.lock_grants
+                      << ",citron_aborts=" << citron_diag.lock_aborts
+                      << ",citron_errors=" << citron_diag.lock_errors
+                      << ",citron_unlock_failures=" << citron_diag.unlock_failures
+                      << ",citron_rdma_operations=" << citron_diag.rdma_operations
+                      << ",citron_sessions=" << citron_diag.sessions << "\n";
+        if (index_name == "rolex")
+            std::cout << "rolex_segments=" << rolex_diag.segments
+                      << ",rolex_leaves=" << rolex_diag.leaf_allocations
+                      << ",rolex_live_keys=" << rolex_diag.live_keys
+                      << ",rolex_splits=" << rolex_diag.leaf_splits
+                      << ",rolex_model_fallbacks=" << rolex_diag.model_fallbacks
+                      << ",rolex_build_ns=" << rolex_diag.build_ns
+                      << ",rolex_mapping=" << rolex_diag.mapping << "\n";
         std::cout << "execution_mode=" << (measured?(policy.use_coroutines?"coroutines":"threads"):"threads") << "\n";
         std::cout << "data_backend=" << (index_name=="rdma"?"shared-rdma":"local")
                   << ",data_rdma_operations=" << data_ops << ",data_read_bytes=" << data_reads

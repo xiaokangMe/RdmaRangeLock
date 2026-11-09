@@ -720,6 +720,23 @@ bool RdmaConnection::compare_swap(std::uint64_t remote_address, std::uint32_t re
 }
 
 
+bool RdmaConnection::fetch_add(std::uint64_t address, std::uint32_t rkey,
+                               std::uint64_t add, std::uint64_t& previous) {
+    if (!connected_ || impl_->failed || !valid_atomic_target(address)) return false;
+    ibv_sge sge{};
+    sge.addr = reinterpret_cast<std::uintptr_t>(impl_->scratch.data());
+    sge.length = sizeof(previous);
+    sge.lkey = impl_->local_mr->lkey;
+    ibv_send_wr wr{};
+    wr.opcode = IBV_WR_ATOMIC_FETCH_AND_ADD;
+    wr.wr.atomic.remote_addr = address;
+    wr.wr.atomic.rkey = rkey;
+    wr.wr.atomic.compare_add = add;
+    if (!post_and_poll(impl_, wr, sge)) return false;
+    std::memcpy(&previous, impl_->scratch.data(), sizeof(previous));
+    return true;
+}
+
 bool RdmaConnection::read_batch(const std::vector<RdmaReadRequest>& requests) {
     if (requests.empty()) return true;
     if (!connected_ || impl_->failed || requests.size() > 128) return false;

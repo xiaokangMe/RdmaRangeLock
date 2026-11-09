@@ -1,0 +1,23 @@
+{
+  "workload": "ycsb-e",
+  "key_count": 10000,
+  "transaction_count": 10000,
+  "operations_per_transaction": 10,
+  "range_length": 10,
+  "threads": 32,
+  "seed": 7,
+  "zipf": 0.4,
+  "order": 128,
+  "execution_mode": "threads",
+  "coroutines": 1,
+  "wait_policy": "no-wait",
+  "max_attempts": 1000,
+  "wait_timeout_ms": 5000,
+  "duration_seconds": 1,
+  "warmup_seconds": 1,
+  "index": "rolex",
+  "cc": "next-key",
+  "rolex_epsilon": 32,
+  "rolex_segment_keys": 2048,
+  "rolex_hugepages": 0
+}

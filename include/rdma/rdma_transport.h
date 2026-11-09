@@ -108,6 +108,9 @@ public:
     bool compare_swap(std::uint64_t remote_address, std::uint32_t remote_rkey,
                       std::uint64_t compare, std::uint64_t swap,
                       std::uint64_t& previous);
+    // Standard one-sided 8-byte FAA. Does not emulate atomics through READ/CAS.
+    bool fetch_add(std::uint64_t remote_address, std::uint32_t remote_rkey,
+                   std::uint64_t add, std::uint64_t& previous);
     bool read_batch(const std::vector<RdmaReadRequest>& requests);
     bool write_batch(const std::vector<RdmaWriteRequest>& requests);
     bool compare_swap_batch(const std::vector<RdmaCompareSwapRequest>& requests);

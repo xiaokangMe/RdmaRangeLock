@@ -1,6 +1,6 @@
 {
   "name": "formal-lock-policies-extended-10s",
-  "description": "\u65e7\u4e03\u7b56\u7565\u4e4b\u5916\u52a0\u5165 prior/predicate/exact-range/precision/Griffin \u9501\u8bed\u4e49\uff1bCitron \u4f7f\u7528\u72ec\u7acb\u914d\u7f6e",
+  "description": "旧七策略之外加入 prior/exact-range/precision/Griffin 锁语义；Citron 使用独立配置",
   "duration_seconds": 10,
   "warmup_seconds": 10,
   "transactions": 5000,
@@ -51,7 +51,6 @@
     "next-key",
     "prior-key",
     "hierarchical",
-    "predicate",
     "exact-range",
     "precision-lock",
     "griffin-pl"
@@ -62,7 +61,6 @@
     "rdma-next-key",
     "rdma-prior-key",
     "rdma-hierarchical",
-    "rdma-predicate",
     "rdma-exact-range",
     "rdma-precision-lock",
     "rdma-griffin-pl"
@@ -90,6 +88,6 @@
   "tree_records": 262144,
   "coordination_backend": "native-rdma-state",
   "native_object_locks": 1,
-  "expected_local_cases": 2448,
-  "expected_cross_host_cases": 2376
+  "expected_local_cases": 2232,
+  "expected_cross_host_cases": 2160
 }

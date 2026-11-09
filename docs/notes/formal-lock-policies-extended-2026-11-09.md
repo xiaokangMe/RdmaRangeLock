@@ -6,16 +6,16 @@
 
 扩展配置加入：
 
-- 本地：`prior-key`、`predicate`、`exact-range`、`precision-lock`、`griffin-pl`；同时显式保留已有 `record-2pl`、`gap-lock`、`next-key`、`hierarchical` 和 `none` 基线。
-- 共享 RDMA：`rdma-record-2pl`、`rdma-gap-lock`、`rdma-prior-key`、`rdma-predicate`、`rdma-exact-range`、`rdma-precision-lock`、`rdma-griffin-pl`，以及已有的 `rdma-next-key`、`rdma-hierarchical`。
+- 本地：`prior-key`、`exact-range`、`precision-lock`、`griffin-pl`；同时显式保留已有 `record-2pl`、`gap-lock`、`next-key`、`hierarchical` 和 `none` 基线。
+- 共享 RDMA：`rdma-record-2pl`、`rdma-gap-lock`、`rdma-prior-key`、`rdma-exact-range`、`rdma-precision-lock`、`rdma-griffin-pl`，以及已有的 `rdma-next-key`、`rdma-hierarchical`。
 
-`griffin-pl` 在这个矩阵中固定为 `index=v2`/共享 `index=rdma` 的 Griffin 锁语义消融，不把本地 `index=griffin` 的混合哈希+B+树收益归因给锁协议。`leaf`、`separator`、`dag` 仍然是层级布局消融，也不单列成锁协议。
+`griffin-pl` 在这个矩阵中固定为 `index=v2`/共享 `index=rdma` 的 Griffin 锁语义消融，不把本地 `index=griffin` 的混合哈希+B+树收益归因给锁协议。`predicate` 保留为代码兼容入口，但不在正式矩阵中单独测量，因为当前实现与 `exact-range` 使用相同的区间交叠语义；`leaf`、`separator`、`dag` 仍然是层级布局消融，也不单列成锁协议。
 
 ## 运行维度
 
 两种 YCSB 负载（A、E）、10 秒测量窗口、10 秒 warm-up、3 次重复、1/2/4/8/16/32 线程、三种等待策略（no-wait、wait-die、wound-wait）、范围 8/32/128、桶宽 16/64/256。显式使用 `execution_mode=threads`、`coroutines=1`，防止协程路径改变协议比较。
 
-静态 case 数为 local 2448、cross-host 2376。YCSB-E 额外展开 8/32/128 三个扫描宽度。这个数字只描述展开后的计划，不代表已经跑过实验。
+静态 case 数为 local 2232、cross-host 2160。YCSB-E 额外展开 8/32/128 三个扫描宽度。这个数字只描述展开后的计划，不代表已经跑过实验。
 
 ## Citron 单独处理
 

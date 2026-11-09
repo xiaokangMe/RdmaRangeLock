@@ -1,0 +1,18 @@
+{
+  "workload": "ycsb-e",
+  "index": "rolex-rdma",
+  "cc": "none",
+  "key_count": 128,
+  "transaction_count": 200,
+  "operations_per_transaction": 2,
+  "range_length": 16,
+  "threads": 2,
+  "seed": 7,
+  "zipf": 0.4,
+  "order": 16,
+  "execution_mode": "threads",
+  "coroutines": 1,
+  "warmup_seconds": 0,
+  "data_port": 19879,
+  "tree_latch_timeout_ms": 5000
+}

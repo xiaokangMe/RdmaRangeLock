@@ -1,6 +1,7 @@
 #include "txn/workload.h"
 #include "index/griffin.h"
 #include "index/rolex.h"
+#include "index/rolex_rdma.h"
 // ROLEX declarations are dependency-free; definitions are linked only when enabled.
 #include "citron/citron_lock_manager.h"
 #include "lock/remote_lock_manager.h"
@@ -376,12 +377,12 @@ int run(int argc, char** argv) {
         throw std::invalid_argument("Citron requires no-wait and thread execution; rdma-citron lock-only uses the remote lock tree");
     if(index_name=="rolex" && (policy.leaf_hierarchy || policy.separator_hierarchy))
         throw std::invalid_argument("ROLEX does not expose B+ tree physical hierarchy metadata");
-    if(index_name=="rolex")measured=true;
+    if(index_name=="rolex" || index_name=="rolex-rdma")measured=true;
     if (index_name == "btree_latch_coupling") index_name = "v2";
     if (index_name == "btree_single") index_name = "v1";
     if (cc == "record-level-strict-2pl") cc = "record-2pl";
     const std::set<std::string> protocols{"none", "record-2pl", "gap-lock", "next-key", "prior-key", "hierarchical", "predicate", "exact-range", "citron", "rdma-citron", "rdma-next-key", "rdma-prior-key", "rdma-hierarchical", "rdma-predicate", "rdma-exact-range", "rdma-record-2pl", "rdma-gap-lock", "precision-lock", "griffin-pl", "rdma-precision-lock", "rdma-griffin-pl"};
-    if (index_name != "v1" && index_name != "v2" && index_name != "blink" && index_name != "griffin" && index_name != "rolex" && index_name != "rdma") throw std::invalid_argument("unknown index: " + index_name);
+    if (index_name != "v1" && index_name != "v2" && index_name != "blink" && index_name != "griffin" && index_name != "rolex" && index_name != "rdma" && index_name != "rolex-rdma") throw std::invalid_argument("unknown index: " + index_name);
     if(index_name=="griffin" && cc!="griffin-pl")
         throw std::invalid_argument("index griffin requires cc griffin-pl; RDMA uses the shared remote backend");
     if(policy.deneva_insert_behavior && (!policy.leaf_hierarchy || policy.separator_hierarchy || cc!="rdma-hierarchical" || index_name!="rdma" || !policy.txn_state_port))throw std::invalid_argument("deneva behavior requires native RDMA leaf hierarchy");
@@ -404,7 +405,7 @@ int run(int argc, char** argv) {
         throw std::invalid_argument("native RDMA state requires rdma protocol and excludes TCP coordinator");
     if(policy.coroutines>1 && policy.coordinator_port)
         throw std::invalid_argument("coroutines require local or native RDMA state; TCP is compatibility only");
-    if(cc.rfind("rdma-",0)==0 && index_name!="rdma" && !lock_only)
+    if(cc.rfind("rdma-",0)==0 && index_name!="rdma" && index_name!="rolex-rdma" && !lock_only)
         throw std::invalid_argument("RDMA experiments require --index rdma and shared data; historical lock-service microbenchmarks require explicit --rdma-lock-only 1");
     if(lock_only && (index_name=="rdma" || cc.rfind("rdma-",0)!=0))
         throw std::invalid_argument("rdma-lock-only is only for local-index/remote-lock microbenchmarks");
@@ -412,7 +413,11 @@ int run(int argc, char** argv) {
         if(cc.rfind("rdma-",0)!=0 || !data_port || (!policy.coordinator_port && !policy.txn_state_port) || !tree_timeout || tree_timeout>600000)
             throw std::invalid_argument("shared RDMA index requires rdma protocol, data-port, txn-state-port (or legacy coordinator-port) and bounded tree timeout");
         measured=true;
-    } else if(data_port)throw std::invalid_argument("data-port requires --index rdma");
+    } else if(index_name=="rolex-rdma") {
+        if(!data_port || !tree_timeout || tree_timeout>600000)
+            throw std::invalid_argument("remote ROLEX requires data-port and bounded timeout");
+        measured=true;
+    } else if(data_port) throw std::invalid_argument("data-port requires --index rdma");
     if (!policy.max_attempts || !policy.wait_timeout_ms || policy.wait_timeout_ms > 600000 || !policy.lock_budget || policy.lock_budget > 1048576)
         throw std::invalid_argument("invalid max-attempts, wait-timeout-ms (1..600000) or lock-budget (1..1048576)");
     if (measured && cc == "none" && policy.wait_policy!=WaitPolicy::NoWait) throw std::invalid_argument("wait-policy/latency requires a lock protocol");
@@ -457,6 +462,7 @@ int run(int argc, char** argv) {
     rolex::port::RolexIndex rolex_index(extra.rolex_epsilon,64,extra.rolex_hugepages!=0,extra.rolex_segment_keys,extra.rolex_arena_leaves);
 #endif
     BTreeRdma remote_index;
+    rolex::remote::RolexRdmaIndex remote_rolex_index;
     BTreeIndex* index = nullptr;
     if (index_name == "v1") {
         if (v1.init(order) != RCOK) throw std::invalid_argument("v1 init failed");
@@ -474,6 +480,12 @@ int run(int argc, char** argv) {
     } else if (index_name == "blink") {
         if (blink.init(order) != RCOK) throw std::invalid_argument("blink init failed");
         index = &blink;
+    } else if(index_name=="rolex-rdma") {
+        const auto seed=make_shared_seed(trace);
+        if(!data_port) throw std::invalid_argument("index rolex-rdma requires data_port");
+        if(!remote_rolex_index.connect(rdma_host,data_port,std::min(config.threads*policy.coroutines,config.transaction_count),rolex::remote::seed_fingerprint(seed),tree_timeout) || remote_rolex_index.init(order)!=RCOK)
+            throw std::runtime_error("remote ROLEX RDMA connect/configuration mismatch");
+        index=&remote_rolex_index;
     } else if(index_name=="rdma") {
         const auto seed=make_shared_seed(trace);
         if(!remote_index.connect(rdma_host,data_port,std::min(config.threads*policy.coroutines,config.transaction_count),tree_seed_fingerprint(seed),tree_timeout) ||
@@ -484,18 +496,21 @@ int run(int argc, char** argv) {
         index = &v2;
     }
 
-    auto data_ops_start=remote_index.rdma_operations();
-    auto data_reads_start=remote_index.read_bytes(),data_writes_start=remote_index.write_bytes();
-    auto data_wait_start=remote_index.latch_wait_ns();
+    auto data_ops_value=[&]{return index_name=="rolex-rdma"?remote_rolex_index.rdma_operations():remote_index.rdma_operations();};
+    auto data_reads_value=[&]{return index_name=="rolex-rdma"?remote_rolex_index.read_bytes():remote_index.read_bytes();};
+    auto data_writes_value=[&]{return index_name=="rolex-rdma"?remote_rolex_index.write_bytes():remote_index.write_bytes();};
+    auto data_ops_start=data_ops_value();
+    auto data_reads_start=data_reads_value(),data_writes_start=data_writes_value();
+    auto data_wait_start=index_name=="rolex-rdma"?std::uint64_t{0}:remote_index.latch_wait_ns();
     auto snapshot_data=[&] {
         // Workers are quiescent here; drain warm-up replication before the
         // timed window and reset diagnostics so no warm-up events leak in.
 #ifdef RRL_ENABLE_ROLEX
         if(index_name=="rolex")rolex_index.reset_diagnostics();
 #endif
-        data_ops_start=remote_index.rdma_operations();
-        data_reads_start=remote_index.read_bytes();data_writes_start=remote_index.write_bytes();
-        data_wait_start=remote_index.latch_wait_ns();
+        data_ops_start=data_ops_value();
+        data_reads_start=data_reads_value();data_writes_start=data_writes_value();
+        data_wait_start=index_name=="rolex-rdma"?std::uint64_t{0}:remote_index.latch_wait_ns();
     };
     policy.measurement_begin=snapshot_data;
     RunStats stats;
@@ -626,10 +641,10 @@ int run(int argc, char** argv) {
 
     // Snapshot before validate() drains the remaining replication queue.
     // Quiescent structure validation is outside the recorded workload window.
-    const auto data_ops=remote_index.rdma_operations()-data_ops_start;
-    const auto data_reads=remote_index.read_bytes()-data_reads_start,data_writes=remote_index.write_bytes()-data_writes_start;
-    const auto data_wait=remote_index.latch_wait_ns()-data_wait_start;
-    if (measured && !(index_name=="rdma" ? remote_index.healthy() && remote_index.validate() :
+    const auto data_ops=data_ops_value()-data_ops_start;
+    const auto data_reads=data_reads_value()-data_reads_start,data_writes=data_writes_value()-data_writes_start;
+    const auto data_wait=index_name=="rolex-rdma"?std::uint64_t{0}:remote_index.latch_wait_ns()-data_wait_start;
+    if (measured && !(index_name=="rdma" ? remote_index.healthy() && remote_index.validate() : index_name=="rolex-rdma" ? remote_rolex_index.healthy() && remote_rolex_index.validate() :
                      index_name=="v1" ? v1.validate() :
                      index_name=="blink" ? blink.validate() : index_name=="griffin" ? griffin.validate() :
 #ifdef RRL_ENABLE_ROLEX
@@ -772,7 +787,7 @@ int run(int argc, char** argv) {
                       << ",rolex_build_ns=" << rolex_diag.build_ns
                       << ",rolex_mapping=" << rolex_diag.mapping << "\n";
         std::cout << "execution_mode=" << (measured?(policy.use_coroutines?"coroutines":"threads"):"threads") << "\n";
-        std::cout << "data_backend=" << (index_name=="rdma"?"shared-rdma":"local")
+        std::cout << "data_backend=" << (index_name=="rdma"?"shared-rdma":index_name=="rolex-rdma"?"remote-rolex-rdma":"local")
                   << ",data_rdma_operations=" << data_ops << ",data_read_bytes=" << data_reads
                   << ",data_write_bytes=" << data_writes << ",data_latch_wait_ns=" << data_wait
                   << ",hierarchy_behavior=" << (policy.deneva_insert_behavior?"deneva":"strict")

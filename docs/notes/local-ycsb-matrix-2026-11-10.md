@@ -13,11 +13,11 @@
 - 等待策略：`no-wait`、`wait-die`、`wound-wait`
 - E/E-skew 范围：8、32、128
 - 层级锁桶宽：16、64、256
-- 数据集 2,000,000 keys，事务 trace 为 5,000 个事务、每事务 10 个操作
+- 数据集 2,097,152 keys（Deneva `config.h` 中 `SYNTH_TABLE_SIZE = 2^21`），事务 trace 为 5,000 个事务、每事务 10 个操作
 - 测量 10 秒，预热 10 秒，seed=8，单次运行
 - A/E 默认 Zipf theta=[0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.1, 1.3, 1.5]；E-skew 默认热点数据比例 0.2、热点请求比例 0.8
 
-默认配置对应 2016 个 case。每个 case 都预先向本地索引装入 2,000,000 个键；装载在预热和测量计时之前完成。`none` 和 `citron` 只运行 no-wait；其他协议运行三种等待策略。`predicate` 不单列，因为当前实现与 `exact-range` 使用同一套区间重叠语义。`blink`、`rolex` 和本地 `index=griffin` 是索引后端/索引变体，不混入锁协议排名矩阵。
+默认配置对应 2016 个 case。每个 case 都预先向本地索引装入 2,097,152 个键；装载在预热和测量计时之前完成。`none` 和 `citron` 只运行 no-wait；其他协议运行三种等待策略。`predicate` 不单列，因为当前实现与 `exact-range` 使用同一套区间重叠语义。`blink`、`rolex` 和本地 `index=griffin` 是索引后端/索引变体，不混入锁协议排名矩阵。
 
 运行前先构建：
 

@@ -40,7 +40,8 @@ def make_matrix_config() -> dict:
     return {
         "duration": 10,
         "warmup": 10,
-        "keys": 2000000,
+        # Deneva config.h: SYNTH_TABLE_SIZE = 2^21.
+        "keys": 2_097_152,
         "txns": 5000,
         "ops": 10,
         "threads": 32,

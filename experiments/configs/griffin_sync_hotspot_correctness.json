@@ -1,0 +1,14 @@
+{
+  "formal": false,
+  "threads": 32,
+  "execution_mode": "threads",
+  "coroutines": 1,
+  "hotspot_seconds": 1,
+  "stress_seconds": 60,
+  "sync_batch_limits": [
+    1,
+    64
+  ],
+  "hotspot_fixture": "512 traces; scan [0,2), update 0 and 1 to the same value; max_attempts=64; wait_timeout_ms=100",
+  "stress_fixture": "32 writers; 512 keys per writer; queue_capacity=8192; order=8; model-checked insert/delete/scans"
+}

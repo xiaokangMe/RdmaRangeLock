@@ -405,6 +405,13 @@ target_link_libraries(rrl_griffin_soak_test PRIVATE rrl_index_griffin)
 target_compile_options(rrl_griffin_soak_test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME rrl_griffin_soak_test COMMAND rrl_griffin_soak_test 2)
 set_tests_properties(rrl_griffin_soak_test PROPERTIES TIMEOUT 30)
+
+add_executable(rrl_precision_hotspot_test test/precision_hotspot_test.cpp)
+target_link_libraries(rrl_precision_hotspot_test PRIVATE rrl_txn)
+target_compile_options(rrl_precision_hotspot_test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME rrl_precision_hotspot_test COMMAND rrl_precision_hotspot_test 1)
+set_tests_properties(rrl_precision_hotspot_test PROPERTIES TIMEOUT 90)
+
 # Citron uses the common RDMA and transaction driver; correctness only here.
 add_executable(rrl_citron_lock_server benchmarks/citron_lock_server.cpp)
 target_link_libraries(rrl_citron_lock_server PRIVATE rrl_citron)

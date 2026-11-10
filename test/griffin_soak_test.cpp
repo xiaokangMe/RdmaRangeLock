@@ -12,7 +12,8 @@ int main(int argc,char** argv) {try {
     const unsigned seconds=argc>1?static_cast<unsigned>(std::stoul(argv[1])):2;
     if(!seconds || seconds>3600)throw std::invalid_argument("seconds must be 1..3600");
     constexpr unsigned threads=32,keys_per_thread=512;
-    BTreeGriffin tree; if(tree.init(8)!=RCOK)throw std::runtime_error("init");
+    const auto limit=argc>2?std::stoul(argv[2]):64;
+    BTreeGriffin tree(8192,limit); if(tree.init(8)!=RCOK)throw std::runtime_error("init");
     std::vector<std::uint64_t> values(threads*keys_per_thread);
     std::vector<unsigned char> present(values.size(),0);
     for(std::size_t k=0;k<values.size();++k)values[k]=k;
@@ -60,5 +61,14 @@ int main(int argc,char** argv) {try {
     if(actual!=expected || !mutations || scans+pending==0)throw std::runtime_error("final model mismatch/no progress");
     std::cout<<"PASS duration_seconds="<<seconds<<" threads="<<threads
              <<" mutations="<<mutations<<" scans="<<scans<<" pending_aborts="<<pending
-             <<" capacity_aborts="<<capacity<<" final_keys="<<actual.size()<<"\n";
+             <<" capacity_aborts="<<capacity<<" final_keys="<<actual.size();
+    const auto d=tree.diagnostics();
+    std::cout<<" sync_limit="<<limit<<" queue_peak="<<d.queue_peak_batches
+             <<" membership_operations="<<d.membership_operations<<" synced_batches="<<d.synced_batches
+             <<" tree_operations="<<d.tree_operations<<" sync_cycles="<<d.sync_cycles
+             <<" sync_lag_p99_ns="<<d.sync_lag.p99_ns<<"\n";
+    if(d.queue_batches || d.pending_keys || d.synced_batches!=d.membership_batches ||
+       d.sync_lag.count!=d.synced_batches || d.sync_work.count!=d.sync_cycles ||
+       d.tree_operations>d.membership_operations || d.capacity_aborts!=capacity)
+        throw std::runtime_error("diagnostics conservation mismatch");
 }catch(const std::exception& e){std::cerr<<e.what()<<"\n";return 1;}}

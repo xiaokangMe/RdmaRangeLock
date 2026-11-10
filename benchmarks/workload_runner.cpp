@@ -84,7 +84,7 @@ void load_config(const std::string& path, WorkloadConfig& config,
                  std::string& index_name, std::string& cc, std::size_t& order,
                  std::string& host, std::uint16_t& port, std::size_t& connections,
                  bool& bucket_auto, PolicyRunConfig& policy, bool& measured,
-                 std::uint16_t& data_port, std::size_t& tree_timeout, std::size_t& griffin_queue, IntegrationOptions& extra) {
+                 std::uint16_t& data_port, std::size_t& tree_timeout, std::size_t& griffin_queue, std::size_t& griffin_sync_limit, IntegrationOptions& extra) {
     std::ifstream input(path);
     if (!input) throw std::invalid_argument("failed to read config: " + path);
     const std::string text((std::istreambuf_iterator<char>(input)), {});
@@ -99,7 +99,7 @@ void load_config(const std::string& path, WorkloadConfig& config,
         {"threads", &config.threads}, {"duration", &config.duration_seconds}, {"duration_seconds", &config.duration_seconds},
         {"hierarchy_bucket_width", &config.hierarchy_bucket_width}, {"bucket", &config.hierarchy_bucket_width},
         {"tpcc_items_per_order", &config.tpcc_items_per_order}, {"items", &config.tpcc_items_per_order},
-        {"griffin_queue_capacity", &griffin_queue}, {"coroutines", &policy.coroutines}, {"coroutine_stack_bytes", &policy.coroutine_stack_bytes},
+        {"griffin_sync_batch_limit", &griffin_sync_limit}, {"griffin_queue_capacity", &griffin_queue}, {"coroutines", &policy.coroutines}, {"coroutine_stack_bytes", &policy.coroutine_stack_bytes},
         {"warmup_seconds", &policy.warmup_seconds}, {"tree_latch_timeout_ms", &tree_timeout}, {"seed", &config.seed}, {"order", &order}, {"rdma_connections", &connections}};
     std::set<std::size_t*> assigned;
     bool zipf_seen = false, port_seen = false, distribution_seen = false;
@@ -229,7 +229,7 @@ int run(int argc, char** argv) {
     std::string cc = "none";
     std::string rdma_host = "127.0.0.1";
     std::uint16_t rdma_port = 19876, data_port = 0;
-    std::size_t tree_timeout = 10000, griffin_queue=8192;
+    std::size_t tree_timeout = 10000, griffin_queue=8192, griffin_sync_limit=64;
     // 0 selects the documented default (min(threads, 2)); a value forces it.
     std::size_t rdma_connections = 0;
     bool csv = false;
@@ -242,7 +242,7 @@ int run(int argc, char** argv) {
             config_path = argv[i + 1];
         }
     if (!config_path.empty()) load_config(config_path, config, index_name, cc, order,
-                                         rdma_host, rdma_port, rdma_connections, bucket_auto, policy, measured, data_port, tree_timeout, griffin_queue, extra);
+                                         rdma_host, rdma_port, rdma_connections, bucket_auto, policy, measured, data_port, tree_timeout, griffin_queue, griffin_sync_limit, extra);
     std::set<std::string> options;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string option = argv[i];
@@ -256,6 +256,7 @@ int run(int argc, char** argv) {
         }
         if (option == "--workload") config.kind = WorkloadTrace::parse_kind(value);
         else if (option == "--index") index_name = value;
+        else if(option=="--griffin-sync-batch-limit")griffin_sync_limit=parse_unsigned(value,option);
         else if(option=="--griffin-queue-capacity")griffin_queue=parse_unsigned(value,option);
         else if (option == "--cc") cc = value;
         else if (option == "--latency-histogram") {
@@ -452,7 +453,7 @@ int run(int argc, char** argv) {
     BTreeSingle v1;
     BTreeLatch v2;
     BTreeBlink blink;
-    BTreeGriffin griffin(griffin_queue);
+    BTreeGriffin griffin(griffin_queue,griffin_sync_limit);
 #ifdef RRL_ENABLE_ROLEX
     rolex::port::RolexIndex rolex_index(extra.rolex_epsilon,64,extra.rolex_hugepages!=0,extra.rolex_segment_keys,extra.rolex_arena_leaves);
 #endif
@@ -490,6 +491,7 @@ int run(int argc, char** argv) {
     auto snapshot_data=[&] {
         // Workers are quiescent here; drain warm-up replication before the
         // timed window and reset diagnostics so no warm-up events leak in.
+        if(index_name=="griffin")griffin.reset_diagnostics();
 #ifdef RRL_ENABLE_ROLEX
         if(index_name=="rolex")rolex_index.reset_diagnostics();
 #endif
@@ -625,6 +627,7 @@ int run(int argc, char** argv) {
     }
 
     // Snapshot before validate() drains the remaining replication queue.
+    const auto griffin_diag=index_name=="griffin"?griffin.diagnostics():GriffinDiagnostics{};
     // Quiescent structure validation is outside the recorded workload window.
     const auto data_ops=remote_index.rdma_operations()-data_ops_start;
     const auto data_reads=remote_index.read_bytes()-data_reads_start,data_writes=remote_index.write_bytes()-data_writes_start;
@@ -665,6 +668,9 @@ int run(int argc, char** argv) {
         for(std::size_t shard=0;shard<kRemoteLockShards;++shard)
             std::cout << ",rdma_lock_slot_peak_" << shard << ",rdma_lock_capacity_required_" << shard;
         std::cout << ",index_sync_pending_aborts";
+        std::cout << ",griffin_queue_capacity,griffin_sync_batch_limit,griffin_queue_batches,griffin_queue_peak_batches,griffin_pending_keys,griffin_pending_peak_keys,griffin_committed_batches,griffin_membership_batches,griffin_membership_operations,griffin_value_only_batches,griffin_capacity_aborts,griffin_sync_cycles,griffin_synced_batches,griffin_tree_operations";
+        for(const char* name:{"griffin_sync_work","griffin_sync_lag"})
+            for(const char* field:{"count","total_ns","p50_ns","p95_ns","p99_ns","p999_ns","max_ns"})std::cout<<","<<name<<"_"<<field;
         std::cout << ",active_workers,workers_without_commit,worker_min_committed,worker_max_committed";
         std::cout << ",citron_lock_calls,citron_grants,citron_aborts,citron_errors,citron_unlock_calls,citron_unlock_failures,citron_rdma_operations,citron_sessions,citron_shared_mapped_to_exclusive";
         std::cout << ",rolex_segments,rolex_leaves,rolex_live_keys,rolex_splits,rolex_removals,rolex_model_exact,rolex_model_corrected,rolex_model_fallbacks,rolex_arena_bytes,rolex_build_ns,rolex_mapping";
@@ -737,7 +743,17 @@ int run(int argc, char** argv) {
         for(std::size_t shard=0;shard<kRemoteLockShards;++shard)
             std::cout << ',' << rdma_diag.slot_peaks[shard] << ',' << rdma_diag.capacity_required[shard];
         std::cout << ',' << stats.policy.index_pending_aborts;
-        std::cout << ',' << stats.policy.active_workers << ',' << stats.policy.workers_without_commit << ',' << stats.policy.worker_min_committed << ',' << stats.policy.worker_max_committed;
+        std::cout << ',' << (index_name=="griffin"?griffin_queue:0) << ',' << (index_name=="griffin"?griffin_sync_limit:0)
+                  << ',' << griffin_diag.queue_batches << ',' << griffin_diag.queue_peak_batches
+                  << ',' << griffin_diag.pending_keys << ',' << griffin_diag.pending_peak_keys
+                  << ',' << griffin_diag.committed_batches << ',' << griffin_diag.membership_batches
+                  << ',' << griffin_diag.membership_operations << ',' << griffin_diag.value_only_batches
+                  << ',' << griffin_diag.capacity_aborts << ',' << griffin_diag.sync_cycles
+                  << ',' << griffin_diag.synced_batches << ',' << griffin_diag.tree_operations;
+        for(const auto& h:{griffin_diag.sync_work,griffin_diag.sync_lag})
+            std::cout<<','<<h.count<<','<<h.total_ns<<','<<h.p50_ns<<','<<h.p95_ns<<','<<h.p99_ns<<','<<h.p999_ns<<','<<h.max_ns;
+        std::cout << ',' << stats.policy.active_workers << ',' << stats.policy.workers_without_commit
+                  << ',' << stats.policy.worker_min_committed << ',' << stats.policy.worker_max_committed;
         std::cout << ',' << citron_diag.lock_calls << ',' << citron_diag.lock_grants << ',' << citron_diag.lock_aborts
                   << ',' << citron_diag.lock_errors << ',' << citron_diag.unlock_calls << ',' << citron_diag.unlock_failures
                   << ',' << citron_diag.rdma_operations << ',' << citron_diag.sessions << ',' << citron_diag.shared_mapped_to_exclusive;
@@ -753,7 +769,19 @@ int run(int argc, char** argv) {
                   << ',' << (index_name=="rolex"?extra.rolex_arena_leaves:0) << ',' << (index_name=="rolex"?extra.rolex_hugepages:0);
         std::cout << '\n';
     } else {
-        std::cout<<"active_workers="<<stats.policy.active_workers<<",workers_without_commit="<<stats.policy.workers_without_commit<<",worker_min_committed="<<stats.policy.worker_min_committed<<",worker_max_committed="<<stats.policy.worker_max_committed<<"\n";
+        std::cout<<"active_workers="<<stats.policy.active_workers
+                 <<",workers_without_commit="<<stats.policy.workers_without_commit
+                 <<",worker_min_committed="<<stats.policy.worker_min_committed
+                 <<",worker_max_committed="<<stats.policy.worker_max_committed<<"\n";
+        if(index_name=="griffin")std::cout<<"griffin_queue_batches="<<griffin_diag.queue_batches
+            <<",griffin_queue_peak_batches="<<griffin_diag.queue_peak_batches
+            <<",griffin_pending_keys="<<griffin_diag.pending_keys
+            <<",griffin_pending_peak_keys="<<griffin_diag.pending_peak_keys
+            <<",griffin_sync_cycles="<<griffin_diag.sync_cycles
+            <<",griffin_synced_batches="<<griffin_diag.synced_batches
+            <<",griffin_tree_operations="<<griffin_diag.tree_operations
+            <<",griffin_capacity_aborts="<<griffin_diag.capacity_aborts
+            <<",griffin_sync_lag_p99_ns="<<griffin_diag.sync_lag.p99_ns<<"\n";
         std::cout << "index_sync_pending_aborts=" << stats.policy.index_pending_aborts << "\n";
         if (cc == "citron" || cc == "rdma-citron")
             std::cout << "citron_lock_calls=" << citron_diag.lock_calls

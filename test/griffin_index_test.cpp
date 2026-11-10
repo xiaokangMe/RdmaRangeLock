@@ -57,12 +57,60 @@ int main(){try {
     CHECK(tree.validate());
 
     // Queue capacity is checked before any hash mutation.
-    BTreeGriffin tiny(1);CHECK(tiny.init(4)==RCOK);tiny.prepare_thread(0,1);
+    BTreeGriffin tiny(1);CHECK(tiny.init(4)==RCOK);
+    CHECK(tiny.insert(99,&a)==RCOK);tiny.prepare_thread(0,1);
     SyncGate tiny_gate;BTreeGriffinTestPeer::before_sync(tiny,[&]{tiny_gate.enter();});
     CHECK(tiny.insert(1,&a)==RCOK);
     CHECK(tiny_gate.reached.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready);
     CHECK(tiny.insert(2,&b)==AbortCapacity);CHECK(!tiny.lookup(2,value));
+    // Value-only and net-zero membership commits do not need queue space.
+    CHECK(tiny.apply_batch({{99,&b,false}})==RCOK);
+    CHECK(tiny.lookup(99,value) && value==&b);
+    CHECK(tiny.erase(2)==RCOK);
+    CHECK(tiny.apply_batch({{99,&c,false},{2,&c,false}})==AbortCapacity);
+    CHECK(tiny.lookup(99,value) && value==&b && !tiny.lookup(2,value));
+    CHECK(tiny.apply_batch({{99,nullptr,true},{99,&a,false}})==RCOK);
+    CHECK(tiny.apply_batch({{2,&b,false},{2,nullptr,true}})==RCOK);
+    CHECK(tiny.lookup(99,value) && value==&a && !tiny.lookup(2,value));
+    const auto full=tiny.diagnostics();
+    CHECK(full.queue_batches==1 && full.queue_peak_batches==1 && full.pending_keys==1);
+    CHECK(full.committed_batches==5 && full.value_only_batches==4 && full.capacity_aborts==2);
+    CHECK(full.membership_batches==1 && full.membership_operations==1);
     tiny_gate.release.set_value();tiny.wait_synced();CHECK(tiny.validate());
+    const auto drained=tiny.diagnostics();
+    CHECK(drained.queue_batches==0 && drained.pending_keys==0 && drained.synced_batches==1);
+    CHECK(drained.tree_operations==1 && drained.sync_work.count==1 && drained.sync_lag.count==1);
+    CHECK(drained.sync_lag.max_ns>=drained.sync_work.max_ns);
+    tiny.reset_diagnostics();
+    const auto cleared=tiny.diagnostics();
+    CHECK(!cleared.committed_batches && !cleared.queue_peak_batches && !cleared.sync_lag.count);
+
+    // Make exactly two sync groups; all queued cross-batch changes on 11
+    // collapse to its final state. Pending still blocks throughout the delay.
+    for(std::size_t limit:{1,8}) {
+    BTreeGriffin grouped(8,limit);CHECK(grouped.init(4)==RCOK);grouped.prepare_thread(0,4);
+    SyncGate group_gate;BTreeGriffinTestPeer::before_sync(grouped,[&]{group_gate.enter();});
+    CHECK(grouped.insert(10,&a)==RCOK);
+    CHECK(group_gate.reached.get_future().wait_for(std::chrono::seconds(5))==std::future_status::ready);
+    CHECK(grouped.insert(11,&a)==RCOK);CHECK(grouped.erase(11)==RCOK);
+    CHECK(grouped.insert(11,&c)==RCOK);
+    CHECK(grouped.apply_batch({{12,&b,false},{12,nullptr,true}})==RCOK);
+    CHECK(grouped.insert(14,&b)==RCOK);
+    auto grouped_stats=grouped.diagnostics();
+    CHECK(grouped_stats.queue_batches==5 && grouped_stats.pending_keys==3);
+    blocked=false;
+    try{grouped.scan_range(KeyRangeEnt::point(11));}catch(const IndexSyncPending&){blocked=true;}
+    CHECK(blocked && grouped.scan_range(KeyRangeEnt::point(12)).empty());
+    group_gate.release.set_value();grouped.wait_synced();CHECK(grouped.validate());
+    CHECK(grouped.lookup(11,value) && value==&c && !grouped.lookup(12,value));
+    grouped_stats=grouped.diagnostics();
+    CHECK(grouped_stats.committed_batches==6 && grouped_stats.membership_batches==5);
+    CHECK(grouped_stats.membership_operations==5 && grouped_stats.synced_batches==5);
+    CHECK(grouped_stats.sync_cycles==(limit==1?5:2) && grouped_stats.tree_operations==(limit==1?5:3));
+    CHECK(grouped_stats.sync_work.count==grouped_stats.sync_cycles && grouped_stats.sync_lag.count==5);
+    CHECK(!grouped_stats.queue_batches && !grouped_stats.pending_keys);
+    }
+
 
     // A replication fault retains the fence and is never a successful scan.
     BTreeGriffin broken;CHECK(broken.init(4)==RCOK);broken.prepare_thread(0,1);

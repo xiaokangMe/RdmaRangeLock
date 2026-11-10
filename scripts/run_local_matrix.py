@@ -10,11 +10,8 @@ import argparse
 import csv
 import datetime as dt
 import itertools
-import json
-import os
 from pathlib import Path
 import subprocess
-import sys
 
 LOCAL_PROTOCOLS = (
     "none",
@@ -32,10 +29,51 @@ WAIT_POLICIES = ("no-wait", "wait-die", "wound-wait")
 WORKLOADS = ("ycsb-a", "ycsb-e", "ycsb-e-skew")
 
 
+def make_matrix_config() -> dict:
+    """唯一的默认矩阵配置；直接编辑这里即可改变默认实验。
+
+    Zipf theta 用于 YCSB-A/E；request_distribution=auto 时，YCSB-E-skew
+    使用下面的热点数据/请求比例。列表会做笛卡尔积。
+    """
+    return {
+        "duration": 10,
+        "warmup": 10,
+        "keys": 10000,
+        "txns": 5000,
+        "ops": 10,
+        "threads": 32,
+        "seed": 8,
+        "order": 128,
+        "tpcc_items": 5,
+        "max_attempts": 1000,
+        "wait_timeout_ms": 5000,
+        "lock_budget": 16384,
+        "zipf_values": [0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.1, 1.3, 1.5],
+        "hotspot_data_fractions": [0.2],
+        "hotspot_opn_fractions": [0.8],
+        "workloads": list(WORKLOADS),
+        "protocols": list(LOCAL_PROTOCOLS),
+        "wait_policies": list(WAIT_POLICIES),
+        "ranges": [8, 32, 128],
+        "buckets": [16, 64, 256],
+        "default_bucket": 64,
+        "request_distribution": "auto",
+        "ycsb_unique_keys": 1,
+    }
+
+
 def finite_fraction(value: float, name: str) -> float:
     if not 0.0 <= value <= 1.0:
         raise argparse.ArgumentTypeError(f"{name} must be in [0,1]")
     return value
+
+
+def hotspot_data_fraction(value: str) -> float:
+    result = float(value)
+    # The current generator needs both a nonempty hot and cold key set.
+    if not 0.0 < result < 1.0:
+        raise argparse.ArgumentTypeError("hotspot data fraction must be in (0,1)")
+    return result
 
 
 def theta_value(value: str) -> float:
@@ -84,33 +122,34 @@ def cases(args: argparse.Namespace):
 
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
+    defaults = make_matrix_config()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", type=Path, default=root / "build-rolex-rdma")
     parser.add_argument("--output", type=Path, default=None, help="result CSV; default experiments/results/local-ycsb-<timestamp>.csv")
     parser.add_argument("--log-dir", type=Path, default=None, help="per-case stdout/stderr directory")
-    parser.add_argument("--duration", type=int, default=10)
-    parser.add_argument("--warmup", type=int, default=10)
-    parser.add_argument("--keys", type=int, default=10000)
-    parser.add_argument("--txns", type=int, default=5000)
-    parser.add_argument("--ops", type=int, default=10)
-    parser.add_argument("--threads", type=int, default=32)
-    parser.add_argument("--seed", type=int, default=8)
-    parser.add_argument("--order", type=int, default=128)
-    parser.add_argument("--tpcc-items", type=int, default=5)
-    parser.add_argument("--max-attempts", type=int, default=1000)
-    parser.add_argument("--wait-timeout-ms", type=int, default=5000)
-    parser.add_argument("--lock-budget", type=int, default=16384)
-    parser.add_argument("--zipf-values", nargs="+", type=theta_value, default=[0.4], metavar="THETA")
-    parser.add_argument("--hotspot-data-fractions", nargs="+", type=lambda v: finite_fraction(float(v), "hotspot data fraction"), default=[0.2])
-    parser.add_argument("--hotspot-opn-fractions", nargs="+", type=lambda v: finite_fraction(float(v), "hotspot operation fraction"), default=[0.8])
-    parser.add_argument("--workloads", nargs="+", choices=WORKLOADS, default=list(WORKLOADS))
-    parser.add_argument("--protocols", nargs="+", choices=LOCAL_PROTOCOLS, default=list(LOCAL_PROTOCOLS))
-    parser.add_argument("--wait-policies", nargs="+", choices=WAIT_POLICIES, default=list(WAIT_POLICIES))
-    parser.add_argument("--ranges", nargs="+", type=int, default=[8, 32, 128])
-    parser.add_argument("--buckets", nargs="+", type=int, default=[16, 64, 256])
-    parser.add_argument("--default-bucket", type=int, default=64)
-    parser.add_argument("--request-distribution", choices=("auto", "uniform", "zipfian", "hotspot"), default="auto")
-    parser.add_argument("--ycsb-unique-keys", type=int, choices=(0, 1), default=1)
+    parser.add_argument("--duration", type=int, default=defaults["duration"])
+    parser.add_argument("--warmup", type=int, default=defaults["warmup"])
+    parser.add_argument("--keys", type=int, default=defaults["keys"])
+    parser.add_argument("--txns", type=int, default=defaults["txns"])
+    parser.add_argument("--ops", type=int, default=defaults["ops"])
+    parser.add_argument("--threads", type=int, default=defaults["threads"])
+    parser.add_argument("--seed", type=int, default=defaults["seed"])
+    parser.add_argument("--order", type=int, default=defaults["order"])
+    parser.add_argument("--tpcc-items", type=int, default=defaults["tpcc_items"])
+    parser.add_argument("--max-attempts", type=int, default=defaults["max_attempts"])
+    parser.add_argument("--wait-timeout-ms", type=int, default=defaults["wait_timeout_ms"])
+    parser.add_argument("--lock-budget", type=int, default=defaults["lock_budget"])
+    parser.add_argument("--zipf-values", nargs="+", type=theta_value, default=defaults["zipf_values"], metavar="THETA")
+    parser.add_argument("--hotspot-data-fractions", nargs="+", type=hotspot_data_fraction, default=defaults["hotspot_data_fractions"])
+    parser.add_argument("--hotspot-opn-fractions", nargs="+", type=lambda v: finite_fraction(float(v), "hotspot operation fraction"), default=defaults["hotspot_opn_fractions"])
+    parser.add_argument("--workloads", nargs="+", choices=WORKLOADS, default=defaults["workloads"])
+    parser.add_argument("--protocols", nargs="+", choices=LOCAL_PROTOCOLS, default=defaults["protocols"])
+    parser.add_argument("--wait-policies", nargs="+", choices=WAIT_POLICIES, default=defaults["wait_policies"])
+    parser.add_argument("--ranges", nargs="+", type=int, default=defaults["ranges"])
+    parser.add_argument("--buckets", nargs="+", type=int, default=defaults["buckets"])
+    parser.add_argument("--default-bucket", type=int, default=defaults["default_bucket"])
+    parser.add_argument("--request-distribution", choices=("auto", "uniform", "zipfian", "hotspot"), default=defaults["request_distribution"])
+    parser.add_argument("--ycsb-unique-keys", type=int, choices=(0, 1), default=defaults["ycsb_unique_keys"])
     parser.add_argument("--dry-run", action="store_true", help="print case count and commands without starting the runner")
     args = parser.parse_args()
     if args.threads != 32:

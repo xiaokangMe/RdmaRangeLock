@@ -2,6 +2,8 @@
 
 脚本：`scripts/run_local_matrix.py`
 
+参数已经收进脚本顶部的 `make_matrix_config()` 函数，不再依赖 JSON。直接编辑这个函数里的列表和数值，再运行脚本即可生成新的矩阵。
+
 该脚本只启动本机 `rrl_workload_runner`，不启动 RDMA 数据服务、远端锁服务或 TCP 协调器。固定使用 `index=v2`、32 个操作系统线程和 `execution_mode=threads --coroutines 1`，对应当前关闭协程的代码路径。
 
 默认负载和协议：
@@ -12,9 +14,9 @@
 - E/E-skew 范围：8、32、128
 - 层级锁桶宽：16、64、256
 - 测量 10 秒，预热 10 秒，seed=8，单次运行
-- A/E 默认 Zipf theta=0.4；E-skew 默认热点数据比例 0.2、热点请求比例 0.8
+- A/E 默认 Zipf theta=[0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.1, 1.3, 1.5]；E-skew 默认热点数据比例 0.2、热点请求比例 0.8
 
-默认配置对应 224 个 case。`none` 和 `citron` 只运行 no-wait；其他协议运行三种等待策略。`predicate` 不单列，因为当前实现与 `exact-range` 使用同一套区间重叠语义。`blink`、`rolex` 和本地 `index=griffin` 是索引后端/索引变体，不混入锁协议排名矩阵。
+默认配置对应 2016 个 case。`none` 和 `citron` 只运行 no-wait；其他协议运行三种等待策略。`predicate` 不单列，因为当前实现与 `exact-range` 使用同一套区间重叠语义。`blink`、`rolex` 和本地 `index=griffin` 是索引后端/索引变体，不混入锁协议排名矩阵。
 
 运行前先构建：
 
@@ -35,7 +37,15 @@ python3 scripts/run_local_matrix.py --dry-run
 python3 scripts/run_local_matrix.py
 ```
 
-调整 A/E 的偏斜率，仍使用自动分布（A/E 走 Zipf，E-skew 走热点分布）：
+修改默认参数时，直接编辑 `make_matrix_config()`，例如：
+
+```python
+"zipf_values": [0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.1, 1.3, 1.5],
+"hotspot_data_fractions": [0.1, 0.2, 0.5],
+"hotspot_opn_fractions": [0.8, 0.9],
+```
+
+也可以用命令行临时覆盖 A/E 的偏斜率：
 
 ```bash
 python3 scripts/run_local_matrix.py --zipf-values 0 0.4 0.7 0.9
@@ -49,6 +59,6 @@ python3 scripts/run_local_matrix.py \
   --hotspot-opn-fractions 0.8 0.9
 ```
 
-两类参数会做笛卡尔积。比如 4 个 Zipf 值、2 个热点数据比例、2 个热点请求比例会生成 16 个 profile；默认 224 个 case 会扩展为 3584 个 case。可以用 `--workloads`、`--protocols`、`--wait-policies`、`--ranges`、`--buckets` 缩小矩阵。
+三类 profile 参数会做笛卡尔积。比如 4 个 Zipf 值、2 个热点数据比例、2 个热点请求比例会生成 16 个 profile；默认 2016 个 case 会扩展为 3584 个 case。热点数据比例必须严格在 (0,1)，因为当前生成器需要同时存在热点集合和冷点集合；热点请求比例可以取 0 或 1。可以用 `--workloads`、`--protocols`、`--wait-policies`、`--ranges`、`--buckets` 缩小矩阵。
 
-本轮只写脚本、配置和说明，不自动运行负载。结果写入 `experiments/results/`，每个 case 的 stdout/stderr 写入 `experiments/logs/`。
+本轮只修改脚本和说明，不自动运行负载。结果写入 `experiments/results/`，每个 case 的 stdout/stderr 写入 `experiments/logs/`。

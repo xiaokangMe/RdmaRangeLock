@@ -13,10 +13,11 @@
 - 等待策略：`no-wait`、`wait-die`、`wound-wait`
 - E/E-skew 范围：8、32、128
 - 层级锁桶宽：16、64、256
+- 数据集 2,000,000 keys，事务 trace 为 5,000 个事务、每事务 10 个操作
 - 测量 10 秒，预热 10 秒，seed=8，单次运行
 - A/E 默认 Zipf theta=[0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.1, 1.3, 1.5]；E-skew 默认热点数据比例 0.2、热点请求比例 0.8
 
-默认配置对应 2016 个 case。`none` 和 `citron` 只运行 no-wait；其他协议运行三种等待策略。`predicate` 不单列，因为当前实现与 `exact-range` 使用同一套区间重叠语义。`blink`、`rolex` 和本地 `index=griffin` 是索引后端/索引变体，不混入锁协议排名矩阵。
+默认配置对应 2016 个 case。每个 case 都预先向本地索引装入 2,000,000 个键；装载在预热和测量计时之前完成。`none` 和 `citron` 只运行 no-wait；其他协议运行三种等待策略。`predicate` 不单列，因为当前实现与 `exact-range` 使用同一套区间重叠语义。`blink`、`rolex` 和本地 `index=griffin` 是索引后端/索引变体，不混入锁协议排名矩阵。
 
 运行前先构建：
 
@@ -61,4 +62,4 @@ python3 scripts/run_local_matrix.py \
 
 三类 profile 参数会做笛卡尔积。比如 4 个 Zipf 值、2 个热点数据比例、2 个热点请求比例会生成 16 个 profile；默认 2016 个 case 会扩展为 3584 个 case。热点数据比例必须严格在 (0,1)，因为当前生成器需要同时存在热点集合和冷点集合；热点请求比例可以取 0 或 1。可以用 `--workloads`、`--protocols`、`--wait-policies`、`--ranges`、`--buckets` 缩小矩阵。
 
-本轮只修改脚本和说明，不自动运行负载。结果写入 `experiments/results/`，每个 case 的 stdout/stderr 写入 `experiments/logs/`。
+结果写入 `experiments/results/`，每个 case 的 stdout/stderr 写入 `experiments/logs/`。campaign 日志保存解析后的配置、配置指纹和源码 commit。

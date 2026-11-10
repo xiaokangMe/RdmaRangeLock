@@ -9,7 +9,9 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import hashlib
 import itertools
+import json
 from pathlib import Path
 import subprocess
 
@@ -38,7 +40,7 @@ def make_matrix_config() -> dict:
     return {
         "duration": 10,
         "warmup": 10,
-        "keys": 10000,
+        "keys": 2000000,
         "txns": 5000,
         "ops": 10,
         "threads": 32,
@@ -124,7 +126,7 @@ def main() -> int:
     root = Path(__file__).resolve().parents[1]
     defaults = make_matrix_config()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build", type=Path, default=root / "build-rolex-rdma")
+    parser.add_argument("--build", type=Path, default=root / "build-shared")
     parser.add_argument("--output", type=Path, default=None, help="result CSV; default experiments/results/local-ycsb-<timestamp>.csv")
     parser.add_argument("--log-dir", type=Path, default=None, help="per-case stdout/stderr directory")
     parser.add_argument("--duration", type=int, default=defaults["duration"])
@@ -176,6 +178,36 @@ def main() -> int:
         raise SystemExit(f"runner not found: {binary}; build it before running this matrix")
     output.parent.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
+    resolved = {
+        "keys": args.keys,
+        "transactions": args.txns,
+        "operations": args.ops,
+        "threads": args.threads,
+        "execution_mode": "threads",
+        "coroutines": 1,
+        "seed": args.seed,
+        "duration_seconds": args.duration,
+        "warmup_seconds": args.warmup,
+        "zipf_values": args.zipf_values,
+        "hotspot_data_fractions": args.hotspot_data_fractions,
+        "hotspot_opn_fractions": args.hotspot_opn_fractions,
+        "workloads": args.workloads,
+        "protocols": args.protocols,
+        "wait_policies": args.wait_policies,
+        "ranges": args.ranges,
+        "buckets": args.buckets,
+        "request_distribution": args.request_distribution,
+        "case_count": len(plan),
+    }
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    campaign_path = log_dir / "campaign.json"
+    campaign = {
+        "source_commit": commit,
+        "config": resolved,
+        "config_sha256": hashlib.sha256(json.dumps(resolved, sort_keys=True).encode()).hexdigest(),
+        "status": "RUNNING",
+    }
+    campaign_path.write_text(json.dumps(campaign, indent=2) + "\n")
     rows: list[dict[str, str]] = []
     for number, case in enumerate(plan, 1):
         command = [
@@ -218,6 +250,9 @@ def main() -> int:
             writer.writeheader()
             writer.writerows(rows)
         print(f"{number}/{len(plan)} {label}", flush=True)
+    campaign["status"] = "COMPLETE"
+    campaign["completed_cases"] = len(rows)
+    campaign_path.write_text(json.dumps(campaign, indent=2) + "\n")
     print(f"completed={len(rows)} output={output} logs={log_dir}")
     return 0
 

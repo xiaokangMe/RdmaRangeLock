@@ -272,6 +272,19 @@ WorkloadTrace WorkloadTrace::generate(const WorkloadConfig& c) {
     return t;
 }
 
+WorkloadTrace WorkloadTrace::from_transactions(const WorkloadConfig& config,
+                                              std::vector<TransactionTrace> transactions) {
+    WorkloadTrace trace;
+    trace.config_ = config;
+    trace.config_.transaction_count = transactions.size();
+    trace.transactions_ = std::move(transactions);
+    for (const auto& txn : trace.transactions_)
+        for (const auto& op : txn.operations)
+            trace.max_key_ = std::max(trace.max_key_,
+                                      static_cast<std::size_t>(std::max(op.key, op.end_key)));
+    return trace;
+}
+
 double RunStats::throughput() const {
     return elapsed_ns ? double(committed) * 1e9 / double(elapsed_ns) : 0;
 }

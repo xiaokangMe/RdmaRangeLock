@@ -54,7 +54,7 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
             throw std::invalid_argument("DAG requires exact objects and local/native RDMA state");
     }
     std::unordered_map<idx_key_t,std::uint64_t> seed;
-    if(!index.preloaded() && !seed_index(index,trace,seed)){RunStats s;s.index_errors=1;return s;}
+    if(!index.preloaded() && !cfg.index_preloaded && !seed_index(index,trace,seed)){RunStats s;s.index_errors=1;return s;}
     const auto total=trace.transactions().size();
     if(!total)return {};
     if(!cfg.coroutines || cfg.coroutines>4096 || worker_threads>4096/cfg.coroutines ||
@@ -67,7 +67,10 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
     const auto count=std::min(worker_threads*cfg.coroutines,total);
     const auto os_workers=std::min(worker_threads,count);
     const bool warmup=cfg.warmup_seconds!=0;
-    LocalNativePolicyState local_native_state(std::max<std::size_t>(count, 1));
+    std::unique_ptr<LocalNativePolicyState> owned_local_state;
+    if(!cfg.shared_local_state)
+        owned_local_state.reset(new LocalNativePolicyState(std::max<std::size_t>(count, 1)));
+    LocalNativePolicyState& local_native_state=cfg.shared_local_state?*cfg.shared_local_state:*owned_local_state;
     std::vector<std::unique_ptr<PolicyClient>> clients;
     std::vector<std::unique_ptr<NativePolicyClient>> native;
     std::vector<std::unique_ptr<LocalNativePolicyClient>> local_native;

@@ -3,6 +3,7 @@
 #include "common/latency_histogram.h"
 #include <functional>
 namespace rrl {
+class LocalNativePolicyState;
 enum class PolicyProtocol { Record, Gap, NextKey, Hierarchy, Predicate, None, ExactRange, PriorKey, Precision, Griffin };
 struct PolicyRunConfig {
     WaitPolicy wait_policy{WaitPolicy::NoWait};
@@ -30,6 +31,8 @@ struct PolicyRunConfig {
     std::size_t coroutines{1}, coroutine_stack_bytes{262144}, warmup_seconds{0};
     // Called after all warm-up attempts drain, before measured workers resume.
     std::function<void()> measurement_begin;
+    LocalNativePolicyState* shared_local_state{nullptr};
+    bool index_preloaded{false};
 };
 struct PolicyStats {
     bool enabled{false};

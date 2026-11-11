@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "common/types.h"
@@ -50,6 +51,7 @@ struct TransactionTrace { txnid_t txn_id{0}; std::vector<Operation> operations; 
 class WorkloadTrace {
 public:
     static WorkloadTrace generate(const WorkloadConfig&);
+    static WorkloadTrace from_transactions(const WorkloadConfig&, std::vector<TransactionTrace>);
     const std::vector<TransactionTrace>& transactions() const { return transactions_; }
     size_t max_key() const { return max_key_; }
     const WorkloadConfig& config() const { return config_; }
@@ -80,5 +82,6 @@ RunStats run_record_2pl(BTreeIndex&, LockManager&, const WorkloadTrace&, size_t 
 RunStats run_gap_lock(BTreeIndex&, LockManager&, const WorkloadTrace&, size_t threads = 1);
 RunStats run_next_key_lock(BTreeIndex&, IRangeLockManager&, const WorkloadTrace&, size_t threads = 1);
 RunStats run_hierarchical_lock(BTreeIndex&, IRangeLockManager&, const WorkloadTrace&, size_t threads = 1);
+bool seed_index(BTreeIndex&, const WorkloadTrace&, std::unordered_map<idx_key_t, std::uint64_t>&);
 
 }  // namespace rrl

@@ -154,6 +154,10 @@ def main() -> int:
     parser.add_argument("--request-distribution", choices=("auto", "uniform", "zipfian", "hotspot"), default=defaults["request_distribution"])
     parser.add_argument("--ycsb-unique-keys", type=int, choices=(0, 1), default=defaults["ycsb_unique_keys"])
     parser.add_argument("--dry-run", action="store_true", help="print case count and commands without starting the runner")
+    parser.add_argument("--resume", type=Path, default=None,
+                        help="resume an existing CSV; every recorded matrix_case is skipped")
+    parser.add_argument("--stop-on-error", action="store_true",
+                        help="stop at the first failed case instead of recording it and continuing")
     args = parser.parse_args()
     if args.threads != 32:
         raise SystemExit("this matrix is fixed to 32 OS threads")
@@ -168,8 +172,13 @@ def main() -> int:
 
     binary = args.build / "rrl_workload_runner"
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-%H%M%S")
-    output = args.output or root / "experiments" / "results" / f"local-ycsb-{stamp}.csv"
-    log_dir = args.log_dir or root / "experiments" / "logs" / f"local-ycsb-{stamp}"
+    if args.resume:
+        output = args.resume if args.resume.is_absolute() else root / args.resume
+        inferred_log = root / "experiments" / "logs" / output.stem
+        log_dir = args.log_dir or inferred_log
+    else:
+        output = args.output or root / "experiments" / "results" / f"local-ycsb-{stamp}.csv"
+        log_dir = args.log_dir or root / "experiments" / "logs" / f"local-ycsb-{stamp}"
     plan = list(cases(args))
     print(f"cases={len(plan)} threads=32 execution_mode=threads coroutines=1")
     print(f"zipf_values={args.zipf_values} hotspot_data={args.hotspot_data_fractions} hotspot_ops={args.hotspot_opn_fractions}")
@@ -210,7 +219,23 @@ def main() -> int:
     }
     campaign_path.write_text(json.dumps(campaign, indent=2) + "\n")
     rows: list[dict[str, str]] = []
+    if args.resume and output.exists():
+        with output.open(newline="") as handle:
+            rows = list(csv.DictReader(handle))
+    recorded_cases = {
+        int(row["matrix_case"]) for row in rows
+        if row.get("matrix_case", "").isdigit()
+    }
+    def save_rows() -> None:
+        fields = list(dict.fromkeys(key for item in rows for key in item))
+        with output.open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
     for number, case in enumerate(plan, 1):
+        if number in recorded_cases:
+            print(f"{number}/{len(plan)} skipped-existing", flush=True)
+            continue
         command = [
             str(binary), "--index", "v2", "--cc", case["cc"], "--workload", case["workload"],
             "--keys", str(args.keys), "--txns", str(args.txns), "--ops", str(args.ops),
@@ -231,28 +256,63 @@ def main() -> int:
             completed = subprocess.run(command, cwd=root, text=True, capture_output=True, check=True)
             row = csv_row(completed.stdout)
         except subprocess.CalledProcessError as error:
-            (log_dir / f"{label}.stdout").write_text(error.stdout or "")
-            (log_dir / f"{label}.stderr").write_text(error.stderr or "")
-            raise RuntimeError(f"case {label} failed; see {log_dir}") from error
-        except Exception:
-            (log_dir / f"{label}.stdout").write_text(getattr(completed, "stdout", "") if "completed" in locals() else "")
-            raise
+            stdout = error.stdout or ""
+            stderr = error.stderr or ""
+            (log_dir / f"{label}.stdout").write_text(stdout)
+            (log_dir / f"{label}.stderr").write_text(stderr)
+            row = {
+                "matrix_status": "failed",
+                "matrix_error": f"exit={error.returncode}: {stderr[-1000:]}",
+            }
+            row.update({"matrix_status": "complete", "matrix_error": "",
+                    "matrix_profile": case["profile"], "matrix_zipf": str(case["zipf"]),
+                        "matrix_hotspot_data_fraction": str(case["hotspot_data_fraction"]),
+                        "matrix_hotspot_opn_fraction": str(case["hotspot_opn_fraction"]),
+                        "matrix_bucket": str(case["bucket"]), "matrix_wait_policy": case["wait_policy"],
+                        "matrix_case": str(number)})
+            rows.append(row)
+            save_rows()
+            print(f"{number}/{len(plan)} FAILED {label}", flush=True)
+            if args.stop_on_error:
+                campaign["status"] = "FAILED"
+                campaign["failed_case"] = label
+                campaign["completed_cases"] = sum(r.get("matrix_status") == "complete" for r in rows)
+                campaign["incomplete_cases"] = sum(r.get("matrix_status") == "failed" for r in rows)
+                campaign_path.write_text(json.dumps(campaign, indent=2) + "\n")
+                raise RuntimeError(f"case {label} failed; see {log_dir}") from error
+            continue
+        except Exception as error:
+            (log_dir / f"{label}.stdout").write_text(getattr(locals().get("completed"), "stdout", ""))
+            row = {
+                "matrix_status": "failed",
+                "matrix_error": f"{type(error).__name__}: {error}",
+                "matrix_profile": case["profile"], "matrix_zipf": str(case["zipf"]),
+                "matrix_hotspot_data_fraction": str(case["hotspot_data_fraction"]),
+                "matrix_hotspot_opn_fraction": str(case["hotspot_opn_fraction"]),
+                "matrix_bucket": str(case["bucket"]), "matrix_wait_policy": case["wait_policy"],
+                "matrix_case": str(number),
+            }
+            rows.append(row)
+            save_rows()
+            print(f"{number}/{len(plan)} FAILED {label}", flush=True)
+            if args.stop_on_error:
+                raise
+            continue
         (log_dir / f"{label}.stdout").write_text(completed.stdout)
         (log_dir / f"{label}.stderr").write_text(completed.stderr)
-        row.update({"matrix_profile": case["profile"], "matrix_zipf": str(case["zipf"]),
+        row.update({"matrix_status": "complete", "matrix_error": "", "matrix_profile": case["profile"], "matrix_zipf": str(case["zipf"]),
                     "matrix_hotspot_data_fraction": str(case["hotspot_data_fraction"]),
                     "matrix_hotspot_opn_fraction": str(case["hotspot_opn_fraction"]),
                     "matrix_bucket": str(case["bucket"]), "matrix_wait_policy": case["wait_policy"],
                     "matrix_case": str(number)})
         rows.append(row)
-        fields = list(dict.fromkeys(key for item in rows for key in item))
-        with output.open("w", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=fields)
-            writer.writeheader()
-            writer.writerows(rows)
+        save_rows()
         print(f"{number}/{len(plan)} {label}", flush=True)
-    campaign["status"] = "COMPLETE"
-    campaign["completed_cases"] = len(rows)
+    campaign["status"] = "COMPLETE_WITH_FAILURES" if any(
+        row.get("matrix_status", "complete") == "failed" for row in rows
+    ) else "COMPLETE"
+    campaign["completed_cases"] = sum(row.get("matrix_status", "complete") == "complete" for row in rows)
+    campaign["incomplete_cases"] = sum(row.get("matrix_status", "complete") == "failed" for row in rows)
     campaign_path.write_text(json.dumps(campaign, indent=2) + "\n")
     print(f"completed={len(rows)} output={output} logs={log_dir}")
     return 0

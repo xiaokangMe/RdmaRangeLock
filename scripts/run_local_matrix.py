@@ -16,16 +16,12 @@ from pathlib import Path
 import subprocess
 
 LOCAL_PROTOCOLS = (
-    "none",
     "record-2pl",
     "gap-lock",
     "next-key",
     "prior-key",
     "hierarchical",
     "exact-range",
-    "precision-lock",
-    "griffin-pl",
-    "citron",
 )
 WAIT_POLICIES = ("no-wait", "wait-die", "wound-wait")
 WORKLOADS = ("ycsb-a", "ycsb-e", "ycsb-e-skew")
@@ -58,7 +54,7 @@ def make_matrix_config() -> dict:
         "protocols": list(LOCAL_PROTOCOLS),
         "wait_policies": list(WAIT_POLICIES),
         "ranges": [8, 32, 128],
-        "buckets": [16, 64, 256],
+        "buckets": [64],
         "default_bucket": 64,
         "request_distribution": "auto",
         "ycsb_unique_keys": 1,

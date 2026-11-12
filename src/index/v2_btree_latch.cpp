@@ -418,9 +418,15 @@ bool BTreeLatch::range_ended(const KeyRangeEnt& range, idx_key_t key) {
 
 std::vector<KeyValue> BTreeLatch::scan_range(const KeyRangeEnt& range) const {
     std::vector<KeyValue> result;
-    if (range.empty() || !range.valid()) return result;
+    scan_range_into(range, result);
+    return result;
+}
+
+void BTreeLatch::scan_range_into(const KeyRangeEnt& range, std::vector<KeyValue>& result) const {
+    result.clear();
+    if (range.empty() || !range.valid()) return;
     std::shared_lock<std::shared_mutex> root_lock(root_guard_);
-    if (root_ == nullptr) return result;
+    if (root_ == nullptr) return;
     Page* page = root_.get();
     std::shared_lock<std::shared_mutex> page_lock(page->latch);
     while (!page->is_leaf) {
@@ -432,11 +438,16 @@ std::vector<KeyValue> BTreeLatch::scan_range(const KeyRangeEnt& range) const {
         page = child;
         page_lock = std::move(child_lock);
     }
+    // Seek the first leaf once; subsequent leaves start at slot zero.
+    std::size_t first = range.has_start ? static_cast<std::size_t>(
+        (range.start_bound == Bound::Closed ? std::lower_bound(page->keys.begin(), page->keys.end(), range.StartKey) :
+         std::upper_bound(page->keys.begin(), page->keys.end(), range.StartKey)) - page->keys.begin()) : 0;
     while (page != nullptr) {
-        for (std::size_t i = 0; i < page->keys.size(); ++i) {
-            if (range_ended(range, page->keys[i])) return result;
+        for (std::size_t i = first; i < page->keys.size(); ++i) {
+            if (range_ended(range, page->keys[i])) return;
             if (range.contains(page->keys[i])) result.push_back({page->keys[i], page->values[i]});
         }
+        first = 0;
         Page* next = page->next;
         if (next == nullptr) break;
         std::shared_lock<std::shared_mutex> next_lock(next->latch);
@@ -444,7 +455,7 @@ std::vector<KeyValue> BTreeLatch::scan_range(const KeyRangeEnt& range) const {
         page = next;
         page_lock = std::move(next_lock);
     }
-    return result;
+    return;
 }
 
 bool BTreeLatch::validate_page(const Page* page, const Page* expected_parent,

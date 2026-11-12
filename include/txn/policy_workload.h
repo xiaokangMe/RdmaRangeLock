@@ -6,6 +6,10 @@ namespace rrl {
 class LocalNativePolicyState;
 enum class PolicyProtocol { Record, Gap, NextKey, Hierarchy, Predicate, None, ExactRange, PriorKey, Precision, Griffin };
 struct PolicyRunConfig {
+    // Local record-only backend; auto keeps generic for unsupported geometry.
+    std::string record_lock_table{"auto"};
+    bool record_latency{true};
+    bool record_statistics{true};
     WaitPolicy wait_policy{WaitPolicy::NoWait};
     PolicyProtocol protocol{PolicyProtocol::Hierarchy};
     std::uint64_t max_attempts{1000}, wait_timeout_ms{5000};
@@ -35,6 +39,7 @@ struct PolicyRunConfig {
     bool index_preloaded{false};
 };
 struct PolicyStats {
+    std::uint64_t record_lock_bytes{0},record_directory_bytes{0},record_state_bytes{0},record_held_bytes{0};
     bool enabled{false};
     std::uint64_t escalation_attempts{0},escalations{0},escalation_failures{0};
     std::uint64_t deescalation_attempts{0},deescalations{0},deescalation_failures{0};

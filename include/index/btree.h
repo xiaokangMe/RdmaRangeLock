@@ -173,6 +173,7 @@ public:
     RC erase(idx_key_t key) override;
     bool lookup(idx_key_t key, void*& value) const override;
     std::vector<KeyValue> scan_range(const KeyRangeEnt& range) const override;
+    void scan_range_into(const KeyRangeEnt&, std::vector<KeyValue>&) const override;
     std::size_t size() const override;
     bool key_neighbors(idx_key_t, IndexKeyNeighbors&) const override;
     bool key_range_into(const KeyRangeEnt&, std::vector<idx_key_t>&) const override;

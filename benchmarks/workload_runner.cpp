@@ -1,4 +1,6 @@
 #include "txn/workload.h"
+#include "txn/record_workload.h"
+#include "lock/record_lock_table.h"
 #include "index/griffin.h"
 #include "index/rolex.h"
 #include "index/rolex_rdma.h"
@@ -138,6 +140,18 @@ void load_config(const std::string& path, WorkloadConfig& config,
         } else if (key == "latency_histogram") {
             if (value.kind != ConfigScalar::String || value.text.empty()) throw std::invalid_argument("latency_histogram: expected nonempty path");
             policy.histogram_path = value.text; measured = true;
+        } else if (key == "record_lock_table") {
+            if(value.kind!=ConfigScalar::String || (value.text!="auto" && value.text!="generic" && value.text!="compact"))
+                throw std::invalid_argument("record_lock_table must be auto, generic or compact");
+            policy.record_lock_table=value.text;measured=true;
+        } else if (key == "record_latency") {
+            if(value.kind!=ConfigScalar::Number || (value.text!="0" && value.text!="1"))
+                throw std::invalid_argument("record_latency must be 0 or 1");
+            policy.record_latency=value.text=="1";measured=true;
+        } else if (key == "record_statistics") {
+            if(value.kind!=ConfigScalar::Number || (value.text!="0" && value.text!="1"))
+                throw std::invalid_argument("record_statistics must be 0 or 1");
+            policy.record_statistics=value.text=="1";measured=true;
         } else if (key == "wait_policy") {
             if (value.kind != ConfigScalar::String) throw std::invalid_argument("wait_policy: expected string");
             policy.wait_policy = parse_wait_policy(value.text); measured = true;
@@ -235,6 +249,8 @@ int run(int argc, char** argv) {
     std::size_t rdma_connections = 0;
     bool csv = false;
     bool bucket_auto = false;
+    bool hot_schedule = false;
+    std::size_t scheduled_hot_key = 0, scheduled_hot_transactions = 0;
     std::string config_path;
     if ((argc - 1) % 2) throw std::invalid_argument("every option requires a value");
     for (int i = 1; i + 1 < argc; i += 2)
@@ -292,6 +308,23 @@ int run(int argc, char** argv) {
             const auto enabled = parse_unsigned(value, option);
             if (enabled > 1) throw std::invalid_argument("native-object-locks must be 0 or 1");
             policy.native_object_locks = enabled != 0; measured = true;
+        }
+        else if (option == "--record-lock-table") {
+            if(value!="auto" && value!="generic" && value!="compact")throw std::invalid_argument("record-lock-table must be auto, generic or compact");
+            policy.record_lock_table=value;measured=true;
+        }
+        else if (option == "--record-latency") {
+            if(value!="0" && value!="1")throw std::invalid_argument("record-latency must be 0 or 1");
+            policy.record_latency=value=="1";measured=true;
+        }
+        else if (option == "--record-statistics") {
+            if(value!="0" && value!="1")throw std::invalid_argument("record-statistics must be 0 or 1");
+            policy.record_statistics=value=="1";measured=true;
+        }
+        else if (option == "--hot-schedule") {
+            const auto enabled=parse_unsigned(value,option);
+            if(enabled>1)throw std::invalid_argument("hot-schedule must be 0 or 1");
+            hot_schedule=enabled!=0;measured=true;
         }
         else if (option == "--wait-policy") { policy.wait_policy = parse_wait_policy(value); measured = true; }
         else if (option == "--lock-budget") { policy.lock_budget = parse_unsigned(value,option); measured = true; }
@@ -382,6 +415,11 @@ int run(int argc, char** argv) {
     if (index_name == "btree_latch_coupling") index_name = "v2";
     if (index_name == "btree_single") index_name = "v1";
     if (cc == "record-level-strict-2pl") cc = "record-2pl";
+    if(cc=="record-2pl" && !measured){policy.max_attempts=1;policy.use_coroutines=false;measured=true;}
+    if(hot_schedule && (cc!="record-2pl" || policy.use_coroutines || config.threads<2 || config.duration_seconds))
+        throw std::invalid_argument("hot-schedule requires finite local record-2pl with at least two OS threads");
+    if(policy.record_lock_table!="auto" && cc!="record-2pl")
+        throw std::invalid_argument("record-lock-table is for local record-2pl only");
     const std::set<std::string> protocols{"none", "record-2pl", "gap-lock", "next-key", "prior-key", "hierarchical", "predicate", "exact-range", "citron", "rdma-citron", "rdma-next-key", "rdma-prior-key", "rdma-hierarchical", "rdma-predicate", "rdma-exact-range", "rdma-record-2pl", "rdma-gap-lock", "precision-lock", "griffin-pl", "rdma-precision-lock", "rdma-griffin-pl"};
     if (index_name != "v1" && index_name != "v2" && index_name != "blink" && index_name != "griffin" && index_name != "rolex" && index_name != "rdma" && index_name != "rolex-rdma") throw std::invalid_argument("unknown index: " + index_name);
     if(index_name=="griffin" && cc!="griffin-pl")
@@ -454,7 +492,36 @@ int run(int argc, char** argv) {
     in_addr address{};
     if (::inet_pton(AF_INET, rdma_host.c_str(), &address) != 1)
         throw std::invalid_argument("rdma-host must be an IPv4 address");
-    const auto trace = WorkloadTrace::generate(config);
+    auto trace = WorkloadTrace::generate(config);
+    if(hot_schedule) {
+        std::unordered_map<idx_key_t,std::size_t> write_frequency;
+        for(const auto& txn:trace.transactions())for(const auto& op:txn.operations)
+            if(op.kind==OperationKind::Update || op.kind==OperationKind::Insert || op.kind==OperationKind::Delete)
+                ++write_frequency[op.key];
+        if(write_frequency.empty())throw std::invalid_argument("hot-schedule requires write operations");
+        for(const auto& entry:write_frequency)
+            if(entry.second>scheduled_hot_transactions) {
+                scheduled_hot_key=entry.first;scheduled_hot_transactions=entry.second;
+            }
+        const auto& original=trace.transactions();
+        std::vector<std::vector<TransactionTrace>> queues(config.threads);
+        std::size_t cold_cursor=1;
+        for(const auto& txn:original) {
+            bool touches_hot=false;
+            for(const auto& op:txn.operations)if(op.key==scheduled_hot_key){touches_hot=true;break;}
+            if(touches_hot)queues[0].push_back(txn);
+            else {
+                const auto worker=1+(cold_cursor++%(config.threads-1));
+                queues[worker].push_back(txn);
+            }
+        }
+        std::vector<TransactionTrace> ordered;ordered.reserve(original.size());
+        std::size_t longest=0;
+        for(const auto& queue:queues)longest=std::max(longest,queue.size());
+        for(std::size_t slot=0;slot<longest;++slot)for(auto& queue:queues)
+            if(slot<queue.size())ordered.push_back(std::move(queue[slot]));
+        trace=WorkloadTrace::from_transactions(config,std::move(ordered));
+    }
     BTreeSingle v1;
     BTreeLatch v2;
     BTreeBlink blink;
@@ -523,13 +590,25 @@ int run(int argc, char** argv) {
     std::size_t active_connections = 0;
     RdmaFailureInfo rdma_failure{};
     std::int64_t rdma_failure_shard = -1;
+    const auto record_contexts=std::min(config.threads*policy.coroutines,trace.transactions().size());
+    const bool compact_supported=cc=="record-2pl" && index_name!="rdma" && index_name!="rolex-rdma" &&
+        policy.coordinator_host.empty() && !policy.txn_state_port && !policy.shared_local_state &&
+        record_contexts && record_contexts<=RecordLockTable::max_contexts;
+    const bool compact_record=compact_supported && policy.record_lock_table!="generic";
+    if(policy.record_lock_table=="compact" && !compact_supported)
+        throw std::invalid_argument("compact records require local data/state and at most 64 active contexts");
+    if((!policy.record_latency || !policy.record_statistics) && !compact_record)
+        throw std::invalid_argument("record metrics controls require compact record execution");
     if (measured) {
         const auto plain = cc.rfind("rdma-",0) == 0 ? cc.substr(5) : cc;
         policy.protocol = plain == "none" ? PolicyProtocol::None : plain == "record-2pl" ? PolicyProtocol::Record : plain == "gap-lock" ? PolicyProtocol::Gap :
             plain == "next-key" ? PolicyProtocol::NextKey : plain == "prior-key" ? PolicyProtocol::PriorKey : plain == "predicate" ? PolicyProtocol::Predicate :
             plain == "exact-range" ? PolicyProtocol::ExactRange : plain == "precision-lock" ? PolicyProtocol::Precision :
             plain == "griffin-pl" ? PolicyProtocol::Griffin : plain == "citron" ? PolicyProtocol::Predicate : PolicyProtocol::Hierarchy;
-        if (cc == "citron" || cc == "rdma-citron") {
+        if(compact_record) {
+            policy.measurement_begin=[&]{snapshot_data();};
+            stats=run_compact_record_workload(*index,trace,policy);
+        } else if (cc == "citron" || cc == "rdma-citron") {
             if (policy.wait_policy != WaitPolicy::NoWait)
                 throw std::invalid_argument("Citron currently supports no-wait plus transaction retry only");
             citron::LockManagerConfig citron_config;
@@ -690,6 +769,7 @@ int run(int argc, char** argv) {
         std::cout << ",citron_lock_calls,citron_grants,citron_aborts,citron_errors,citron_unlock_calls,citron_unlock_failures,citron_rdma_operations,citron_sessions,citron_shared_mapped_to_exclusive";
         std::cout << ",rolex_segments,rolex_leaves,rolex_live_keys,rolex_splits,rolex_removals,rolex_model_exact,rolex_model_corrected,rolex_model_fallbacks,rolex_arena_bytes,rolex_build_ns,rolex_mapping";
         std::cout << ",citron_tree_height,citron_k,citron_m,citron_wait_us,citron_lock_semantics,rolex_epsilon,rolex_segment_keys,rolex_arena_leaves,rolex_hugepages";
+        std::cout << ",record_lock_table,record_lock_bytes,record_directory_bytes,record_state_bytes,record_held_capacity_bytes,record_latency,record_statistics,hot_schedule,scheduled_hot_key,scheduled_hot_transactions";
         std::cout << '\n';
         std::cout << WorkloadTrace::name(config.kind) << ',' << index_name << ',' << cc << ',' << config.threads << ','
                   << stats.transactions << ',' << stats.committed << ',' << stats.aborted << ',' << stats.operations << ','
@@ -726,7 +806,7 @@ int run(int argc, char** argv) {
         std::cout << ',' << rdma_diag.txn_wait_ns;
         if (measured) {
             const auto& m=stats.policy;
-            std::cout << ",2," << wait_policy_name(policy.wait_policy) << ',' << (policy.txn_state_port?"native-rdma-state":policy.coordinator_host.empty()?"native-local-state":"tcp-control+rdma-slots")
+            std::cout << ",2," << wait_policy_name(policy.wait_policy) << ',' << (compact_record?"compact-record-state":policy.txn_state_port?"native-rdma-state":policy.coordinator_host.empty()?"native-local-state":"tcp-control+rdma-slots")
                 << ',' << m.logical_started << ',' << m.unfinished << ',' << m.logical_failed << ',' << m.retries << ',' << m.max_retries
                 << ',' << m.wound_aborts << ',' << m.deadline_aborts << ',' << m.retry_exhausted << ',' << m.completed_retries << ',' << m.unfinished_retries;
             for (const auto* q : {&m.successful_attempt,&m.logical_completion,&m.lock_wait,&m.lock_call,&m.release})
@@ -782,12 +862,23 @@ int run(int argc, char** argv) {
                   << ',' << (citron_run?extra.citron_wait_us:0) << ',' << (citron_run?"exclusive-range-S-as-X":"none")
                   << ',' << (index_name=="rolex"?extra.rolex_epsilon:0) << ',' << (index_name=="rolex"?extra.rolex_segment_keys:0)
                   << ',' << (index_name=="rolex"?extra.rolex_arena_leaves:0) << ',' << (index_name=="rolex"?extra.rolex_hugepages:0);
+        std::cout << ',' << (cc=="record-2pl"?(compact_record?"compact":"generic"):"not-applicable")
+                  << ',' << stats.policy.record_lock_bytes << ',' << stats.policy.record_directory_bytes
+                  << ',' << stats.policy.record_state_bytes << ',' << stats.policy.record_held_bytes
+                  << ',' << (compact_record?(policy.record_latency?1:0):1)
+                  << ',' << (compact_record?(policy.record_statistics?1:0):1)
+                  << ',' << (hot_schedule?1:0) << ',' << scheduled_hot_key << ',' << scheduled_hot_transactions;
         std::cout << '\n';
     } else {
         std::cout<<"active_workers="<<stats.policy.active_workers
                  <<",workers_without_commit="<<stats.policy.workers_without_commit
                  <<",worker_min_committed="<<stats.policy.worker_min_committed
                  <<",worker_max_committed="<<stats.policy.worker_max_committed<<"\n";
+        if(cc=="record-2pl")std::cout<<"record_lock_table="<<(compact_record?"compact":"generic")
+            <<",record_lock_bytes="<<stats.policy.record_lock_bytes
+            <<",record_held_capacity_bytes="<<stats.policy.record_held_bytes
+            <<",record_latency="<<(policy.record_latency?1:0)
+            <<",record_statistics="<<(policy.record_statistics?1:0)<<"\n";
         if(index_name=="griffin")std::cout<<"griffin_queue_batches="<<griffin_diag.queue_batches
             <<",griffin_queue_peak_batches="<<griffin_diag.queue_peak_batches
             <<",griffin_pending_keys="<<griffin_diag.pending_keys

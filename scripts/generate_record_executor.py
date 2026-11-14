@@ -1,5 +1,7 @@
 from pathlib import Path
 
+raise SystemExit("Historical bootstrap only: record_workload.cpp is maintained directly; regeneration would remove subsequent optimizations.")
+
 root = Path(__file__).resolve().parents[1]
 original = (root / 'src/txn/policy_workload.cpp').read_text(encoding='utf-8')
 tail = original[original.index('    try {\n        for(std::size_t w=0;w<os_workers;'):original.index('\nRunStats run_policy_workload(')]

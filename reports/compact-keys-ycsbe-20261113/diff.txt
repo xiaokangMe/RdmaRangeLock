@@ -1,0 +1,435 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 74ef46b..574d25a 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -49,6 +49,11 @@ add_library(rrl_index_blink STATIC src/index/v3_blink_tree.cpp)
+ target_include_directories(rrl_index_blink PUBLIC ${CMAKE_SOURCE_DIR}/include)
+ target_compile_options(rrl_index_blink PRIVATE -Wall -Wextra -Wpedantic)
+ add_library(rrl_txn STATIC src/txn/workload.cpp)
++add_executable(rrl_classic_lock_table_test test/classic_lock_table_test.cpp)
++target_link_libraries(rrl_classic_lock_table_test PRIVATE rrl_txn)
++target_compile_options(rrl_classic_lock_table_test PRIVATE -Wall -Wextra -Wpedantic)
++add_test(NAME rrl_classic_lock_table_test COMMAND rrl_classic_lock_table_test)
++set_tests_properties(rrl_classic_lock_table_test PROPERTIES TIMEOUT 60)
+ target_include_directories(rrl_txn PUBLIC ${CMAKE_SOURCE_DIR}/include)
+ target_compile_options(rrl_txn PRIVATE -Wall -Wextra -Wpedantic)
+ target_link_libraries(rrl_lock PUBLIC rrl_rdma)
+@@ -230,6 +235,8 @@ set_tests_properties(rrl_record_lock_table_test PROPERTIES TIMEOUT 60)
+ if(RRL_PYTHON3)
+   add_test(NAME rrl_compact_record_runner_test COMMAND ${RRL_PYTHON3} ${CMAKE_SOURCE_DIR}/test/compact_record_runner_test.py $<TARGET_FILE:rrl_workload_runner>)
+   set_tests_properties(rrl_compact_record_runner_test PROPERTIES TIMEOUT 120)
++  add_test(NAME rrl_compact_key_runner_test COMMAND ${RRL_PYTHON3} ${CMAKE_SOURCE_DIR}/test/compact_key_runner_test.py $<TARGET_FILE:rrl_workload_runner>)
++  set_tests_properties(rrl_compact_key_runner_test PROPERTIES TIMEOUT 180)
+ endif()
+ 
+ add_executable(rrl_wait_policy_test test/wait_policy_test.cpp)
+diff --git a/benchmarks/workload_runner.cpp b/benchmarks/workload_runner.cpp
+index c3955d7..33237ca 100644
+--- a/benchmarks/workload_runner.cpp
++++ b/benchmarks/workload_runner.cpp
+@@ -144,6 +144,15 @@ void load_config(const std::string& path, WorkloadConfig& config,
+             if(value.kind!=ConfigScalar::String || (value.text!="auto" && value.text!="generic" && value.text!="compact"))
+                 throw std::invalid_argument("record_lock_table must be auto, generic or compact");
+             policy.record_lock_table=value.text;measured=true;
++        } else if (key == "key_lock_table") {
++            if(value.kind!=ConfigScalar::String || (value.text!="auto" && value.text!="generic" && value.text!="compact"))
++                throw std::invalid_argument("key_lock_table must be auto, generic or compact");
++            policy.key_lock_table=value.text;measured=true;
++        } else if (key == "key_latency" || key == "key_statistics") {
++            if(value.kind!=ConfigScalar::Number || (value.text!="0" && value.text!="1"))
++                throw std::invalid_argument(key+" must be 0 or 1");
++            if(key=="key_latency")policy.key_latency=value.text=="1";else policy.key_statistics=value.text=="1";
++            measured=true;
+         } else if (key == "record_latency") {
+             if(value.kind!=ConfigScalar::Number || (value.text!="0" && value.text!="1"))
+                 throw std::invalid_argument("record_latency must be 0 or 1");
+@@ -313,6 +322,15 @@ int run(int argc, char** argv) {
+             if(value!="auto" && value!="generic" && value!="compact")throw std::invalid_argument("record-lock-table must be auto, generic or compact");
+             policy.record_lock_table=value;measured=true;
+         }
++        else if (option == "--key-lock-table") {
++            if(value!="auto" && value!="generic" && value!="compact")throw std::invalid_argument("key-lock-table must be auto, generic or compact");
++            policy.key_lock_table=value;measured=true;
++        }
++        else if (option == "--key-latency" || option == "--key-statistics") {
++            if(value!="0" && value!="1")throw std::invalid_argument(option+" must be 0 or 1");
++            if(option=="--key-latency")policy.key_latency=value=="1";else policy.key_statistics=value=="1";
++            measured=true;
++        }
+         else if (option == "--record-latency") {
+             if(value!="0" && value!="1")throw std::invalid_argument("record-latency must be 0 or 1");
+             policy.record_latency=value=="1";measured=true;
+@@ -416,6 +434,9 @@ int run(int argc, char** argv) {
+     if (index_name == "btree_single") index_name = "v1";
+     if (cc == "record-level-strict-2pl") cc = "record-2pl";
+     if(cc=="record-2pl" && !measured){policy.max_attempts=1;policy.use_coroutines=false;measured=true;}
++    const bool classic_key=cc=="next-key" || cc=="gap-lock" || cc=="prior-key";
++    if(classic_key && !measured){policy.max_attempts=1;policy.use_coroutines=false;measured=true;}
++    if(policy.key_lock_table!="auto" && !classic_key)throw std::invalid_argument("key-lock-table requires local next-key, gap-lock or prior-key");
+     if(hot_schedule && (cc!="record-2pl" || policy.use_coroutines || config.threads<2 || config.duration_seconds))
+         throw std::invalid_argument("hot-schedule requires finite local record-2pl with at least two OS threads");
+     if(policy.record_lock_table!="auto" && cc!="record-2pl")
+@@ -595,10 +616,19 @@ int run(int argc, char** argv) {
+         policy.coordinator_host.empty() && !policy.txn_state_port && !policy.shared_local_state &&
+         record_contexts && record_contexts<=RecordLockTable::max_contexts;
+     const bool compact_record=compact_supported && policy.record_lock_table!="generic";
++    const bool compact_key_supported=classic_key && index_name!="rdma" && index_name!="rolex-rdma" &&
++        policy.coordinator_host.empty() && !policy.txn_state_port && !policy.shared_local_state &&
++        !policy.native_object_locks && !policy.leaf_hierarchy && !policy.dag_hierarchy && !policy.separator_hierarchy &&
++        record_contexts && record_contexts<=RecordLockTable::max_contexts;
++    const bool compact_key=compact_key_supported && policy.key_lock_table!="generic";
++    if(policy.key_lock_table=="compact" && !compact_key_supported)
++        throw std::invalid_argument("compact key locks require local data/state and at most 64 contexts");
+     if(policy.record_lock_table=="compact" && !compact_supported)
+         throw std::invalid_argument("compact records require local data/state and at most 64 active contexts");
+     if((!policy.record_latency || !policy.record_statistics) && !compact_record)
+         throw std::invalid_argument("record metrics controls require compact record execution");
++    if((!policy.key_latency || !policy.key_statistics) && !compact_key)
++        throw std::invalid_argument("key metrics controls require compact key execution");
+     if (measured) {
+         const auto plain = cc.rfind("rdma-",0) == 0 ? cc.substr(5) : cc;
+         policy.protocol = plain == "none" ? PolicyProtocol::None : plain == "record-2pl" ? PolicyProtocol::Record : plain == "gap-lock" ? PolicyProtocol::Gap :
+@@ -608,6 +638,9 @@ int run(int argc, char** argv) {
+         if(compact_record) {
+             policy.measurement_begin=[&]{snapshot_data();};
+             stats=run_compact_record_workload(*index,trace,policy);
++        } else if(compact_key) {
++            policy.measurement_begin=[&]{snapshot_data();};
++            stats=run_compact_key_workload(*index,trace,policy);
+         } else if (cc == "citron" || cc == "rdma-citron") {
+             if (policy.wait_policy != WaitPolicy::NoWait)
+                 throw std::invalid_argument("Citron currently supports no-wait plus transaction retry only");
+@@ -770,6 +803,7 @@ int run(int argc, char** argv) {
+         std::cout << ",rolex_segments,rolex_leaves,rolex_live_keys,rolex_splits,rolex_removals,rolex_model_exact,rolex_model_corrected,rolex_model_fallbacks,rolex_arena_bytes,rolex_build_ns,rolex_mapping";
+         std::cout << ",citron_tree_height,citron_k,citron_m,citron_wait_us,citron_lock_semantics,rolex_epsilon,rolex_segment_keys,rolex_arena_leaves,rolex_hugepages";
+         std::cout << ",record_lock_table,record_lock_bytes,record_directory_bytes,record_state_bytes,record_held_capacity_bytes,record_latency,record_statistics,hot_schedule,scheduled_hot_key,scheduled_hot_transactions";
++        std::cout << ",key_lock_table,key_lock_bytes,key_directory_bytes,key_state_bytes,key_held_capacity_bytes,key_latency,key_statistics";
+         std::cout << '\n';
+         std::cout << WorkloadTrace::name(config.kind) << ',' << index_name << ',' << cc << ',' << config.threads << ','
+                   << stats.transactions << ',' << stats.committed << ',' << stats.aborted << ',' << stats.operations << ','
+@@ -806,7 +840,7 @@ int run(int argc, char** argv) {
+         std::cout << ',' << rdma_diag.txn_wait_ns;
+         if (measured) {
+             const auto& m=stats.policy;
+-            std::cout << ",2," << wait_policy_name(policy.wait_policy) << ',' << (compact_record?"compact-record-state":policy.txn_state_port?"native-rdma-state":policy.coordinator_host.empty()?"native-local-state":"tcp-control+rdma-slots")
++            std::cout << ",2," << wait_policy_name(policy.wait_policy) << ',' << (compact_key?"compact-key-state":compact_record?"compact-record-state":policy.txn_state_port?"native-rdma-state":policy.coordinator_host.empty()?"native-local-state":"tcp-control+rdma-slots")
+                 << ',' << m.logical_started << ',' << m.unfinished << ',' << m.logical_failed << ',' << m.retries << ',' << m.max_retries
+                 << ',' << m.wound_aborts << ',' << m.deadline_aborts << ',' << m.retry_exhausted << ',' << m.completed_retries << ',' << m.unfinished_retries;
+             for (const auto* q : {&m.successful_attempt,&m.logical_completion,&m.lock_wait,&m.lock_call,&m.release})
+@@ -863,13 +897,24 @@ int run(int argc, char** argv) {
+                   << ',' << (index_name=="rolex"?extra.rolex_epsilon:0) << ',' << (index_name=="rolex"?extra.rolex_segment_keys:0)
+                   << ',' << (index_name=="rolex"?extra.rolex_arena_leaves:0) << ',' << (index_name=="rolex"?extra.rolex_hugepages:0);
+         std::cout << ',' << (cc=="record-2pl"?(compact_record?"compact":"generic"):"not-applicable")
+-                  << ',' << stats.policy.record_lock_bytes << ',' << stats.policy.record_directory_bytes
+-                  << ',' << stats.policy.record_state_bytes << ',' << stats.policy.record_held_bytes
++                  << ',' << (compact_record?stats.policy.record_lock_bytes:0) << ',' << (compact_record?stats.policy.record_directory_bytes:0)
++                  << ',' << (compact_record?stats.policy.record_state_bytes:0) << ',' << (compact_record?stats.policy.record_held_bytes:0)
+                   << ',' << (compact_record?(policy.record_latency?1:0):1)
+                   << ',' << (compact_record?(policy.record_statistics?1:0):1)
+                   << ',' << (hot_schedule?1:0) << ',' << scheduled_hot_key << ',' << scheduled_hot_transactions;
++        std::cout << ',' << (classic_key?(compact_key?"compact":"generic"):"not-applicable")
++                  << ',' << (compact_key?stats.policy.record_lock_bytes:0)
++                  << ',' << (compact_key?stats.policy.record_directory_bytes:0)
++                  << ',' << (compact_key?stats.policy.record_state_bytes:0)
++                  << ',' << (compact_key?stats.policy.record_held_bytes:0)
++                  << ',' << (compact_key?(policy.key_latency?1:0):1) << ',' << (compact_key?(policy.key_statistics?1:0):1);
+         std::cout << '\n';
+     } else {
++        if(classic_key)std::cout<<"key_lock_table="<<(compact_key?"compact":"generic")
++            <<",key_lock_bytes="<<(compact_key?stats.policy.record_lock_bytes:0)
++            <<",key_directory_bytes="<<(compact_key?stats.policy.record_directory_bytes:0)
++            <<",key_held_capacity_bytes="<<(compact_key?stats.policy.record_held_bytes:0)
++            <<",key_latency="<<(policy.key_latency?1:0)<<",key_statistics="<<(policy.key_statistics?1:0)<<"\n";
+         std::cout<<"active_workers="<<stats.policy.active_workers
+                  <<",workers_without_commit="<<stats.policy.workers_without_commit
+                  <<",worker_min_committed="<<stats.policy.worker_min_committed
+diff --git a/include/lock/record_lock_table.h b/include/lock/record_lock_table.h
+index 69fcbb1..7b9cbf4 100644
+--- a/include/lock/record_lock_table.h
++++ b/include/lock/record_lock_table.h
+@@ -68,6 +68,13 @@ public:
+         Client& operator=(const Client&) = delete;
+         ~Client() { if (id_ && table_.healthy()) abort(); }
+ 
++        // Only for an authority used exclusively with NoWait: age is never
++        // inspected, while owner identity still uses the local generation.
++        PolicyReply begin_unordered(std::uint64_t budget_ns) {
++            age_=1;
++            return begin(1,budget_ns);
++        }
++
+         PolicyReply begin(std::uint64_t age, std::uint64_t budget_ns) {
+             if (id_ || !held_.empty() || !table_.healthy() || !budget_ns || budget_ns > 600000000000ULL ||
+                 (age && age != age_)) return {};
+@@ -134,12 +141,10 @@ public:
+                         }
+                         return reply(TxnResult::Ok);
+                     }
+-                    if constexpr (Policy != WaitPolicy::NoWait) {
+-                        if (++collisions == 32) {
+-                            const auto status = check();
+-                            if (status != TxnResult::Ok) return reply(status);
+-                            collisions = 0;
+-                        }
++                    if (++collisions == 32) {
++                        const auto status = check();
++                        if (status != TxnResult::Ok) return reply(status);
++                        collisions = 0;
+                     }
+                     continue;
+                 }
+diff --git a/include/txn/policy_workload.h b/include/txn/policy_workload.h
+index fc647d6..cc5d97d 100644
+--- a/include/txn/policy_workload.h
++++ b/include/txn/policy_workload.h
+@@ -8,6 +8,8 @@ enum class PolicyProtocol { Record, Gap, NextKey, Hierarchy, Predicate, None, Ex
+ struct PolicyRunConfig {
+     // Local record-only backend; auto keeps generic for unsupported geometry.
+     std::string record_lock_table{"auto"};
++    std::string key_lock_table{"auto"};
++    bool key_latency{true},key_statistics{true};
+     bool record_latency{true};
+     bool record_statistics{true};
+     WaitPolicy wait_policy{WaitPolicy::NoWait};
+diff --git a/include/txn/record_workload.h b/include/txn/record_workload.h
+index d001c80..5a27799 100644
+--- a/include/txn/record_workload.h
++++ b/include/txn/record_workload.h
+@@ -3,4 +3,5 @@
+ namespace rrl {
+ // Standalone record-only executor; shared trace/index/metrics, specialized locks.
+ RunStats run_compact_record_workload(BTreeIndex&, const WorkloadTrace&, const PolicyRunConfig&);
++RunStats run_compact_key_workload(BTreeIndex&, const WorkloadTrace&, const PolicyRunConfig&);
+ }
+diff --git a/scripts/generate_record_executor.py b/scripts/generate_record_executor.py
+index 813d301..3774f4b 100644
+--- a/scripts/generate_record_executor.py
++++ b/scripts/generate_record_executor.py
+@@ -1,5 +1,7 @@
+ from pathlib import Path
+ 
++raise SystemExit("Historical bootstrap only: record_workload.cpp is maintained directly; regeneration would remove subsequent optimizations.")
++
+ root = Path(__file__).resolve().parents[1]
+ original = (root / 'src/txn/policy_workload.cpp').read_text(encoding='utf-8')
+ tail = original[original.index('    try {\n        for(std::size_t w=0;w<os_workers;'):original.index('\nRunStats run_policy_workload(')]
+diff --git a/src/txn/record_workload.cpp b/src/txn/record_workload.cpp
+index 7d58ff5..08542b2 100644
+--- a/src/txn/record_workload.cpp
++++ b/src/txn/record_workload.cpp
+@@ -1,5 +1,7 @@
+ #include "txn/record_workload.h"
+ #include "lock/record_lock_table.h"
++#include "lock/classic_lock_table.h"
++#include "key_range_plan.h"
+ #include "txn/coroutine.h"
+ #include <atomic>
+ #include <condition_variable>
+@@ -7,6 +9,7 @@
+ #include <mutex>
+ #include <new>
+ #include <thread>
++#include <type_traits>
+ 
+ namespace rrl {
+ namespace {
+@@ -17,12 +20,12 @@ struct Worker {
+     std::unique_ptr<LatencyHistogram> attempt,logical,wait,call,release;
+ };
+ 
+-template<WaitPolicy Policy,bool Profile,bool Statistics>
++template<WaitPolicy Policy,bool Profile,bool Statistics,PolicyProtocol Protocol=PolicyProtocol::Record>
+ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const PolicyRunConfig& cfg) {
+     const auto total=trace.transactions().size();
+     if(!total)return {};
+     const auto worker_threads=trace.config().threads;
+-    if(cfg.protocol!=PolicyProtocol::Record || !worker_threads || !cfg.coroutines ||
++    if(cfg.protocol!=Protocol || !worker_threads || !cfg.coroutines ||
+        cfg.coroutines>4096 || worker_threads>4096/cfg.coroutines ||
+        !cfg.max_attempts || !cfg.wait_timeout_ms || cfg.wait_timeout_ms>600000 || !cfg.lock_budget ||
+        cfg.coroutine_stack_bytes<65536 || cfg.coroutine_stack_bytes>16777216 || cfg.warmup_seconds>600000 ||
+@@ -46,11 +49,37 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
+     }
+     // Resource registration/preallocation is outside the measurement, like
+     // trace generation and seed loading. Missing reads also have stable IDs.
+-    RecordLockTable table(trace.config().key_count,std::move(sparse),count);
++    std::unique_ptr<ClassicLockTable> classic;
++    std::unique_ptr<RecordLockTable> records;
++    if constexpr(Protocol==PolicyProtocol::Record) {
++        records=std::make_unique<RecordLockTable>(trace.config().key_count,std::move(sparse),count);
++    } else {
++        std::vector<idx_key_t> coordinates;
++        coordinates.reserve(trace.config().key_count);
++        for(std::size_t k=0;k<trace.config().key_count;++k)coordinates.push_back(k);
++        // Include preloaded resources as well as all keys the benchmark admits.
++        // This is a fixed-key-universe specialization, not conflict prediction.
++        if(index.preloaded() || cfg.index_preloaded) {
++            std::vector<idx_key_t> loaded;
++            if(!index.key_range_into(KeyRangeEnt::unbounded(),loaded))throw std::invalid_argument("classic index has no key directory");
++            coordinates.insert(coordinates.end(),loaded.begin(),loaded.end());
++        }
++        for(const auto& txn:trace.transactions())for(const auto& op:txn.operations) {
++            coordinates.push_back(op.key);
++            if(op.kind==OperationKind::RangeRead)coordinates.push_back(op.end_key);
++        }
++        classic=std::make_unique<ClassicLockTable>(std::move(coordinates),count,Protocol);
++    }
++    RecordLockTable& table=classic?classic->authority():*records;
+     std::size_t held_budget=0;
+     if(maxops && trace.config().range_length+1 > SIZE_MAX/maxops)held_budget=cfg.lock_budget;
+     else held_budget=std::min<std::size_t>(cfg.lock_budget,maxops*(trace.config().range_length+1));
+     held_budget=std::max<std::size_t>(held_budget,1);
++    if constexpr(Protocol!=PolicyProtocol::Record) {
++        // An interval includes point and gap atoms; long sparse gaps can span
++        // more coordinates than scan rows. Reserve up to the explicit budget.
++        held_budget=std::min<std::size_t>(cfg.lock_budget,table.lock_bytes()/8);
++    }
+     std::vector<std::unique_ptr<RecordLockTable::Client>> clients;
+     for(std::size_t w=0;w<count;++w)clients.emplace_back(new RecordLockTable::Client(table,w,held_budget));
+     std::vector<Worker> parts(count);
+@@ -61,9 +90,16 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
+     }
+     std::vector<std::vector<IndexMutation>> writes(count);
+     std::vector<std::vector<KeyValue>> scans(count),rechecks(count);
++    std::vector<detail::KeyObservation> before(count),after(count);
++    std::vector<std::vector<detail::KeyRequest>> key_plans(count);
+     for(auto& v:writes)v.reserve(maxops);
+     for(auto& v:scans)v.reserve(trace.config().range_length);
+     for(auto& v:rechecks)v.reserve(trace.config().range_length);
++    if constexpr(Protocol!=PolicyProtocol::Record)for(std::size_t w=0;w<count;++w) {
++        before[w].keys.reserve(trace.config().range_length);
++        after[w].keys.reserve(trace.config().range_length);
++        key_plans[w].reserve(2*trace.config().range_length+8);
++    }
+     std::atomic<bool> stopped{false};
+     Clock::time_point start,deadline;
+     const bool warmup=cfg.warmup_seconds!=0;
+@@ -102,7 +138,13 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
+                         if(attempt){++m.retries;++retries;}
+                         auto budget=cfg.wait_timeout_ms*1000000ULL;
+                         if(timed)budget=std::min<std::uint64_t>(budget,ns(deadline-attempt_start));
+-                        const auto begun=client.begin(age,budget);
++                        // No-wait never compares transaction ages. Avoid the
++                        // shared age cache line in the specialized key path.
++                        const auto begun=[&] {
++                            if constexpr(Protocol!=PolicyProtocol::Record && Policy==WaitPolicy::NoWait)
++                                return client.begin_unordered(budget);
++                            else return client.begin(age,budget);
++                        }();
+                         if(begun.result!=TxnResult::Ok){++s.lock_errors;++s.failed_transactions;hard=true;stopped=true;break;}
+                         age=begun.age;active_attempt=true;
+                         const auto attempt_deadline=std::min(client.deadline(),deadline);
+@@ -132,6 +174,83 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
+                                 outcome=client.check();if(outcome!=TxnResult::Ok)break;
+                             }
+                             if constexpr(Statistics)++s.operations;
++                            if constexpr(Protocol!=PolicyProtocol::Record) {
++                                if(!detail::observe_keys(index,op,before[worker])) {outcome=TxnResult::Conflict;break;}
++                                auto& plan=key_plans[worker];
++                                if constexpr(Protocol==PolicyProtocol::NextKey || Protocol==PolicyProtocol::PriorKey) {
++                                    if(op.kind==OperationKind::RangeRead) {
++                                        // All scan units are adjacent. Build their union
++                                        // directly, without one request per physical row.
++                                        plan.clear();
++                                        if(op.key<op.end_key) {
++                                            const auto& n=before[worker].lower;const auto& u=before[worker].upper;
++                                            KeyRangeEnt span;
++                                            span.has_start=n.has_predecessor;span.StartKey=n.predecessor;
++                                            span.has_end=u.present || u.has_successor;
++                                            span.EndKey=u.present?op.end_key:u.successor;
++                                            span.start_bound=Protocol==PolicyProtocol::NextKey?Bound::Open:Bound::Closed;
++                                            span.end_bound=Protocol==PolicyProtocol::NextKey?Bound::Closed:Bound::Open;
++                                            if constexpr(Protocol==PolicyProtocol::PriorKey)
++                                                if(n.present){span.has_start=true;span.StartKey=op.key;}
++                                            if(span.valid())plan.push_back({LockMode::S,span,
++                                                Protocol==PolicyProtocol::NextKey?LockKind::NextKey:LockKind::PriorKey});
++                                        }
++                                    } else detail::key_plan(op,before[worker],Protocol,plan);
++                                } else detail::key_plan(op,before[worker],Protocol,plan);
++                                for(std::size_t request=0;request<plan.size();) {
++                                    auto range=plan[request].range;
++                                    const auto mode=plan[request].mode;const auto kind=plan[request].kind;
++                                    ++request;
++                                    if constexpr(Protocol!=PolicyProtocol::Gap) {
++                                        // Adjacent equal-mode intervals have identical union;
++                                        // take each atomic cell once for a complete scan.
++                                        while(request<plan.size() && plan[request].mode==mode && plan[request].kind==kind &&
++                                              range.has_end && plan[request].range.has_start &&
++                                              range.EndKey==plan[request].range.StartKey &&
++                                              (range.end_bound==Bound::Closed || plan[request].range.start_bound==Bound::Closed)) {
++                                            range.has_end=plan[request].range.has_end;
++                                            range.EndKey=plan[request].range.EndKey;range.end_bound=plan[request].range.end_bound;++request;
++                                        }
++                                    }
++                                    if constexpr(Statistics)++s.lock_acquires;
++                                    const auto r=classic->acquire<Policy>(client,mode,range,kind);outcome=r.result;
++                                    if constexpr(Profile)if(r.wait_ns)p.wait->add(r.wait_ns);
++                                    if(outcome!=TxnResult::Ok)break;
++                                }
++                                if constexpr(Profile)p.call->add(ns(Clock::now()-call_start));
++                                if(outcome!=TxnResult::Ok)break;
++                                if(!detail::observe_keys(index,op,after[worker]) ||
++                                   !detail::same_observation(before[worker],after[worker],op.kind==OperationKind::RangeRead)) {
++                                    outcome=TxnResult::Conflict;break;
++                                }
++                                if(op.kind==OperationKind::RangeRead) {
++                                    if constexpr(Statistics)++s.range_reads;
++                                    if(op.end_key<=op.key)continue;
++                                    const auto range=KeyRangeEnt::half_open(op.key,op.end_key);
++                                    auto& rows=scans[worker];index.scan_range_into(range,rows);
++                                    if constexpr(Statistics)s.rows_scanned+=rows.size();
++                                    for(const auto& row:rows)account_value(row.key,static_cast<const std::uint64_t*>(row.value));
++                                    for(const auto& own:pending) {
++                                        if(own.remove || own_write(own.key)!=&own || !range.contains(own.key))continue;
++                                        const auto it=std::lower_bound(rows.begin(),rows.end(),own.key,
++                                            [](const KeyValue& row,idx_key_t key){return row.key<key;});
++                                        if(it==rows.end() || it->key!=own.key)account_value(own.key,nullptr);
++                                    }
++                                } else if(op.kind==OperationKind::Read) {
++                                    if constexpr(Statistics)++s.reads;
++                                    void* value=nullptr;
++                                    if(own_write(op.key))account_value(op.key,nullptr);
++                                    else if(index.lookup(op.key,value))account_value(op.key,static_cast<const std::uint64_t*>(value));
++                                } else {
++                                    if constexpr(Statistics) {
++                                        if(op.kind==OperationKind::Update)++s.updates;
++                                        else if(op.kind==OperationKind::Insert)++s.inserts;
++                                        else ++s.deletes;
++                                    }
++                                    pending.push_back({op.key,&op.value,op.kind==OperationKind::Delete});
++                                }
++                                continue;
++                            }
+                             if(op.kind==OperationKind::RangeRead) {
+                                 if constexpr(Statistics)++s.range_reads;
+                                 if(op.end_key<=op.key)continue;
+@@ -277,6 +396,7 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
+     const auto elapsed = ns(Clock::now()-start);
+     RunStats result;auto& pm=result.policy;pm.enabled=true;
+     pm.record_lock_bytes=table.lock_bytes();pm.record_directory_bytes=table.directory_bytes();
++    if(classic)pm.record_directory_bytes+=classic->directory_bytes();
+     pm.record_state_bytes=table.state_bytes();
+     for(const auto& client:clients)pm.record_held_bytes+=client->held_bytes();
+     if(!table.empty() && table.healthy())++result.lock_release_failures;
+@@ -346,4 +466,21 @@ RunStats run_compact_record_workload(BTreeIndex& index,const WorkloadTrace& trac
+ #undef RUN
+     throw std::invalid_argument("invalid record wait policy");
+ }
++RunStats run_compact_key_workload(BTreeIndex& index,const WorkloadTrace& trace,const PolicyRunConfig& cfg) {
++#define RUN_KEY(W,P) return cfg.key_latency ? (cfg.key_statistics ? run_record_impl<W,true,true,P>(index,trace,cfg) : run_record_impl<W,true,false,P>(index,trace,cfg)) : \
++    (cfg.key_statistics ? run_record_impl<W,false,true,P>(index,trace,cfg) : run_record_impl<W,false,false,P>(index,trace,cfg))
++#define CASE(P) case P: switch(cfg.wait_policy) { \
++    case WaitPolicy::NoWait:RUN_KEY(WaitPolicy::NoWait,P); \
++    case WaitPolicy::WaitDie:RUN_KEY(WaitPolicy::WaitDie,P); \
++    case WaitPolicy::WoundWait:RUN_KEY(WaitPolicy::WoundWait,P); } break
++    switch(cfg.protocol) {
++        CASE(PolicyProtocol::NextKey);
++        CASE(PolicyProtocol::Gap);
++        CASE(PolicyProtocol::PriorKey);
++        default:break;
++    }
++#undef CASE
++#undef RUN_KEY
++    throw std::invalid_argument("invalid compact key protocol/policy");
++}
+ } // namespace rrl

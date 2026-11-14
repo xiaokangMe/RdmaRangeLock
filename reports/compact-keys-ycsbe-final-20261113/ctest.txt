@@ -1,0 +1,47 @@
+[OUTPUT] 
+Internal ctest changing into directory: /home/dell/RdmaRangeLock-record2pl-20261112/build-record
+
+[HANDLER_OUTPUT] 
+Test project /home/dell/RdmaRangeLock-record2pl-20261112/build-record
+
+      Start  1: rrl_classic_lock_table_test
+ 1/17 Test  #1: rrl_classic_lock_table_test ......   Passed    0.03 sec
+      Start  3: rrl_csv_schema_test
+ 2/17 Test  #3: rrl_csv_schema_test ..............   Passed    0.03 sec
+      Start  6: rrl_v2_btree_latch_test
+ 3/17 Test  #6: rrl_v2_btree_latch_test ..........   Passed    0.03 sec
+      Start  7: rrl_v2_btree_stress_test
+ 4/17 Test  #7: rrl_v2_btree_stress_test .........   Passed    2.01 sec
+      Start 11: rrl_v4_gap_lock_test
+ 5/17 Test #11: rrl_v4_gap_lock_test .............   Passed    0.00 sec
+      Start 12: rrl_v5_next_key_test
+ 6/17 Test #12: rrl_v5_next_key_test .............   Passed    0.00 sec
+      Start 23: rrl_runner_config_test
+ 7/17 Test #23: rrl_runner_config_test ...........   Passed    0.30 sec
+      Start 32: rrl_record_lock_table_test
+ 8/17 Test #32: rrl_record_lock_table_test .......   Passed    1.48 sec
+      Start 33: rrl_compact_record_runner_test
+ 9/17 Test #33: rrl_compact_record_runner_test ...   Passed    2.27 sec
+      Start 34: rrl_compact_key_runner_test
+10/17 Test #34: rrl_compact_key_runner_test ......   Passed   10.24 sec
+      Start 35: rrl_wait_policy_test
+11/17 Test #35: rrl_wait_policy_test .............   Passed    0.07 sec
+      Start 38: rrl_policy_runner_test
+12/17 Test #38: rrl_policy_runner_test ...........   Passed    0.34 sec
+      Start 41: rrl_policy_own_write_test
+13/17 Test #41: rrl_policy_own_write_test ........   Passed    0.28 sec
+      Start 45: rrl_runtime_warmup_test
+14/17 Test #45: rrl_runtime_warmup_test ..........   Passed    4.01 sec
+      Start 53: rrl_policy_scan_batch_test
+15/17 Test #53: rrl_policy_scan_batch_test .......   Passed    0.01 sec
+      Start 56: rrl_key_neighbors_test
+16/17 Test #56: rrl_key_neighbors_test ...........   Passed    0.01 sec
+      Start 60: rrl_ycsb_e_skew_test
+17/17 Test #60: rrl_ycsb_e_skew_test .............***Skipped   0.14 sec
+
+100% tests passed, 0 tests failed out of 17
+
+Total Test time (real) =  21.28 sec
+
+The following tests did not run:
+	 60 - rrl_ycsb_e_skew_test (Skipped)

@@ -1,5 +1,10 @@
 #include "txn/record_workload.h"
 #include "lock/record_lock_table.h"
+#include "lock/classic_lock_table.h"
+#include "lock/hierarchy_lock_table.h"
+#include "compact_hierarchy_plan.h"
+#include "compact_exact_plan.h"
+#include "key_range_plan.h"
 #include "txn/coroutine.h"
 #include <atomic>
 #include <condition_variable>
@@ -7,6 +12,7 @@
 #include <mutex>
 #include <new>
 #include <thread>
+#include <type_traits>
 
 namespace rrl {
 namespace {
@@ -17,12 +23,12 @@ struct Worker {
     std::unique_ptr<LatencyHistogram> attempt,logical,wait,call,release;
 };
 
-template<WaitPolicy Policy,bool Profile,bool Statistics>
+template<WaitPolicy Policy,bool Profile,bool Statistics,PolicyProtocol Protocol=PolicyProtocol::Record>
 RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const PolicyRunConfig& cfg) {
     const auto total=trace.transactions().size();
     if(!total)return {};
     const auto worker_threads=trace.config().threads;
-    if(cfg.protocol!=PolicyProtocol::Record || !worker_threads || !cfg.coroutines ||
+    if(cfg.protocol!=Protocol || !worker_threads || !cfg.coroutines ||
        cfg.coroutines>4096 || worker_threads>4096/cfg.coroutines ||
        !cfg.max_attempts || !cfg.wait_timeout_ms || cfg.wait_timeout_ms>600000 || !cfg.lock_budget ||
        cfg.coroutine_stack_bytes<65536 || cfg.coroutine_stack_bytes>16777216 || cfg.warmup_seconds>600000 ||
@@ -34,6 +40,8 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
     if(!Profile && !cfg.histogram_path.empty())throw std::invalid_argument("record latency disabled with histogram output");
     const auto count=std::min(worker_threads*cfg.coroutines,total);
     const auto os_workers=std::min(worker_threads,count);
+    if constexpr(Protocol==PolicyProtocol::ExactRange)
+        if(count>63)throw std::invalid_argument("compact exact-range requires at most 63 contexts for exact shared compatibility");
     if(count>RecordLockTable::max_contexts)throw std::invalid_argument("compact record table requires at most 64 contexts");
     std::unordered_map<idx_key_t,std::uint64_t> seed;
     if(!index.preloaded() && !cfg.index_preloaded && !seed_index(index,trace,seed)){RunStats s;s.index_errors=1;return s;}
@@ -46,13 +54,55 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
     }
     // Resource registration/preallocation is outside the measurement, like
     // trace generation and seed loading. Missing reads also have stable IDs.
-    RecordLockTable table(trace.config().key_count,std::move(sparse),count);
+    std::unique_ptr<ClassicLockTable> classic;
+    std::unique_ptr<RecordLockTable> records;
+    std::unique_ptr<HierarchyLockTable> hierarchy;
+    std::unique_ptr<detail::CompactHierarchyPlans> hierarchy_plans;
+    std::unique_ptr<detail::CompactExactPlans> exact_plans;
+    if constexpr(Protocol==PolicyProtocol::Hierarchy) {
+        hierarchy_plans=std::make_unique<detail::CompactHierarchyPlans>(trace,cfg.hierarchy_implicit_root);
+        hierarchy=std::make_unique<HierarchyLockTable>(hierarchy_plans->nodes,count,Policy,cfg.hierarchy_padded);
+    } else if constexpr(Protocol==PolicyProtocol::ExactRange) {
+        exact_plans=std::make_unique<detail::CompactExactPlans>(trace);
+        records=std::make_unique<RecordLockTable>(exact_plans->nodes,std::vector<idx_key_t>{},count);
+    } else if constexpr(Protocol==PolicyProtocol::Record) {
+        records=std::make_unique<RecordLockTable>(trace.config().key_count,std::move(sparse),count);
+    } else {
+        std::vector<idx_key_t> coordinates;
+        coordinates.reserve(trace.config().key_count);
+        for(std::size_t k=0;k<trace.config().key_count;++k)coordinates.push_back(k);
+        // Include preloaded resources as well as all keys the benchmark admits.
+        // This is a fixed-key-universe specialization, not conflict prediction.
+        if(index.preloaded() || cfg.index_preloaded) {
+            std::vector<idx_key_t> loaded;
+            if(!index.key_range_into(KeyRangeEnt::unbounded(),loaded))throw std::invalid_argument("classic index has no key directory");
+            coordinates.insert(coordinates.end(),loaded.begin(),loaded.end());
+        }
+        for(const auto& txn:trace.transactions())for(const auto& op:txn.operations) {
+            coordinates.push_back(op.key);
+            if(op.kind==OperationKind::RangeRead)coordinates.push_back(op.end_key);
+        }
+        classic=std::make_unique<ClassicLockTable>(std::move(coordinates),count,Protocol);
+    }
+    using Authority=std::conditional_t<Protocol==PolicyProtocol::Hierarchy,HierarchyLockTable,RecordLockTable>;
+    using Client=typename Authority::Client;
+    Authority& table=[&]()->Authority& {
+        if constexpr(Protocol==PolicyProtocol::Hierarchy)return *hierarchy;
+        else return classic?classic->authority():*records;
+    }();
     std::size_t held_budget=0;
     if(maxops && trace.config().range_length+1 > SIZE_MAX/maxops)held_budget=cfg.lock_budget;
     else held_budget=std::min<std::size_t>(cfg.lock_budget,maxops*(trace.config().range_length+1));
     held_budget=std::max<std::size_t>(held_budget,1);
-    std::vector<std::unique_ptr<RecordLockTable::Client>> clients;
-    for(std::size_t w=0;w<count;++w)clients.emplace_back(new RecordLockTable::Client(table,w,held_budget));
+    if constexpr(Protocol!=PolicyProtocol::Record) {
+        // An interval includes point and gap atoms; long sparse gaps can span
+        // more coordinates than scan rows. Reserve up to the explicit budget.
+        held_budget=std::min<std::size_t>(cfg.lock_budget,table.lock_bytes()/8);
+    }
+    if constexpr(Protocol==PolicyProtocol::Hierarchy)held_budget=std::min(cfg.lock_budget,hierarchy_plans->max_locks);
+    if constexpr(Protocol==PolicyProtocol::ExactRange)held_budget=std::min(cfg.lock_budget,exact_plans->max_locks);
+    std::vector<std::unique_ptr<Client>> clients;
+    for(std::size_t w=0;w<count;++w)clients.emplace_back(new Client(table,w,held_budget));
     std::vector<Worker> parts(count);
     if constexpr(Profile)for(auto& part:parts) {
         part.attempt=std::make_unique<LatencyHistogram>();part.logical=std::make_unique<LatencyHistogram>();
@@ -61,9 +111,16 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
     }
     std::vector<std::vector<IndexMutation>> writes(count);
     std::vector<std::vector<KeyValue>> scans(count),rechecks(count);
+    std::vector<detail::KeyObservation> before(count),after(count);
+    std::vector<std::vector<detail::KeyRequest>> key_plans(count);
     for(auto& v:writes)v.reserve(maxops);
     for(auto& v:scans)v.reserve(trace.config().range_length);
     for(auto& v:rechecks)v.reserve(trace.config().range_length);
+    if constexpr(Protocol!=PolicyProtocol::Record && Protocol!=PolicyProtocol::Hierarchy && Protocol!=PolicyProtocol::ExactRange)for(std::size_t w=0;w<count;++w) {
+        before[w].keys.reserve(trace.config().range_length);
+        after[w].keys.reserve(trace.config().range_length);
+        key_plans[w].reserve(2*trace.config().range_length+8);
+    }
     std::atomic<bool> stopped{false};
     Clock::time_point start,deadline;
     const bool warmup=cfg.warmup_seconds!=0;
@@ -102,7 +159,13 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
                         if(attempt){++m.retries;++retries;}
                         auto budget=cfg.wait_timeout_ms*1000000ULL;
                         if(timed)budget=std::min<std::uint64_t>(budget,ns(deadline-attempt_start));
-                        const auto begun=client.begin(age,budget);
+                        // No-wait never compares transaction ages. Avoid the
+                        // shared age cache line in the specialized key path.
+                        const auto begun=[&] {
+                            if constexpr(Protocol!=PolicyProtocol::Record && Policy==WaitPolicy::NoWait)
+                                return client.begin_unordered(budget);
+                            else return client.begin(age,budget);
+                        }();
                         if(begun.result!=TxnResult::Ok){++s.lock_errors;++s.failed_transactions;hard=true;stopped=true;break;}
                         age=begun.age;active_attempt=true;
                         const auto attempt_deadline=std::min(client.deadline(),deadline);
@@ -120,18 +183,153 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
                             if constexpr(Statistics)++s.lock_acquires;
                             auto* record=table.locate(key);
                             if(!record){outcome=TxnResult::Error;return false;}
-                            const auto reply=client.acquire<Policy>(*record,mode);
+                            const auto reply=client.template acquire<Policy>(*record,mode);
                             outcome=reply.result;
                             if constexpr(Profile)if(reply.wait_ns)p.wait->add(reply.wait_ns);
                             return outcome==TxnResult::Ok;
                         };
+                        if constexpr(Protocol==PolicyProtocol::Hierarchy) {
+                            Clock::time_point lock_start;if constexpr(Profile)lock_start=Clock::now();unsigned acquired=0;
+                            for(const auto& request:hierarchy_plans->plans[i%total]) {
+                                if((acquired++&31)==0){outcome=client.check();if(outcome!=TxnResult::Ok)break;}
+                                if constexpr(Statistics)++s.lock_acquires;
+                                const auto reply=client.template acquire_planned<Policy>(request.node,request.mode);outcome=reply.result;
+                                if constexpr(Profile)if(reply.wait_ns)p.wait->add(reply.wait_ns);
+                                if(outcome!=TxnResult::Ok)break;
+                            }
+                            if constexpr(Profile)p.call->add(ns(Clock::now()-lock_start));
+                        }
+                        if constexpr(Protocol==PolicyProtocol::ExactRange) {
+                            Clock::time_point lock_start;if constexpr(Profile)lock_start=Clock::now();
+                            unsigned acquired=0;
+                            for(const auto& request:exact_plans->plans[i%total]) {
+                                if((acquired++&31)==0){outcome=client.check();if(outcome!=TxnResult::Ok)break;}
+                                if constexpr(Statistics)++s.lock_acquires;
+                                const auto reply=client.template acquire<Policy>(*table.locate(request.node),request.mode);
+                                outcome=reply.result;
+                                if constexpr(Profile)if(reply.wait_ns)p.wait->add(reply.wait_ns);
+                                if(outcome!=TxnResult::Ok)break;
+                            }
+                            if constexpr(Profile)p.call->add(ns(Clock::now()-lock_start));
+                        }
                         for(const auto& op:txn.operations) {
+                            if(outcome!=TxnResult::Ok)break;
                             const auto call_start=Clock::now();
                             if(call_start>=attempt_deadline){outcome=TxnResult::Deadline;break;}
                             if constexpr(Policy==WaitPolicy::WoundWait) {
                                 outcome=client.check();if(outcome!=TxnResult::Ok)break;
                             }
                             if constexpr(Statistics)++s.operations;
+                            if constexpr(Protocol==PolicyProtocol::Hierarchy || Protocol==PolicyProtocol::ExactRange) {
+                                // ExactRange prelocks the exact interval partition;
+                                // Hierarchy prelocks covering buckets. Both protect empty gaps.
+                                // The preacquired bucket S/SIX protects scan
+                                // membership, including empty gaps. No neighbor
+                                // planning or record-lock enumeration is needed.
+                                if(op.kind==OperationKind::RangeRead) {
+                                    if constexpr(Statistics)++s.range_reads;
+                                    if(op.end_key<=op.key)continue;
+                                    const auto range=KeyRangeEnt::half_open(op.key,op.end_key);
+                                    auto& rows=scans[worker];index.scan_range_into(range,rows);
+                                    if constexpr(Statistics)s.rows_scanned+=rows.size();
+                                    for(const auto& row:rows)account_value(row.key,static_cast<const std::uint64_t*>(row.value));
+                                    for(const auto& own:pending) {
+                                        if(own.remove || own_write(own.key)!=&own || !range.contains(own.key))continue;
+                                        const auto found=std::lower_bound(rows.begin(),rows.end(),own.key,
+                                            [](const KeyValue& row,idx_key_t key){return row.key<key;});
+                                        if(found==rows.end() || found->key!=own.key)account_value(own.key,nullptr);
+                                    }
+                                } else if(op.kind==OperationKind::Read) {
+                                    if constexpr(Statistics)++s.reads;
+                                    void* value=nullptr;
+                                    if(own_write(op.key))account_value(op.key,nullptr);
+                                    else if(index.lookup(op.key,value))account_value(op.key,static_cast<const std::uint64_t*>(value));
+                                } else {
+                                    if constexpr(Statistics) {
+                                        if(op.kind==OperationKind::Update)++s.updates;
+                                        else if(op.kind==OperationKind::Insert)++s.inserts;
+                                        else ++s.deletes;
+                                    }
+                                    pending.push_back({op.key,&op.value,op.kind==OperationKind::Delete});
+                                }
+                                continue;
+                            } else if constexpr(Protocol!=PolicyProtocol::Record) {
+                                if(!detail::observe_keys(index,op,before[worker])) {outcome=TxnResult::Conflict;break;}
+                                auto& plan=key_plans[worker];
+                                if constexpr(Protocol==PolicyProtocol::NextKey || Protocol==PolicyProtocol::PriorKey) {
+                                    if(op.kind==OperationKind::RangeRead) {
+                                        // All scan units are adjacent. Build their union
+                                        // directly, without one request per physical row.
+                                        plan.clear();
+                                        if(op.key<op.end_key) {
+                                            const auto& n=before[worker].lower;const auto& u=before[worker].upper;
+                                            KeyRangeEnt span;
+                                            span.has_start=n.has_predecessor;span.StartKey=n.predecessor;
+                                            span.has_end=u.present || u.has_successor;
+                                            span.EndKey=u.present?op.end_key:u.successor;
+                                            span.start_bound=Protocol==PolicyProtocol::NextKey?Bound::Open:Bound::Closed;
+                                            span.end_bound=Protocol==PolicyProtocol::NextKey?Bound::Closed:Bound::Open;
+                                            if constexpr(Protocol==PolicyProtocol::PriorKey)
+                                                if(n.present){span.has_start=true;span.StartKey=op.key;}
+                                            if(span.valid())plan.push_back({LockMode::S,span,
+                                                Protocol==PolicyProtocol::NextKey?LockKind::NextKey:LockKind::PriorKey});
+                                        }
+                                    } else detail::key_plan(op,before[worker],Protocol,plan);
+                                } else detail::key_plan(op,before[worker],Protocol,plan);
+                                for(std::size_t request=0;request<plan.size();) {
+                                    auto range=plan[request].range;
+                                    const auto mode=plan[request].mode;const auto kind=plan[request].kind;
+                                    ++request;
+                                    if constexpr(Protocol!=PolicyProtocol::Gap) {
+                                        // Adjacent equal-mode intervals have identical union;
+                                        // take each atomic cell once for a complete scan.
+                                        while(request<plan.size() && plan[request].mode==mode && plan[request].kind==kind &&
+                                              range.has_end && plan[request].range.has_start &&
+                                              range.EndKey==plan[request].range.StartKey &&
+                                              (range.end_bound==Bound::Closed || plan[request].range.start_bound==Bound::Closed)) {
+                                            range.has_end=plan[request].range.has_end;
+                                            range.EndKey=plan[request].range.EndKey;range.end_bound=plan[request].range.end_bound;++request;
+                                        }
+                                    }
+                                    if constexpr(Statistics)++s.lock_acquires;
+                                    const auto r=classic->acquire<Policy>(client,mode,range,kind);outcome=r.result;
+                                    if constexpr(Profile)if(r.wait_ns)p.wait->add(r.wait_ns);
+                                    if(outcome!=TxnResult::Ok)break;
+                                }
+                                if constexpr(Profile)p.call->add(ns(Clock::now()-call_start));
+                                if(outcome!=TxnResult::Ok)break;
+                                if(!detail::observe_keys(index,op,after[worker]) ||
+                                   !detail::same_observation(before[worker],after[worker],op.kind==OperationKind::RangeRead)) {
+                                    outcome=TxnResult::Conflict;break;
+                                }
+                                if(op.kind==OperationKind::RangeRead) {
+                                    if constexpr(Statistics)++s.range_reads;
+                                    if(op.end_key<=op.key)continue;
+                                    const auto range=KeyRangeEnt::half_open(op.key,op.end_key);
+                                    auto& rows=scans[worker];index.scan_range_into(range,rows);
+                                    if constexpr(Statistics)s.rows_scanned+=rows.size();
+                                    for(const auto& row:rows)account_value(row.key,static_cast<const std::uint64_t*>(row.value));
+                                    for(const auto& own:pending) {
+                                        if(own.remove || own_write(own.key)!=&own || !range.contains(own.key))continue;
+                                        const auto it=std::lower_bound(rows.begin(),rows.end(),own.key,
+                                            [](const KeyValue& row,idx_key_t key){return row.key<key;});
+                                        if(it==rows.end() || it->key!=own.key)account_value(own.key,nullptr);
+                                    }
+                                } else if(op.kind==OperationKind::Read) {
+                                    if constexpr(Statistics)++s.reads;
+                                    void* value=nullptr;
+                                    if(own_write(op.key))account_value(op.key,nullptr);
+                                    else if(index.lookup(op.key,value))account_value(op.key,static_cast<const std::uint64_t*>(value));
+                                } else {
+                                    if constexpr(Statistics) {
+                                        if(op.kind==OperationKind::Update)++s.updates;
+                                        else if(op.kind==OperationKind::Insert)++s.inserts;
+                                        else ++s.deletes;
+                                    }
+                                    pending.push_back({op.key,&op.value,op.kind==OperationKind::Delete});
+                                }
+                                continue;
+                            }
                             if(op.kind==OperationKind::RangeRead) {
                                 if constexpr(Statistics)++s.range_reads;
                                 if(op.end_key<=op.key)continue;
@@ -178,7 +376,7 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
                                 }
                             }
                         }
-                        if(outcome==TxnResult::Ok)outcome=client.prepare_commit<Policy>();
+                        if(outcome==TxnResult::Ok)outcome=client.template prepare_commit<Policy>();
                         if(outcome==TxnResult::Ok && !pending.empty()) {
                             if(!index.healthy())throw std::runtime_error("data backend unhealthy before record commit");
                             const auto rc=index.apply_batch(pending);
@@ -214,6 +412,7 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
             if(warmup) {
                 run_phase();const auto warm_stats=s;
                 p.stats=RunStats{};
+                if constexpr(Protocol==PolicyProtocol::Hierarchy)client.reset_metrics();
                 if constexpr(Profile) {
                     *p.attempt=LatencyHistogram{};*p.logical=LatencyHistogram{};
                     *p.wait=LatencyHistogram{};*p.call=LatencyHistogram{};*p.release=LatencyHistogram{};
@@ -277,8 +476,14 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
     const auto elapsed = ns(Clock::now()-start);
     RunStats result;auto& pm=result.policy;pm.enabled=true;
     pm.record_lock_bytes=table.lock_bytes();pm.record_directory_bytes=table.directory_bytes();
+    if(classic)pm.record_directory_bytes+=classic->directory_bytes();
+    if(exact_plans)pm.exact_plan_bytes=exact_plans->plan_bytes;
     pm.record_state_bytes=table.state_bytes();
     for(const auto& client:clients)pm.record_held_bytes+=client->held_bytes();
+    if constexpr(Protocol==PolicyProtocol::Hierarchy) {
+        pm.hierarchy_lease_bytes=table.lease_bytes();pm.hierarchy_plan_bytes=hierarchy_plans->plan_bytes;
+        for(const auto& client:clients)pm.hierarchy_cas_retries+=client->cas_retries();
+    }
     if(!table.empty() && table.healthy())++result.lock_release_failures;
     pm.warmup_elapsed_ns=warmup_elapsed;
     for(const auto& scheduler:schedulers)pm.coroutine_switches+=scheduler->switches();
@@ -345,5 +550,44 @@ RunStats run_compact_record_workload(BTreeIndex& index,const WorkloadTrace& trac
     }
 #undef RUN
     throw std::invalid_argument("invalid record wait policy");
+}
+RunStats run_compact_key_workload(BTreeIndex& index,const WorkloadTrace& trace,const PolicyRunConfig& cfg) {
+#define RUN_KEY(W,P) return cfg.key_latency ? (cfg.key_statistics ? run_record_impl<W,true,true,P>(index,trace,cfg) : run_record_impl<W,true,false,P>(index,trace,cfg)) : \
+    (cfg.key_statistics ? run_record_impl<W,false,true,P>(index,trace,cfg) : run_record_impl<W,false,false,P>(index,trace,cfg))
+#define CASE(P) case P: switch(cfg.wait_policy) { \
+    case WaitPolicy::NoWait:RUN_KEY(WaitPolicy::NoWait,P); \
+    case WaitPolicy::WaitDie:RUN_KEY(WaitPolicy::WaitDie,P); \
+    case WaitPolicy::WoundWait:RUN_KEY(WaitPolicy::WoundWait,P); } break
+    switch(cfg.protocol) {
+        CASE(PolicyProtocol::NextKey);
+        CASE(PolicyProtocol::Gap);
+        CASE(PolicyProtocol::PriorKey);
+        default:break;
+    }
+#undef CASE
+#undef RUN_KEY
+    throw std::invalid_argument("invalid compact key protocol/policy");
+}
+RunStats run_compact_exact_workload(BTreeIndex& index,const WorkloadTrace& trace,const PolicyRunConfig& cfg) {
+#define RUN_E(P) return cfg.exact_latency ? (cfg.exact_statistics ? run_record_impl<P,true,true,PolicyProtocol::ExactRange>(index,trace,cfg) : run_record_impl<P,true,false,PolicyProtocol::ExactRange>(index,trace,cfg)) : \
+    (cfg.exact_statistics ? run_record_impl<P,false,true,PolicyProtocol::ExactRange>(index,trace,cfg) : run_record_impl<P,false,false,PolicyProtocol::ExactRange>(index,trace,cfg))
+    switch(cfg.wait_policy) {
+        case WaitPolicy::NoWait:RUN_E(WaitPolicy::NoWait);
+        case WaitPolicy::WaitDie:RUN_E(WaitPolicy::WaitDie);
+        case WaitPolicy::WoundWait:RUN_E(WaitPolicy::WoundWait);
+    }
+#undef RUN_E
+    throw std::invalid_argument("invalid exact-range wait policy");
+}
+RunStats run_compact_hierarchy_workload(BTreeIndex& index,const WorkloadTrace& trace,const PolicyRunConfig& cfg) {
+#define RUN_H(P) return cfg.hierarchy_latency ? (cfg.hierarchy_statistics ? run_record_impl<P,true,true,PolicyProtocol::Hierarchy>(index,trace,cfg) : run_record_impl<P,true,false,PolicyProtocol::Hierarchy>(index,trace,cfg)) : \
+    (cfg.hierarchy_statistics ? run_record_impl<P,false,true,PolicyProtocol::Hierarchy>(index,trace,cfg) : run_record_impl<P,false,false,PolicyProtocol::Hierarchy>(index,trace,cfg))
+    switch(cfg.wait_policy) {
+        case WaitPolicy::NoWait:RUN_H(WaitPolicy::NoWait);
+        case WaitPolicy::WaitDie:RUN_H(WaitPolicy::WaitDie);
+        case WaitPolicy::WoundWait:RUN_H(WaitPolicy::WoundWait);
+    }
+#undef RUN_H
+    throw std::invalid_argument("invalid hierarchy wait policy");
 }
 } // namespace rrl

@@ -68,6 +68,13 @@ public:
         Client& operator=(const Client&) = delete;
         ~Client() { if (id_ && table_.healthy()) abort(); }
 
+        // Only for an authority used exclusively with NoWait: age is never
+        // inspected, while owner identity still uses the local generation.
+        PolicyReply begin_unordered(std::uint64_t budget_ns) {
+            age_=1;
+            return begin(1,budget_ns);
+        }
+
         PolicyReply begin(std::uint64_t age, std::uint64_t budget_ns) {
             if (id_ || !held_.empty() || !table_.healthy() || !budget_ns || budget_ns > 600000000000ULL ||
                 (age && age != age_)) return {};
@@ -134,12 +141,10 @@ public:
                         }
                         return reply(TxnResult::Ok);
                     }
-                    if constexpr (Policy != WaitPolicy::NoWait) {
-                        if (++collisions == 32) {
-                            const auto status = check();
-                            if (status != TxnResult::Ok) return reply(status);
-                            collisions = 0;
-                        }
+                    if (++collisions == 32) {
+                        const auto status = check();
+                        if (status != TxnResult::Ok) return reply(status);
+                        collisions = 0;
                     }
                     continue;
                 }

@@ -8,6 +8,16 @@ enum class PolicyProtocol { Record, Gap, NextKey, Hierarchy, Predicate, None, Ex
 struct PolicyRunConfig {
     // Local record-only backend; auto keeps generic for unsupported geometry.
     std::string record_lock_table{"auto"};
+    std::string precision_lock_table{"auto"};
+    bool precision_latency{true},precision_statistics{true};
+    std::string exact_lock_table{"auto"};
+    bool exact_latency{true},exact_statistics{true};
+    std::string key_lock_table{"auto"};
+    bool key_latency{true},key_statistics{true};
+    std::string hierarchy_lock_table{"auto"};
+    bool hierarchy_latency{true},hierarchy_statistics{true};
+    bool hierarchy_implicit_root{false},hierarchy_implicit_root_explicit{false};
+    bool hierarchy_padded{false},hierarchy_padded_explicit{false};
     bool record_latency{true};
     bool record_statistics{true};
     WaitPolicy wait_policy{WaitPolicy::NoWait};
@@ -39,6 +49,9 @@ struct PolicyRunConfig {
     bool index_preloaded{false};
 };
 struct PolicyStats {
+    std::uint64_t hierarchy_lease_bytes{0},hierarchy_plan_bytes{0},hierarchy_cas_retries{0};
+    std::uint64_t precision_lock_bytes{0},precision_plan_bytes{0},precision_state_bytes{0},precision_held_bytes{0};
+    std::uint64_t exact_plan_bytes{0};
     std::uint64_t record_lock_bytes{0},record_directory_bytes{0},record_state_bytes{0},record_held_bytes{0};
     bool enabled{false};
     std::uint64_t escalation_attempts{0},escalations{0},escalation_failures{0};

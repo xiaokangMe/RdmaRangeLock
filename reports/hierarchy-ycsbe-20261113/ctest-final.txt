@@ -1,0 +1,48 @@
+[OUTPUT] 
+Internal ctest changing into directory: /home/dell/RdmaRangeLock-record2pl-20261112/build-record
+
+[HANDLER_OUTPUT] 
+Test project /home/dell/RdmaRangeLock-record2pl-20261112/build-record
+
+      Start  3: rrl_csv_schema_test
+ 1/19 Test  #3: rrl_csv_schema_test .................   Passed    0.04 sec
+      Start  6: rrl_v2_btree_latch_test
+ 2/19 Test  #6: rrl_v2_btree_latch_test .............   Passed    0.03 sec
+      Start  7: rrl_v2_btree_stress_test
+ 3/19 Test  #7: rrl_v2_btree_stress_test ............   Passed    2.01 sec
+      Start 11: rrl_v4_gap_lock_test
+ 4/19 Test #11: rrl_v4_gap_lock_test ................   Passed    0.00 sec
+      Start 12: rrl_v5_next_key_test
+ 5/19 Test #12: rrl_v5_next_key_test ................   Passed    0.00 sec
+      Start 23: rrl_runner_config_test
+ 6/19 Test #23: rrl_runner_config_test ..............   Passed    0.31 sec
+      Start 27: rrl_hierarchy_plan_test
+ 7/19 Test #27: rrl_hierarchy_plan_test .............   Passed    0.00 sec
+      Start 32: rrl_hierarchy_lock_table_test
+ 8/19 Test #32: rrl_hierarchy_lock_table_test .......   Passed    0.19 sec
+      Start 33: rrl_record_lock_table_test
+ 9/19 Test #33: rrl_record_lock_table_test ..........   Passed    1.50 sec
+      Start 34: rrl_compact_hierarchy_runner_test
+10/19 Test #34: rrl_compact_hierarchy_runner_test ...   Passed    2.49 sec
+      Start 35: rrl_compact_record_runner_test
+11/19 Test #35: rrl_compact_record_runner_test ......   Passed    2.28 sec
+      Start 36: rrl_compact_key_runner_test
+12/19 Test #36: rrl_compact_key_runner_test .........   Passed   10.34 sec
+      Start 37: rrl_wait_policy_test
+13/19 Test #37: rrl_wait_policy_test ................   Passed    0.08 sec
+      Start 40: rrl_policy_runner_test
+14/19 Test #40: rrl_policy_runner_test ..............   Passed    0.32 sec
+      Start 43: rrl_policy_own_write_test
+15/19 Test #43: rrl_policy_own_write_test ...........   Passed    0.29 sec
+      Start 47: rrl_runtime_warmup_test
+16/19 Test #47: rrl_runtime_warmup_test .............   Passed    4.01 sec
+      Start 55: rrl_policy_scan_batch_test
+17/19 Test #55: rrl_policy_scan_batch_test ..........   Passed    0.01 sec
+      Start 58: rrl_key_neighbors_test
+18/19 Test #58: rrl_key_neighbors_test ..............   Passed    0.01 sec
+      Start 59: rrl_bucket_runtime_test
+19/19 Test #59: rrl_bucket_runtime_test .............   Passed    0.04 sec
+
+100% tests passed, 0 tests failed out of 19
+
+Total Test time (real) =  23.98 sec

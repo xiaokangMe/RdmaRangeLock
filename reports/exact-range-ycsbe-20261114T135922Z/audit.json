@@ -1,0 +1,13 @@
+{
+  "rows": 81,
+  "groups": 27,
+  "groups_have_three_samples": true,
+  "runner_hash_matches": true,
+  "source_changed_after_start": [
+    "CMakeLists.txt",
+    "benchmarks/workload_runner.cpp",
+    "include/txn/policy_workload.h",
+    "include/txn/record_workload.h"
+  ],
+  "errors": 0
+}

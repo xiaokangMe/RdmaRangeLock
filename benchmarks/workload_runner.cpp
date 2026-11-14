@@ -144,6 +144,42 @@ void load_config(const std::string& path, WorkloadConfig& config,
             if(value.kind!=ConfigScalar::String || (value.text!="auto" && value.text!="generic" && value.text!="compact"))
                 throw std::invalid_argument("record_lock_table must be auto, generic or compact");
             policy.record_lock_table=value.text;measured=true;
+        } else if (key == "hierarchy_lock_table") {
+            if(value.kind!=ConfigScalar::String || (value.text!="auto" && value.text!="generic" && value.text!="compact"))
+                throw std::invalid_argument("hierarchy_lock_table must be auto, generic or compact");
+            policy.hierarchy_lock_table=value.text;measured=true;
+        } else if (key == "hierarchy_latency" || key == "hierarchy_statistics" || key == "hierarchy_implicit_root" || key == "hierarchy_padded") {
+            if(value.kind!=ConfigScalar::Number || (value.text!="0" && value.text!="1"))throw std::invalid_argument(key+" must be 0 or 1");
+            if(key=="hierarchy_latency")policy.hierarchy_latency=value.text=="1";
+            else if(key=="hierarchy_statistics")policy.hierarchy_statistics=value.text=="1";
+            else if(key=="hierarchy_implicit_root") {policy.hierarchy_implicit_root=value.text=="1";policy.hierarchy_implicit_root_explicit=true;}
+            else {policy.hierarchy_padded=value.text=="1";policy.hierarchy_padded_explicit=true;}
+            measured=true;
+        } else if (key == "precision_lock_table") {
+            if(value.kind!=ConfigScalar::String || (value.text!="auto" && value.text!="generic" && value.text!="compact"))
+                throw std::invalid_argument("precision_lock_table must be auto, generic or compact");
+            policy.precision_lock_table=value.text;measured=true;
+        } else if (key == "precision_latency" || key == "precision_statistics") {
+            if(value.kind!=ConfigScalar::Number || (value.text!="0" && value.text!="1"))throw std::invalid_argument(key+" must be 0 or 1");
+            if(key=="precision_latency")policy.precision_latency=value.text=="1";else policy.precision_statistics=value.text=="1";
+            measured=true;
+        } else if (key == "exact_lock_table") {
+            if(value.kind!=ConfigScalar::String || (value.text!="auto" && value.text!="generic" && value.text!="compact"))
+                throw std::invalid_argument("exact_lock_table must be auto, generic or compact");
+            policy.exact_lock_table=value.text;measured=true;
+        } else if (key == "exact_latency" || key == "exact_statistics") {
+            if(value.kind!=ConfigScalar::Number || (value.text!="0" && value.text!="1"))throw std::invalid_argument(key+" must be 0 or 1");
+            if(key=="exact_latency")policy.exact_latency=value.text=="1";else policy.exact_statistics=value.text=="1";
+            measured=true;
+        } else if (key == "key_lock_table") {
+            if(value.kind!=ConfigScalar::String || (value.text!="auto" && value.text!="generic" && value.text!="compact"))
+                throw std::invalid_argument("key_lock_table must be auto, generic or compact");
+            policy.key_lock_table=value.text;measured=true;
+        } else if (key == "key_latency" || key == "key_statistics") {
+            if(value.kind!=ConfigScalar::Number || (value.text!="0" && value.text!="1"))
+                throw std::invalid_argument(key+" must be 0 or 1");
+            if(key=="key_latency")policy.key_latency=value.text=="1";else policy.key_statistics=value.text=="1";
+            measured=true;
         } else if (key == "record_latency") {
             if(value.kind!=ConfigScalar::Number || (value.text!="0" && value.text!="1"))
                 throw std::invalid_argument("record_latency must be 0 or 1");
@@ -313,6 +349,45 @@ int run(int argc, char** argv) {
             if(value!="auto" && value!="generic" && value!="compact")throw std::invalid_argument("record-lock-table must be auto, generic or compact");
             policy.record_lock_table=value;measured=true;
         }
+        else if (option == "--hierarchy-lock-table") {
+            if(value!="auto" && value!="generic" && value!="compact")throw std::invalid_argument("hierarchy-lock-table must be auto, generic or compact");
+            policy.hierarchy_lock_table=value;measured=true;
+        }
+        else if (option == "--hierarchy-latency" || option == "--hierarchy-statistics" || option == "--hierarchy-implicit-root" || option == "--hierarchy-padded") {
+            if(value!="0" && value!="1")throw std::invalid_argument(option+" must be 0 or 1");
+            if(option=="--hierarchy-latency")policy.hierarchy_latency=value=="1";
+            else if(option=="--hierarchy-statistics")policy.hierarchy_statistics=value=="1";
+            else if(option=="--hierarchy-implicit-root") {policy.hierarchy_implicit_root=value=="1";policy.hierarchy_implicit_root_explicit=true;}
+            else {policy.hierarchy_padded=value=="1";policy.hierarchy_padded_explicit=true;}
+            measured=true;
+        }
+        else if (option == "--precision-lock-table") {
+            if(value!="auto" && value!="generic" && value!="compact")throw std::invalid_argument("precision-lock-table must be auto, generic or compact");
+            policy.precision_lock_table=value;measured=true;
+        }
+        else if (option == "--precision-latency" || option == "--precision-statistics") {
+            if(value!="0" && value!="1")throw std::invalid_argument(option+" must be 0 or 1");
+            if(option=="--precision-latency")policy.precision_latency=value=="1";else policy.precision_statistics=value=="1";
+            measured=true;
+        }
+        else if (option == "--exact-lock-table") {
+            if(value!="auto" && value!="generic" && value!="compact")throw std::invalid_argument("exact-lock-table must be auto, generic or compact");
+            policy.exact_lock_table=value;measured=true;
+        }
+        else if (option == "--exact-latency" || option == "--exact-statistics") {
+            if(value!="0" && value!="1")throw std::invalid_argument(option+" must be 0 or 1");
+            if(option=="--exact-latency")policy.exact_latency=value=="1";else policy.exact_statistics=value=="1";
+            measured=true;
+        }
+        else if (option == "--key-lock-table") {
+            if(value!="auto" && value!="generic" && value!="compact")throw std::invalid_argument("key-lock-table must be auto, generic or compact");
+            policy.key_lock_table=value;measured=true;
+        }
+        else if (option == "--key-latency" || option == "--key-statistics") {
+            if(value!="0" && value!="1")throw std::invalid_argument(option+" must be 0 or 1");
+            if(option=="--key-latency")policy.key_latency=value=="1";else policy.key_statistics=value=="1";
+            measured=true;
+        }
         else if (option == "--record-latency") {
             if(value!="0" && value!="1")throw std::invalid_argument("record-latency must be 0 or 1");
             policy.record_latency=value=="1";measured=true;
@@ -416,6 +491,16 @@ int run(int argc, char** argv) {
     if (index_name == "btree_single") index_name = "v1";
     if (cc == "record-level-strict-2pl") cc = "record-2pl";
     if(cc=="record-2pl" && !measured){policy.max_attempts=1;policy.use_coroutines=false;measured=true;}
+    const bool classic_key=cc=="next-key" || cc=="gap-lock" || cc=="prior-key";
+    if(classic_key && !measured){policy.max_attempts=1;policy.use_coroutines=false;measured=true;}
+    if(cc=="hierarchical" && !measured && !config.hierarchy_diagnostics){policy.max_attempts=1;policy.use_coroutines=false;measured=true;}
+    if(cc=="hierarchical" && !policy.hierarchy_implicit_root_explicit)
+        policy.hierarchy_implicit_root=policy.wait_policy!=WaitPolicy::WoundWait;
+    if(cc=="hierarchical" && !policy.hierarchy_padded_explicit)
+        policy.hierarchy_padded=policy.wait_policy!=WaitPolicy::WoundWait;
+    if(policy.hierarchy_lock_table!="auto" && cc!="hierarchical")throw std::invalid_argument("hierarchy-lock-table requires local hierarchical protocol");
+    if(policy.exact_lock_table!="auto" && cc!="exact-range")throw std::invalid_argument("exact-lock-table requires local exact-range");
+    if(policy.key_lock_table!="auto" && !classic_key)throw std::invalid_argument("key-lock-table requires local next-key, gap-lock or prior-key");
     if(hot_schedule && (cc!="record-2pl" || policy.use_coroutines || config.threads<2 || config.duration_seconds))
         throw std::invalid_argument("hot-schedule requires finite local record-2pl with at least two OS threads");
     if(policy.record_lock_table!="auto" && cc!="record-2pl")
@@ -595,10 +680,53 @@ int run(int argc, char** argv) {
         policy.coordinator_host.empty() && !policy.txn_state_port && !policy.shared_local_state &&
         record_contexts && record_contexts<=RecordLockTable::max_contexts;
     const bool compact_record=compact_supported && policy.record_lock_table!="generic";
+    const bool compact_key_supported=classic_key && index_name!="rdma" && index_name!="rolex-rdma" &&
+        policy.coordinator_host.empty() && !policy.txn_state_port && !policy.shared_local_state &&
+        !policy.native_object_locks && !policy.leaf_hierarchy && !policy.dag_hierarchy && !policy.separator_hierarchy &&
+        record_contexts && record_contexts<=RecordLockTable::max_contexts;
+    const bool compact_key=compact_key_supported && policy.key_lock_table!="generic";
+    if(policy.precision_lock_table!="auto" && cc!="precision-lock")
+        throw std::invalid_argument("precision-lock-table is for local precision-lock only");
+    const bool compact_precision_supported=cc=="precision-lock" && index_name!="rdma" && index_name!="rolex-rdma" &&
+        policy.coordinator_host.empty() && !policy.txn_state_port && !policy.shared_local_state &&
+        !policy.native_object_locks && !policy.leaf_hierarchy && !policy.dag_hierarchy && !policy.separator_hierarchy &&
+        !policy.hierarchy_escalation_threshold && !policy.hierarchy_deescalate_after && !policy.deneva_insert_behavior &&
+        record_contexts && record_contexts<=63;
+    const bool compact_precision=compact_precision_supported && policy.precision_lock_table!="generic";
+    if(policy.precision_lock_table=="compact" && !compact_precision_supported)
+        throw std::invalid_argument("compact precision requires local fixed trace/state and at most 63 contexts");
+    if((!policy.precision_latency || !policy.precision_statistics) && !compact_precision)
+        throw std::invalid_argument("precision metrics controls require compact precision");
+    const bool compact_exact_supported=cc=="exact-range" && index_name!="rdma" && index_name!="rolex-rdma" &&
+        policy.coordinator_host.empty() && !policy.txn_state_port && !policy.shared_local_state &&
+        !policy.native_object_locks && !policy.leaf_hierarchy && !policy.dag_hierarchy && !policy.separator_hierarchy &&
+        !policy.hierarchy_escalation_threshold && !policy.hierarchy_deescalate_after && !policy.deneva_insert_behavior &&
+        record_contexts && record_contexts<=63;
+    const bool compact_exact=compact_exact_supported && policy.exact_lock_table!="generic";
+    if(policy.exact_lock_table=="compact" && !compact_exact_supported)
+        throw std::invalid_argument("compact exact-range requires local fixed trace/state and at most 63 contexts");
+    if((!policy.exact_latency || !policy.exact_statistics) && !compact_exact)
+        throw std::invalid_argument("exact metrics controls require compact exact-range");
+    const bool compact_hierarchy_supported=cc=="hierarchical" && !config.hierarchy_diagnostics && index_name!="rdma" && index_name!="rolex-rdma" &&
+        policy.coordinator_host.empty() && !policy.txn_state_port && !policy.shared_local_state &&
+        !policy.native_object_locks && !policy.leaf_hierarchy && !policy.dag_hierarchy && !policy.separator_hierarchy &&
+        !policy.hierarchy_escalation_threshold && !policy.hierarchy_deescalate_after && !policy.deneva_insert_behavior &&
+        record_contexts && record_contexts<=64;
+    const bool compact_hierarchy=compact_hierarchy_supported && policy.hierarchy_lock_table!="generic";
+    if(policy.hierarchy_lock_table=="compact" && !compact_hierarchy_supported)
+        throw std::invalid_argument("compact hierarchy requires local fixed buckets, static modes and at most 64 contexts");
+    if((!policy.hierarchy_latency || !policy.hierarchy_statistics ||
+        (policy.hierarchy_implicit_root_explicit && policy.hierarchy_implicit_root) ||
+        (policy.hierarchy_padded_explicit && policy.hierarchy_padded)) && !compact_hierarchy)
+        throw std::invalid_argument("hierarchy optimization controls require compact hierarchy");
+    if(policy.key_lock_table=="compact" && !compact_key_supported)
+        throw std::invalid_argument("compact key locks require local data/state and at most 64 contexts");
     if(policy.record_lock_table=="compact" && !compact_supported)
         throw std::invalid_argument("compact records require local data/state and at most 64 active contexts");
     if((!policy.record_latency || !policy.record_statistics) && !compact_record)
         throw std::invalid_argument("record metrics controls require compact record execution");
+    if((!policy.key_latency || !policy.key_statistics) && !compact_key)
+        throw std::invalid_argument("key metrics controls require compact key execution");
     if (measured) {
         const auto plain = cc.rfind("rdma-",0) == 0 ? cc.substr(5) : cc;
         policy.protocol = plain == "none" ? PolicyProtocol::None : plain == "record-2pl" ? PolicyProtocol::Record : plain == "gap-lock" ? PolicyProtocol::Gap :
@@ -608,6 +736,15 @@ int run(int argc, char** argv) {
         if(compact_record) {
             policy.measurement_begin=[&]{snapshot_data();};
             stats=run_compact_record_workload(*index,trace,policy);
+        } else if(compact_key) {
+            policy.measurement_begin=[&]{snapshot_data();};
+            stats=run_compact_key_workload(*index,trace,policy);
+        } else if(compact_precision) {
+            stats=run_compact_precision_workload(*index,trace,policy);
+        } else if(compact_exact) {
+            stats=run_compact_exact_workload(*index,trace,policy);
+        } else if(compact_hierarchy) {
+            stats=run_compact_hierarchy_workload(*index,trace,policy);
         } else if (cc == "citron" || cc == "rdma-citron") {
             if (policy.wait_policy != WaitPolicy::NoWait)
                 throw std::invalid_argument("Citron currently supports no-wait plus transaction retry only");
@@ -769,7 +906,11 @@ int run(int argc, char** argv) {
         std::cout << ",citron_lock_calls,citron_grants,citron_aborts,citron_errors,citron_unlock_calls,citron_unlock_failures,citron_rdma_operations,citron_sessions,citron_shared_mapped_to_exclusive";
         std::cout << ",rolex_segments,rolex_leaves,rolex_live_keys,rolex_splits,rolex_removals,rolex_model_exact,rolex_model_corrected,rolex_model_fallbacks,rolex_arena_bytes,rolex_build_ns,rolex_mapping";
         std::cout << ",citron_tree_height,citron_k,citron_m,citron_wait_us,citron_lock_semantics,rolex_epsilon,rolex_segment_keys,rolex_arena_leaves,rolex_hugepages";
+        std::cout << ",precision_lock_table,precision_lock_bytes,precision_plan_bytes,precision_state_bytes,precision_held_capacity_bytes,precision_latency,precision_statistics";
         std::cout << ",record_lock_table,record_lock_bytes,record_directory_bytes,record_state_bytes,record_held_capacity_bytes,record_latency,record_statistics,hot_schedule,scheduled_hot_key,scheduled_hot_transactions";
+        std::cout << ",exact_lock_table,exact_lock_bytes,exact_state_bytes,exact_held_capacity_bytes,exact_plan_bytes,exact_latency,exact_statistics";
+        std::cout << ",key_lock_table,key_lock_bytes,key_directory_bytes,key_state_bytes,key_held_capacity_bytes,key_latency,key_statistics";
+        std::cout << ",hierarchy_lock_table,hierarchy_lock_bytes,hierarchy_state_bytes,hierarchy_held_capacity_bytes,hierarchy_lease_bytes,hierarchy_plan_bytes,hierarchy_cas_retries,hierarchy_implicit_root,hierarchy_padded,hierarchy_latency,hierarchy_statistics";
         std::cout << '\n';
         std::cout << WorkloadTrace::name(config.kind) << ',' << index_name << ',' << cc << ',' << config.threads << ','
                   << stats.transactions << ',' << stats.committed << ',' << stats.aborted << ',' << stats.operations << ','
@@ -806,7 +947,7 @@ int run(int argc, char** argv) {
         std::cout << ',' << rdma_diag.txn_wait_ns;
         if (measured) {
             const auto& m=stats.policy;
-            std::cout << ",2," << wait_policy_name(policy.wait_policy) << ',' << (compact_record?"compact-record-state":policy.txn_state_port?"native-rdma-state":policy.coordinator_host.empty()?"native-local-state":"tcp-control+rdma-slots")
+            std::cout << ",2," << wait_policy_name(policy.wait_policy) << ',' << (compact_precision?"compact-precision-state":compact_exact?"compact-exact-state":compact_hierarchy?"compact-hierarchy-state":compact_key?"compact-key-state":compact_record?"compact-record-state":policy.txn_state_port?"native-rdma-state":policy.coordinator_host.empty()?"native-local-state":"tcp-control+rdma-slots")
                 << ',' << m.logical_started << ',' << m.unfinished << ',' << m.logical_failed << ',' << m.retries << ',' << m.max_retries
                 << ',' << m.wound_aborts << ',' << m.deadline_aborts << ',' << m.retry_exhausted << ',' << m.completed_retries << ',' << m.unfinished_retries;
             for (const auto* q : {&m.successful_attempt,&m.logical_completion,&m.lock_wait,&m.lock_call,&m.release})
@@ -862,14 +1003,49 @@ int run(int argc, char** argv) {
                   << ',' << (citron_run?extra.citron_wait_us:0) << ',' << (citron_run?"exclusive-range-S-as-X":"none")
                   << ',' << (index_name=="rolex"?extra.rolex_epsilon:0) << ',' << (index_name=="rolex"?extra.rolex_segment_keys:0)
                   << ',' << (index_name=="rolex"?extra.rolex_arena_leaves:0) << ',' << (index_name=="rolex"?extra.rolex_hugepages:0);
+        std::cout << ',' << (cc=="precision-lock"?(compact_precision?"compact":"generic"):"not-applicable")
+                  << ',' << stats.policy.precision_lock_bytes << ',' << stats.policy.precision_plan_bytes
+                  << ',' << stats.policy.precision_state_bytes << ',' << stats.policy.precision_held_bytes
+                  << ',' << (policy.precision_latency?1:0) << ',' << (policy.precision_statistics?1:0);
         std::cout << ',' << (cc=="record-2pl"?(compact_record?"compact":"generic"):"not-applicable")
-                  << ',' << stats.policy.record_lock_bytes << ',' << stats.policy.record_directory_bytes
-                  << ',' << stats.policy.record_state_bytes << ',' << stats.policy.record_held_bytes
+                  << ',' << (compact_record?stats.policy.record_lock_bytes:0) << ',' << (compact_record?stats.policy.record_directory_bytes:0)
+                  << ',' << (compact_record?stats.policy.record_state_bytes:0) << ',' << (compact_record?stats.policy.record_held_bytes:0)
                   << ',' << (compact_record?(policy.record_latency?1:0):1)
                   << ',' << (compact_record?(policy.record_statistics?1:0):1)
                   << ',' << (hot_schedule?1:0) << ',' << scheduled_hot_key << ',' << scheduled_hot_transactions;
+        std::cout << ',' << (cc=="exact-range"?(compact_exact?"compact":"generic"):"not-applicable")
+                  << ',' << (compact_exact?stats.policy.record_lock_bytes:0)
+                  << ',' << (compact_exact?stats.policy.record_state_bytes:0)
+                  << ',' << (compact_exact?stats.policy.record_held_bytes:0)
+                  << ',' << (compact_exact?stats.policy.exact_plan_bytes:0)
+                  << ',' << (compact_exact?(policy.exact_latency?1:0):1)
+                  << ',' << (compact_exact?(policy.exact_statistics?1:0):1);
+        std::cout << ',' << (classic_key?(compact_key?"compact":"generic"):"not-applicable")
+                  << ',' << (compact_key?stats.policy.record_lock_bytes:0)
+                  << ',' << (compact_key?stats.policy.record_directory_bytes:0)
+                  << ',' << (compact_key?stats.policy.record_state_bytes:0)
+                  << ',' << (compact_key?stats.policy.record_held_bytes:0)
+                  << ',' << (compact_key?(policy.key_latency?1:0):1) << ',' << (compact_key?(policy.key_statistics?1:0):1);
+        std::cout << ',' << (cc=="hierarchical"?(compact_hierarchy?"compact":"generic"):"not-applicable")
+                  << ',' << (compact_hierarchy?stats.policy.record_lock_bytes:0)
+                  << ',' << (compact_hierarchy?stats.policy.record_state_bytes:0)
+                  << ',' << (compact_hierarchy?stats.policy.record_held_bytes:0)
+                  << ',' << stats.policy.hierarchy_lease_bytes << ',' << stats.policy.hierarchy_plan_bytes
+                  << ',' << stats.policy.hierarchy_cas_retries << ',' << (compact_hierarchy && policy.hierarchy_implicit_root?1:0)
+                  << ',' << (compact_hierarchy && policy.hierarchy_padded?1:0)
+                  << ',' << (compact_hierarchy?(policy.hierarchy_latency?1:0):1)
+                  << ',' << (compact_hierarchy?(policy.hierarchy_statistics?1:0):1);
         std::cout << '\n';
     } else {
+        if(cc=="hierarchical")std::cout<<"hierarchy_lock_table="<<(compact_hierarchy?"compact":"generic")
+            <<",hierarchy_lock_bytes="<<(compact_hierarchy?stats.policy.record_lock_bytes:0)
+            <<",hierarchy_lease_bytes="<<stats.policy.hierarchy_lease_bytes
+            <<",hierarchy_implicit_root="<<policy.hierarchy_implicit_root<<",hierarchy_padded="<<policy.hierarchy_padded<<"\n";
+        if(classic_key)std::cout<<"key_lock_table="<<(compact_key?"compact":"generic")
+            <<",key_lock_bytes="<<(compact_key?stats.policy.record_lock_bytes:0)
+            <<",key_directory_bytes="<<(compact_key?stats.policy.record_directory_bytes:0)
+            <<",key_held_capacity_bytes="<<(compact_key?stats.policy.record_held_bytes:0)
+            <<",key_latency="<<(policy.key_latency?1:0)<<",key_statistics="<<(policy.key_statistics?1:0)<<"\n";
         std::cout<<"active_workers="<<stats.policy.active_workers
                  <<",workers_without_commit="<<stats.policy.workers_without_commit
                  <<",worker_min_committed="<<stats.policy.worker_min_committed

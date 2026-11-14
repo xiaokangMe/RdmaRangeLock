@@ -1,4 +1,5 @@
 #include "txn/record_workload.h"
+#include "txn/retry_backoff.h"
 #include "lock/record_lock_table.h"
 #include "lock/classic_lock_table.h"
 #include "lock/hierarchy_lock_table.h"
@@ -27,6 +28,10 @@ template<WaitPolicy Policy,bool Profile,bool Statistics,PolicyProtocol Protocol=
 RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const PolicyRunConfig& cfg) {
     const auto total=trace.transactions().size();
     if(!total)return {};
+    if(cfg.retry_backoff!="off" && cfg.retry_backoff!="adaptive")throw std::invalid_argument("retry-backoff must be off or adaptive");
+    std::vector<unsigned char> transaction_writes(total);
+    for(std::size_t n=0;n<total;++n)for(const auto& op:trace.transactions()[n].operations)
+        if(op.kind!=OperationKind::Read && op.kind!=OperationKind::RangeRead){transaction_writes[n]=1;break;}
     const auto worker_threads=trace.config().threads;
     if(cfg.protocol!=Protocol || !worker_threads || !cfg.coroutines ||
        cfg.coroutines>4096 || worker_threads>4096/cfg.coroutines ||
@@ -135,6 +140,8 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
     auto work=[&](std::size_t worker) {
         auto& p=parts[worker];auto& s=p.stats;auto& m=s.policy;
         auto& client=*clients[worker];auto& pending=writes[worker];
+        detail::RetryBackoff backoff(worker,cfg.retry_backoff=="adaptive",
+            Protocol==PolicyProtocol::Hierarchy && Policy==WaitPolicy::NoWait?6:2);
         bool arrived=false,active_attempt=false;
         auto arrive=[&](unsigned target) {
             {std::lock_guard<std::mutex> guard(start_mutex);++ready;start_cv.notify_all();}
@@ -254,7 +261,7 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
                                 }
                                 continue;
                             } else if constexpr(Protocol!=PolicyProtocol::Record) {
-                                if(!detail::observe_keys(index,op,before[worker])) {outcome=TxnResult::Conflict;break;}
+                                if(!detail::observe_keys(index,op,before[worker],Protocol==PolicyProtocol::Gap)) {outcome=TxnResult::Conflict;break;}
                                 auto& plan=key_plans[worker];
                                 if constexpr(Protocol==PolicyProtocol::NextKey || Protocol==PolicyProtocol::PriorKey) {
                                     if(op.kind==OperationKind::RangeRead) {
@@ -298,7 +305,7 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
                                 }
                                 if constexpr(Profile)p.call->add(ns(Clock::now()-call_start));
                                 if(outcome!=TxnResult::Ok)break;
-                                if(!detail::observe_keys(index,op,after[worker]) ||
+                                if(!detail::observe_keys(index,op,after[worker],Protocol==PolicyProtocol::Gap) ||
                                    !detail::same_observation(before[worker],after[worker],op.kind==OperationKind::RangeRead)) {
                                     outcome=TxnResult::Conflict;break;
                                 }
@@ -391,6 +398,7 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
                         if(outcome==TxnResult::Error){++s.lock_errors;++s.failed_transactions;hard=true;stopped=true;break;}
                         if(outcome==TxnResult::Ok) {
                             ++s.committed;completed=true;
+                            if(transaction_writes[i%total])++m.committed_with_writes;else ++m.committed_read_only;
                             if constexpr(Profile){const auto end=Clock::now();p.attempt->add(ns(end-attempt_start));p.logical->add(ns(end-logical_start));}
                             break;
                         }
@@ -399,6 +407,12 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
                         if(outcome==TxnResult::Wounded)++m.wound_aborts;
                         if(outcome==TxnResult::Deadline)++m.deadline_aborts;
                         if(attempt+1==cfg.max_attempts)++m.retry_exhausted;
+                        else if(!client.capacity_abort()) {
+                            // finish() above has released every lock. A failed
+                            // context must not immediately attack the winner.
+                            const auto paused=backoff.pause(attempt+1,deadline);
+                            if(paused){++m.retry_backoff_count;m.retry_backoff_ns+=paused;}
+                        }
                         cooperative_yield();
                     }
                     if(!attempted){--m.logical_started;break;}
@@ -512,6 +526,8 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
         pm.deneva_split_aborts+=m.deneva_split_aborts;pm.deneva_partial_write_aborts+=m.deneva_partial_write_aborts;
         pm.logical_started+=m.logical_started;pm.unfinished+=m.unfinished;pm.logical_failed+=m.logical_failed;
         pm.retries+=m.retries;pm.max_retries=std::max(pm.max_retries,m.max_retries);
+        pm.retry_backoff_count+=m.retry_backoff_count;pm.retry_backoff_ns+=m.retry_backoff_ns;
+        pm.committed_read_only+=m.committed_read_only;pm.committed_with_writes+=m.committed_with_writes;
         pm.completed_retries+=m.completed_retries;pm.unfinished_retries+=m.unfinished_retries;
         pm.wound_aborts+=m.wound_aborts;pm.deadline_aborts+=m.deadline_aborts;pm.retry_exhausted+=m.retry_exhausted;
         if constexpr(Profile) {

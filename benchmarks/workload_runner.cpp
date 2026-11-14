@@ -140,6 +140,10 @@ void load_config(const std::string& path, WorkloadConfig& config,
         } else if (key == "latency_histogram") {
             if (value.kind != ConfigScalar::String || value.text.empty()) throw std::invalid_argument("latency_histogram: expected nonempty path");
             policy.histogram_path = value.text; measured = true;
+        } else if (key == "retry_backoff") {
+            if(value.kind!=ConfigScalar::String || (value.text!="off" && value.text!="adaptive"))
+                throw std::invalid_argument("retry_backoff must be off or adaptive");
+            policy.retry_backoff=value.text;measured=true;
         } else if (key == "record_lock_table") {
             if(value.kind!=ConfigScalar::String || (value.text!="auto" && value.text!="generic" && value.text!="compact"))
                 throw std::invalid_argument("record_lock_table must be auto, generic or compact");
@@ -344,6 +348,10 @@ int run(int argc, char** argv) {
             const auto enabled = parse_unsigned(value, option);
             if (enabled > 1) throw std::invalid_argument("native-object-locks must be 0 or 1");
             policy.native_object_locks = enabled != 0; measured = true;
+        }
+        else if (option == "--retry-backoff") {
+            if(value!="off" && value!="adaptive")throw std::invalid_argument("retry-backoff must be off or adaptive");
+            policy.retry_backoff=value;measured=true;
         }
         else if (option == "--record-lock-table") {
             if(value!="auto" && value!="generic" && value!="compact")throw std::invalid_argument("record-lock-table must be auto, generic or compact");
@@ -911,6 +919,7 @@ int run(int argc, char** argv) {
         std::cout << ",exact_lock_table,exact_lock_bytes,exact_state_bytes,exact_held_capacity_bytes,exact_plan_bytes,exact_latency,exact_statistics";
         std::cout << ",key_lock_table,key_lock_bytes,key_directory_bytes,key_state_bytes,key_held_capacity_bytes,key_latency,key_statistics";
         std::cout << ",hierarchy_lock_table,hierarchy_lock_bytes,hierarchy_state_bytes,hierarchy_held_capacity_bytes,hierarchy_lease_bytes,hierarchy_plan_bytes,hierarchy_cas_retries,hierarchy_implicit_root,hierarchy_padded,hierarchy_latency,hierarchy_statistics";
+        std::cout << ",retry_backoff,retry_backoff_count,retry_backoff_total_ns,committed_read_only,committed_with_writes";
         std::cout << '\n';
         std::cout << WorkloadTrace::name(config.kind) << ',' << index_name << ',' << cc << ',' << config.threads << ','
                   << stats.transactions << ',' << stats.committed << ',' << stats.aborted << ',' << stats.operations << ','
@@ -1035,6 +1044,9 @@ int run(int argc, char** argv) {
                   << ',' << (compact_hierarchy && policy.hierarchy_padded?1:0)
                   << ',' << (compact_hierarchy?(policy.hierarchy_latency?1:0):1)
                   << ',' << (compact_hierarchy?(policy.hierarchy_statistics?1:0):1);
+        std::cout << ',' << ((compact_record || compact_key || compact_exact || compact_precision || compact_hierarchy)?policy.retry_backoff:"not-applicable")
+                  << ',' << stats.policy.retry_backoff_count << ',' << stats.policy.retry_backoff_ns
+                  << ',' << stats.policy.committed_read_only << ',' << stats.policy.committed_with_writes;
         std::cout << '\n';
     } else {
         if(cc=="hierarchical")std::cout<<"hierarchy_lock_table="<<(compact_hierarchy?"compact":"generic")

@@ -490,3 +490,8 @@ if(RRL_PYTHON3)
   add_test(NAME rrl_compact_precision_runner_test COMMAND ${RRL_PYTHON3} ${CMAKE_SOURCE_DIR}/test/compact_precision_runner_test.py $<TARGET_FILE:rrl_workload_runner>)
   set_tests_properties(rrl_compact_precision_runner_test PROPERTIES TIMEOUT 180)
 endif()
+
+if(RRL_PYTHON3)
+  add_test(NAME rrl_retry_backoff_runner_test COMMAND ${RRL_PYTHON3} ${CMAKE_SOURCE_DIR}/test/retry_backoff_runner_test.py $<TARGET_FILE:rrl_workload_runner>)
+  set_tests_properties(rrl_retry_backoff_runner_test PROPERTIES TIMEOUT 180)
+endif()

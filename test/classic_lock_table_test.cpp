@@ -91,6 +91,41 @@ void executor_equivalence() {
             CHECK(a.validate() && b.validate() && a.size()==b.size());
         }
 }
+// Prove next/prior compact scans use boundary observations plus the data
+// scan, and do not silently fall back to interior key enumeration. Include
+// missing keys, sparse inserts, deletion and split-capable order-4 pages.
+void boundary_only_execution() {
+    class BoundaryIndex final : public BTreeIndex {
+    public:
+        BTreeLatch tree;unsigned enumerations=0;
+        RC init(std::size_t order)override{return tree.init(order);}
+        RC insert(idx_key_t k,void* v)override{return tree.insert(k,v);}
+        RC erase(idx_key_t k)override{return tree.erase(k);}
+        bool lookup(idx_key_t k,void*& v)const override{return tree.lookup(k,v);}
+        std::size_t size()const override{return tree.size();}
+        std::vector<KeyValue> scan_range(const KeyRangeEnt& r)const override{return tree.scan_range(r);}
+        void scan_range_into(const KeyRangeEnt& r,std::vector<KeyValue>& v)const override{tree.scan_range_into(r,v);}
+        bool key_neighbors(idx_key_t k,IndexKeyNeighbors& n)const override{return tree.key_neighbors(k,n);}
+        bool key_range_into(const KeyRangeEnt&,std::vector<idx_key_t>&)const override{
+            ++const_cast<BoundaryIndex*>(this)->enumerations;return false;
+        }
+    };
+    WorkloadConfig config;config.key_count=8;config.transaction_count=3;config.threads=1;config.range_length=32;
+    auto trace=WorkloadTrace::from_transactions(config,{
+        {1,{{OperationKind::Insert,12,0,120},{OperationKind::RangeRead,6,15,0}}},
+        {2,{{OperationKind::Delete,7,0,0},{OperationKind::RangeRead,6,15,0}}},
+        {3,{{OperationKind::Insert,9,0,90},{OperationKind::RangeRead,8,15,0},{OperationKind::RangeRead,40,45,0}}}});
+    for(auto protocol:{PolicyProtocol::NextKey,PolicyProtocol::PriorKey})
+        for(auto policy:{WaitPolicy::NoWait,WaitPolicy::WaitDie,WaitPolicy::WoundWait}) {
+            BTreeLatch reference;reference.init(4);BoundaryIndex actual;actual.init(4);LockManager locks;
+            PolicyRunConfig cfg;cfg.protocol=protocol;cfg.wait_policy=policy;cfg.use_coroutines=false;
+            const auto a=run_policy_workload(reference,locks,trace,cfg);
+            const auto b=run_compact_key_workload(actual,trace,cfg);
+            CHECK(!a.failed() && !b.failed());CHECK(a.committed==3 && b.committed==3);
+            CHECK(a.checksum==b.checksum && a.rows_found==b.rows_found);
+            CHECK(actual.enumerations==0 && actual.tree.validate());
+        }
+}
 void validation_and_membership() {
     for(auto protocol:{PolicyProtocol::NextKey,PolicyProtocol::Gap,PolicyProtocol::PriorKey}) {
         ClassicLockTable table({10,15,20,UINT64_MAX},2,protocol);
@@ -132,5 +167,6 @@ int main() {try {
         phantom_and_wait<WaitPolicy::WaitDie>(protocol);phantom_and_wait<WaitPolicy::WoundWait>(protocol);
     }
     executor_equivalence();
+    boundary_only_execution();
     std::cout<<"Classic CAS: 30000 pairwise reference cases, boundaries, phantoms, wait/wound, splits and own writes OK\n";
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

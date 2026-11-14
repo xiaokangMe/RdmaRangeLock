@@ -7,6 +7,7 @@ class LocalNativePolicyState;
 enum class PolicyProtocol { Record, Gap, NextKey, Hierarchy, Predicate, None, ExactRange, PriorKey, Precision, Griffin };
 struct PolicyRunConfig {
     // Local record-only backend; auto keeps generic for unsupported geometry.
+    std::string retry_backoff{"adaptive"};
     std::string record_lock_table{"auto"};
     std::string precision_lock_table{"auto"};
     bool precision_latency{true},precision_statistics{true};
@@ -51,6 +52,8 @@ struct PolicyRunConfig {
 struct PolicyStats {
     std::uint64_t hierarchy_lease_bytes{0},hierarchy_plan_bytes{0},hierarchy_cas_retries{0};
     std::uint64_t precision_lock_bytes{0},precision_plan_bytes{0},precision_state_bytes{0},precision_held_bytes{0};
+    std::uint64_t retry_backoff_count{0},retry_backoff_ns{0};
+    std::uint64_t committed_read_only{0},committed_with_writes{0};
     std::uint64_t exact_plan_bytes{0};
     std::uint64_t record_lock_bytes{0},record_directory_bytes{0},record_state_bytes{0},record_held_bytes{0};
     bool enabled{false};

@@ -20,15 +20,20 @@ inline bool same_observation(const KeyObservation& a,const KeyObservation& b,boo
     return same_neighbors(a.lower,b.lower) && (!scan ||
         (same_neighbors(a.upper,b.upper) && a.keys==b.keys));
 }
-inline bool observe_keys(BTreeIndex& tree,const Operation& op,KeyObservation& out) {
+// Compact next/prior scan locks are a continuous union determined only by
+// the boundary neighbors. Interior keys cannot change that union. Gap planning
+// still enumerates physical records and therefore uses the default full path.
+inline bool observe_keys(BTreeIndex& tree,const Operation& op,KeyObservation& out,bool enumerate_range=true) {
     if(op.kind==OperationKind::RangeRead && op.key>=op.end_key) {
         if(op.key>op.end_key)throw std::invalid_argument("reversed key range");
         out={};return true;
     }
     if(!tree.key_neighbors(op.key,out.lower))throw std::runtime_error("index has no key-neighbor metadata capability");
     if(op.kind!=OperationKind::RangeRead)return true;
-    if(!tree.key_neighbors(op.end_key,out.upper) ||
-       !tree.key_range_into(KeyRangeEnt::half_open(op.key,op.end_key),out.keys))
+    if(!tree.key_neighbors(op.end_key,out.upper))
+        throw std::runtime_error("index has no key-neighbor metadata capability");
+    if(!enumerate_range){out.keys.clear();return true;}
+    if(!tree.key_range_into(KeyRangeEnt::half_open(op.key,op.end_key),out.keys))
         throw std::runtime_error("index has no key-range metadata capability");
     // A mutation between the three short snapshots is a normal replan abort.
     auto first=out.lower.present?op.key:out.lower.successor;

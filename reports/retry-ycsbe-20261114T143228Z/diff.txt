@@ -1,0 +1,197 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 578a329..7421b0c 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -490,3 +490,8 @@ if(RRL_PYTHON3)
+   add_test(NAME rrl_compact_precision_runner_test COMMAND ${RRL_PYTHON3} ${CMAKE_SOURCE_DIR}/test/compact_precision_runner_test.py $<TARGET_FILE:rrl_workload_runner>)
+   set_tests_properties(rrl_compact_precision_runner_test PROPERTIES TIMEOUT 180)
+ endif()
++
++if(RRL_PYTHON3)
++  add_test(NAME rrl_retry_backoff_runner_test COMMAND ${RRL_PYTHON3} ${CMAKE_SOURCE_DIR}/test/retry_backoff_runner_test.py $<TARGET_FILE:rrl_workload_runner>)
++  set_tests_properties(rrl_retry_backoff_runner_test PROPERTIES TIMEOUT 180)
++endif()
+diff --git a/benchmarks/workload_runner.cpp b/benchmarks/workload_runner.cpp
+index 291f407..df81b2f 100644
+--- a/benchmarks/workload_runner.cpp
++++ b/benchmarks/workload_runner.cpp
+@@ -140,6 +140,10 @@ void load_config(const std::string& path, WorkloadConfig& config,
+         } else if (key == "latency_histogram") {
+             if (value.kind != ConfigScalar::String || value.text.empty()) throw std::invalid_argument("latency_histogram: expected nonempty path");
+             policy.histogram_path = value.text; measured = true;
++        } else if (key == "retry_backoff") {
++            if(value.kind!=ConfigScalar::String || (value.text!="off" && value.text!="adaptive"))
++                throw std::invalid_argument("retry_backoff must be off or adaptive");
++            policy.retry_backoff=value.text;measured=true;
+         } else if (key == "record_lock_table") {
+             if(value.kind!=ConfigScalar::String || (value.text!="auto" && value.text!="generic" && value.text!="compact"))
+                 throw std::invalid_argument("record_lock_table must be auto, generic or compact");
+@@ -345,6 +349,10 @@ int run(int argc, char** argv) {
+             if (enabled > 1) throw std::invalid_argument("native-object-locks must be 0 or 1");
+             policy.native_object_locks = enabled != 0; measured = true;
+         }
++        else if (option == "--retry-backoff") {
++            if(value!="off" && value!="adaptive")throw std::invalid_argument("retry-backoff must be off or adaptive");
++            policy.retry_backoff=value;measured=true;
++        }
+         else if (option == "--record-lock-table") {
+             if(value!="auto" && value!="generic" && value!="compact")throw std::invalid_argument("record-lock-table must be auto, generic or compact");
+             policy.record_lock_table=value;measured=true;
+@@ -911,6 +919,7 @@ int run(int argc, char** argv) {
+         std::cout << ",exact_lock_table,exact_lock_bytes,exact_state_bytes,exact_held_capacity_bytes,exact_plan_bytes,exact_latency,exact_statistics";
+         std::cout << ",key_lock_table,key_lock_bytes,key_directory_bytes,key_state_bytes,key_held_capacity_bytes,key_latency,key_statistics";
+         std::cout << ",hierarchy_lock_table,hierarchy_lock_bytes,hierarchy_state_bytes,hierarchy_held_capacity_bytes,hierarchy_lease_bytes,hierarchy_plan_bytes,hierarchy_cas_retries,hierarchy_implicit_root,hierarchy_padded,hierarchy_latency,hierarchy_statistics";
++        std::cout << ",retry_backoff,retry_backoff_count,retry_backoff_total_ns,committed_read_only,committed_with_writes";
+         std::cout << '\n';
+         std::cout << WorkloadTrace::name(config.kind) << ',' << index_name << ',' << cc << ',' << config.threads << ','
+                   << stats.transactions << ',' << stats.committed << ',' << stats.aborted << ',' << stats.operations << ','
+@@ -1035,6 +1044,9 @@ int run(int argc, char** argv) {
+                   << ',' << (compact_hierarchy && policy.hierarchy_padded?1:0)
+                   << ',' << (compact_hierarchy?(policy.hierarchy_latency?1:0):1)
+                   << ',' << (compact_hierarchy?(policy.hierarchy_statistics?1:0):1);
++        std::cout << ',' << ((compact_record || compact_key || compact_exact || compact_precision || compact_hierarchy)?policy.retry_backoff:"not-applicable")
++                  << ',' << stats.policy.retry_backoff_count << ',' << stats.policy.retry_backoff_ns
++                  << ',' << stats.policy.committed_read_only << ',' << stats.policy.committed_with_writes;
+         std::cout << '\n';
+     } else {
+         if(cc=="hierarchical")std::cout<<"hierarchy_lock_table="<<(compact_hierarchy?"compact":"generic")
+diff --git a/include/txn/policy_workload.h b/include/txn/policy_workload.h
+index 3a385d3..cf2b727 100644
+--- a/include/txn/policy_workload.h
++++ b/include/txn/policy_workload.h
+@@ -7,6 +7,7 @@ class LocalNativePolicyState;
+ enum class PolicyProtocol { Record, Gap, NextKey, Hierarchy, Predicate, None, ExactRange, PriorKey, Precision, Griffin };
+ struct PolicyRunConfig {
+     // Local record-only backend; auto keeps generic for unsupported geometry.
++    std::string retry_backoff{"adaptive"};
+     std::string record_lock_table{"auto"};
+     std::string precision_lock_table{"auto"};
+     bool precision_latency{true},precision_statistics{true};
+@@ -51,6 +52,8 @@ struct PolicyRunConfig {
+ struct PolicyStats {
+     std::uint64_t hierarchy_lease_bytes{0},hierarchy_plan_bytes{0},hierarchy_cas_retries{0};
+     std::uint64_t precision_lock_bytes{0},precision_plan_bytes{0},precision_state_bytes{0},precision_held_bytes{0};
++    std::uint64_t retry_backoff_count{0},retry_backoff_ns{0};
++    std::uint64_t committed_read_only{0},committed_with_writes{0};
+     std::uint64_t exact_plan_bytes{0};
+     std::uint64_t record_lock_bytes{0},record_directory_bytes{0},record_state_bytes{0},record_held_bytes{0};
+     bool enabled{false};
+diff --git a/src/txn/precision_workload.cpp b/src/txn/precision_workload.cpp
+index a284878..1ec9825 100644
+--- a/src/txn/precision_workload.cpp
++++ b/src/txn/precision_workload.cpp
+@@ -1,4 +1,5 @@
+ #include "txn/record_workload.h"
++#include "txn/retry_backoff.h"
+ #include "lock/record_lock_table.h"
+ #include "compact_precision_plan.h"
+ #include "txn/coroutine.h"
+@@ -23,6 +24,10 @@ template<WaitPolicy Policy,bool Profile,bool Statistics>
+ RunStats run_precision_impl(BTreeIndex& index,const WorkloadTrace& trace,const PolicyRunConfig& cfg) {
+     const auto total=trace.transactions().size();
+     if(!total)return {};
++    if(cfg.retry_backoff!="off" && cfg.retry_backoff!="adaptive")throw std::invalid_argument("retry-backoff must be off or adaptive");
++    std::vector<unsigned char> transaction_writes(total);
++    for(std::size_t n=0;n<total;++n)for(const auto& op:trace.transactions()[n].operations)
++        if(op.kind!=OperationKind::Read && op.kind!=OperationKind::RangeRead){transaction_writes[n]=1;break;}
+     const auto worker_threads=trace.config().threads;
+     if(cfg.protocol!=PolicyProtocol::Precision || !worker_threads || !cfg.coroutines ||
+        cfg.coroutines>4096 || worker_threads>4096/cfg.coroutines ||
+@@ -73,6 +78,7 @@ RunStats run_precision_impl(BTreeIndex& index,const WorkloadTrace& trace,const P
+     auto work=[&](std::size_t worker) {
+         auto& p=parts[worker];auto& s=p.stats;auto& m=s.policy;
+         auto& client=*clients[worker];auto& pending=writes[worker];
++        detail::RetryBackoff backoff(worker,cfg.retry_backoff=="adaptive");
+         bool arrived=false,active_attempt=false;
+         auto arrive=[&](unsigned target) {
+             {std::lock_guard<std::mutex> guard(start_mutex);++ready;start_cv.notify_all();}
+@@ -182,6 +188,7 @@ RunStats run_precision_impl(BTreeIndex& index,const WorkloadTrace& trace,const P
+                         if(outcome==TxnResult::Error){++s.lock_errors;++s.failed_transactions;hard=true;stopped=true;break;}
+                         if(outcome==TxnResult::Ok) {
+                             ++s.committed;completed=true;
++                            if(transaction_writes[i%total])++m.committed_with_writes;else ++m.committed_read_only;
+                             if constexpr(Profile){const auto end=Clock::now();p.attempt->add(ns(end-attempt_start));p.logical->add(ns(end-logical_start));}
+                             break;
+                         }
+@@ -190,6 +197,12 @@ RunStats run_precision_impl(BTreeIndex& index,const WorkloadTrace& trace,const P
+                         if(outcome==TxnResult::Wounded)++m.wound_aborts;
+                         if(outcome==TxnResult::Deadline)++m.deadline_aborts;
+                         if(attempt+1==cfg.max_attempts)++m.retry_exhausted;
++                        else if(!client.capacity_abort()) {
++                            // finish() above has released every lock. A failed
++                            // context must not immediately attack the winner.
++                            const auto paused=backoff.pause(attempt+1,deadline);
++                            if(paused){++m.retry_backoff_count;m.retry_backoff_ns+=paused;}
++                        }
+                         cooperative_yield();
+                     }
+                     if(!attempted){--m.logical_started;break;}
+@@ -297,6 +310,8 @@ RunStats run_precision_impl(BTreeIndex& index,const WorkloadTrace& trace,const P
+         pm.deneva_split_aborts+=m.deneva_split_aborts;pm.deneva_partial_write_aborts+=m.deneva_partial_write_aborts;
+         pm.logical_started+=m.logical_started;pm.unfinished+=m.unfinished;pm.logical_failed+=m.logical_failed;
+         pm.retries+=m.retries;pm.max_retries=std::max(pm.max_retries,m.max_retries);
++        pm.retry_backoff_count+=m.retry_backoff_count;pm.retry_backoff_ns+=m.retry_backoff_ns;
++        pm.committed_read_only+=m.committed_read_only;pm.committed_with_writes+=m.committed_with_writes;
+         pm.completed_retries+=m.completed_retries;pm.unfinished_retries+=m.unfinished_retries;
+         pm.wound_aborts+=m.wound_aborts;pm.deadline_aborts+=m.deadline_aborts;pm.retry_exhausted+=m.retry_exhausted;
+         if constexpr(Profile) {
+diff --git a/src/txn/record_workload.cpp b/src/txn/record_workload.cpp
+index 05b95b7..10ff3e7 100644
+--- a/src/txn/record_workload.cpp
++++ b/src/txn/record_workload.cpp
+@@ -1,4 +1,5 @@
+ #include "txn/record_workload.h"
++#include "txn/retry_backoff.h"
+ #include "lock/record_lock_table.h"
+ #include "lock/classic_lock_table.h"
+ #include "lock/hierarchy_lock_table.h"
+@@ -27,6 +28,10 @@ template<WaitPolicy Policy,bool Profile,bool Statistics,PolicyProtocol Protocol=
+ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const PolicyRunConfig& cfg) {
+     const auto total=trace.transactions().size();
+     if(!total)return {};
++    if(cfg.retry_backoff!="off" && cfg.retry_backoff!="adaptive")throw std::invalid_argument("retry-backoff must be off or adaptive");
++    std::vector<unsigned char> transaction_writes(total);
++    for(std::size_t n=0;n<total;++n)for(const auto& op:trace.transactions()[n].operations)
++        if(op.kind!=OperationKind::Read && op.kind!=OperationKind::RangeRead){transaction_writes[n]=1;break;}
+     const auto worker_threads=trace.config().threads;
+     if(cfg.protocol!=Protocol || !worker_threads || !cfg.coroutines ||
+        cfg.coroutines>4096 || worker_threads>4096/cfg.coroutines ||
+@@ -135,6 +140,8 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
+     auto work=[&](std::size_t worker) {
+         auto& p=parts[worker];auto& s=p.stats;auto& m=s.policy;
+         auto& client=*clients[worker];auto& pending=writes[worker];
++        detail::RetryBackoff backoff(worker,cfg.retry_backoff=="adaptive",
++            Protocol==PolicyProtocol::Hierarchy && Policy==WaitPolicy::NoWait?6:2);
+         bool arrived=false,active_attempt=false;
+         auto arrive=[&](unsigned target) {
+             {std::lock_guard<std::mutex> guard(start_mutex);++ready;start_cv.notify_all();}
+@@ -391,6 +398,7 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
+                         if(outcome==TxnResult::Error){++s.lock_errors;++s.failed_transactions;hard=true;stopped=true;break;}
+                         if(outcome==TxnResult::Ok) {
+                             ++s.committed;completed=true;
++                            if(transaction_writes[i%total])++m.committed_with_writes;else ++m.committed_read_only;
+                             if constexpr(Profile){const auto end=Clock::now();p.attempt->add(ns(end-attempt_start));p.logical->add(ns(end-logical_start));}
+                             break;
+                         }
+@@ -399,6 +407,12 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
+                         if(outcome==TxnResult::Wounded)++m.wound_aborts;
+                         if(outcome==TxnResult::Deadline)++m.deadline_aborts;
+                         if(attempt+1==cfg.max_attempts)++m.retry_exhausted;
++                        else if(!client.capacity_abort()) {
++                            // finish() above has released every lock. A failed
++                            // context must not immediately attack the winner.
++                            const auto paused=backoff.pause(attempt+1,deadline);
++                            if(paused){++m.retry_backoff_count;m.retry_backoff_ns+=paused;}
++                        }
+                         cooperative_yield();
+                     }
+                     if(!attempted){--m.logical_started;break;}
+@@ -512,6 +526,8 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
+         pm.deneva_split_aborts+=m.deneva_split_aborts;pm.deneva_partial_write_aborts+=m.deneva_partial_write_aborts;
+         pm.logical_started+=m.logical_started;pm.unfinished+=m.unfinished;pm.logical_failed+=m.logical_failed;
+         pm.retries+=m.retries;pm.max_retries=std::max(pm.max_retries,m.max_retries);
++        pm.retry_backoff_count+=m.retry_backoff_count;pm.retry_backoff_ns+=m.retry_backoff_ns;
++        pm.committed_read_only+=m.committed_read_only;pm.committed_with_writes+=m.committed_with_writes;
+         pm.completed_retries+=m.completed_retries;pm.unfinished_retries+=m.unfinished_retries;
+         pm.wound_aborts+=m.wound_aborts;pm.deadline_aborts+=m.deadline_aborts;pm.retry_exhausted+=m.retry_exhausted;
+         if constexpr(Profile) {

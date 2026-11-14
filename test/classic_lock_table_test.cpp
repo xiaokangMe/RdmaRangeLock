@@ -126,6 +126,29 @@ void boundary_only_execution() {
             CHECK(actual.enumerations==0 && actual.tree.validate());
         }
 }
+void nested_scan_equivalence() {
+    WorkloadConfig config;config.key_count=16;config.transaction_count=2;config.threads=1;config.range_length=32;
+    const auto trace=WorkloadTrace::from_transactions(config,{
+        {1,{{OperationKind::RangeRead,0,32,0},{OperationKind::Insert,20,0,200},
+            {OperationKind::RangeRead,18,25,0},{OperationKind::Delete,5,0,0},
+            {OperationKind::RangeRead,3,8,0},{OperationKind::RangeRead,8,16,0},
+            {OperationKind::RangeRead,24,40,0},{OperationKind::RangeRead,60,80,0},
+            {OperationKind::RangeRead,35,100,0},{OperationKind::RangeRead,0,100,0},
+            {OperationKind::Insert,5,0,500},{OperationKind::RangeRead,0,32,0}}},
+        {2,{{OperationKind::RangeRead,18,25,0},{OperationKind::RangeRead,19,24,0},
+            {OperationKind::Delete,20,0,0},{OperationKind::RangeRead,19,24,0}}}});
+    for(auto protocol:{PolicyProtocol::NextKey,PolicyProtocol::Gap,PolicyProtocol::PriorKey})
+        for(auto policy:{WaitPolicy::NoWait,WaitPolicy::WaitDie,WaitPolicy::WoundWait}) {
+            BTreeLatch a,b;a.init(4);b.init(4);LockManager locks;
+            PolicyRunConfig cfg;cfg.protocol=protocol;cfg.wait_policy=policy;cfg.use_coroutines=false;
+            const auto expected=run_policy_workload(a,locks,trace,cfg);
+            const auto actual=run_compact_key_workload(b,trace,cfg);
+            CHECK(!expected.failed() && !actual.failed());CHECK(actual.committed==2);
+            CHECK(expected.rows_found==actual.rows_found && expected.checksum==actual.checksum);
+            CHECK(expected.range_reads==actual.range_reads && a.size()==b.size());
+            CHECK(a.validate() && b.validate());
+        }
+}
 void validation_and_membership() {
     for(auto protocol:{PolicyProtocol::NextKey,PolicyProtocol::Gap,PolicyProtocol::PriorKey}) {
         ClassicLockTable table({10,15,20,UINT64_MAX},2,protocol);
@@ -168,5 +191,6 @@ int main() {try {
     }
     executor_equivalence();
     boundary_only_execution();
+    nested_scan_equivalence();
     std::cout<<"Classic CAS: 30000 pairwise reference cases, boundaries, phantoms, wait/wound, splits and own writes OK\n";
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

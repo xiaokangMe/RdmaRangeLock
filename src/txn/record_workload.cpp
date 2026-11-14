@@ -118,6 +118,16 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
     std::vector<std::vector<KeyValue>> scans(count),rechecks(count);
     std::vector<detail::KeyObservation> before(count),after(count);
     std::vector<std::vector<detail::KeyRequest>> key_plans(count);
+    // Only classic interval protocols protect both records and membership.
+    // Keep a tiny attempt-local list of successfully protected scan queries.
+    std::vector<std::vector<std::pair<idx_key_t,idx_key_t>>> protected_scans;
+    std::vector<std::vector<Operation>> scan_fragments;
+    if constexpr(Protocol==PolicyProtocol::NextKey || Protocol==PolicyProtocol::PriorKey || Protocol==PolicyProtocol::Gap) {
+        protected_scans.resize(count);
+        for(auto& v:protected_scans)v.reserve(maxops);
+        scan_fragments.resize(count);
+        for(auto& v:scan_fragments)v.reserve(maxops+1);
+    }
     for(auto& v:writes)v.reserve(maxops);
     for(auto& v:scans)v.reserve(trace.config().range_length);
     for(auto& v:rechecks)v.reserve(trace.config().range_length);
@@ -178,6 +188,8 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
                         const auto attempt_deadline=std::min(client.deadline(),deadline);
                         TxnResult outcome=TxnResult::Ok;
                         pending.clear();
+                        if constexpr(Protocol==PolicyProtocol::NextKey || Protocol==PolicyProtocol::PriorKey || Protocol==PolicyProtocol::Gap)
+                            protected_scans[worker].clear();
                         auto own_write=[&](idx_key_t key)->const IndexMutation* {
                             for(auto it=pending.rbegin();it!=pending.rend();++it)if(it->key==key)return &*it;
                             return nullptr;
@@ -261,54 +273,88 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
                                 }
                                 continue;
                             } else if constexpr(Protocol!=PolicyProtocol::Record) {
-                                if(!detail::observe_keys(index,op,before[worker],Protocol==PolicyProtocol::Gap)) {outcome=TxnResult::Conflict;break;}
-                                auto& plan=key_plans[worker];
-                                if constexpr(Protocol==PolicyProtocol::NextKey || Protocol==PolicyProtocol::PriorKey) {
-                                    if(op.kind==OperationKind::RangeRead) {
-                                        // All scan units are adjacent. Build their union
-                                        // directly, without one request per physical row.
-                                        plan.clear();
-                                        if(op.key<op.end_key) {
-                                            const auto& n=before[worker].lower;const auto& u=before[worker].upper;
-                                            KeyRangeEnt span;
-                                            span.has_start=n.has_predecessor;span.StartKey=n.predecessor;
-                                            span.has_end=u.present || u.has_successor;
-                                            span.EndKey=u.present?op.end_key:u.successor;
-                                            span.start_bound=Protocol==PolicyProtocol::NextKey?Bound::Open:Bound::Closed;
-                                            span.end_bound=Protocol==PolicyProtocol::NextKey?Bound::Closed:Bound::Open;
-                                            if constexpr(Protocol==PolicyProtocol::PriorKey)
-                                                if(n.present){span.has_start=true;span.StartKey=op.key;}
-                                            if(span.valid())plan.push_back({LockMode::S,span,
-                                                Protocol==PolicyProtocol::NextKey?LockKind::NextKey:LockKind::PriorKey});
-                                        }
-                                    } else detail::key_plan(op,before[worker],Protocol,plan);
-                                } else detail::key_plan(op,before[worker],Protocol,plan);
-                                for(std::size_t request=0;request<plan.size();) {
-                                    auto range=plan[request].range;
-                                    const auto mode=plan[request].mode;const auto kind=plan[request].kind;
-                                    ++request;
-                                    if constexpr(Protocol!=PolicyProtocol::Gap) {
-                                        // Adjacent equal-mode intervals have identical union;
-                                        // take each atomic cell once for a complete scan.
-                                        while(request<plan.size() && plan[request].mode==mode && plan[request].kind==kind &&
-                                              range.has_end && plan[request].range.has_start &&
-                                              range.EndKey==plan[request].range.StartKey &&
-                                              (range.end_bound==Bound::Closed || plan[request].range.start_bound==Bound::Closed)) {
-                                            range.has_end=plan[request].range.has_end;
-                                            range.EndKey=plan[request].range.EndKey;range.end_bound=plan[request].range.end_bound;++request;
-                                        }
+                                auto& coverage=protected_scans[worker];
+                                auto& fragments=scan_fragments[worker];fragments.clear();
+                                if(op.kind==OperationKind::RangeRead) {
+                                    if(op.key>op.end_key)throw std::invalid_argument("reversed key range");
+                                    auto cursor=op.key;
+                                    for(const auto& span:coverage) {
+                                        if(cursor>=op.end_key)break;
+                                        if(span.second<=cursor)continue;
+                                        if(span.first>=op.end_key)break;
+                                        if(cursor<span.first)fragments.push_back({OperationKind::RangeRead,cursor,span.first,0});
+                                        cursor=std::max(cursor,span.second);
                                     }
-                                    if constexpr(Statistics)++s.lock_acquires;
-                                    const auto r=classic->acquire<Policy>(client,mode,range,kind);outcome=r.result;
-                                    if constexpr(Profile)if(r.wait_ns)p.wait->add(r.wait_ns);
+                                    if(cursor<op.end_key)fragments.push_back({OperationKind::RangeRead,cursor,op.end_key,0});
+                                } else fragments.push_back(op);
+                                // Only uncovered query pieces need a classic lock plan.
+                                // Each fragment keeps the full metadata revalidation.
+                                for(const auto& op:fragments) {
+                                    if(!detail::observe_keys(index,op,before[worker],Protocol==PolicyProtocol::Gap)) {outcome=TxnResult::Conflict;break;}
+                                    auto& plan=key_plans[worker];
+                                    if constexpr(Protocol==PolicyProtocol::NextKey || Protocol==PolicyProtocol::PriorKey) {
+                                        if(op.kind==OperationKind::RangeRead) {
+                                            // All scan units are adjacent. Build their union
+                                            // directly, without one request per physical row.
+                                            plan.clear();
+                                            if(op.key<op.end_key) {
+                                                const auto& n=before[worker].lower;const auto& u=before[worker].upper;
+                                                KeyRangeEnt span;
+                                                span.has_start=n.has_predecessor;span.StartKey=n.predecessor;
+                                                span.has_end=u.present || u.has_successor;
+                                                span.EndKey=u.present?op.end_key:u.successor;
+                                                span.start_bound=Protocol==PolicyProtocol::NextKey?Bound::Open:Bound::Closed;
+                                                span.end_bound=Protocol==PolicyProtocol::NextKey?Bound::Closed:Bound::Open;
+                                                if constexpr(Protocol==PolicyProtocol::PriorKey)
+                                                    if(n.present){span.has_start=true;span.StartKey=op.key;}
+                                                if(span.valid())plan.push_back({LockMode::S,span,
+                                                    Protocol==PolicyProtocol::NextKey?LockKind::NextKey:LockKind::PriorKey});
+                                            }
+                                        } else detail::key_plan(op,before[worker],Protocol,plan);
+                                    } else detail::key_plan(op,before[worker],Protocol,plan);
+                                    for(std::size_t request=0;request<plan.size();) {
+                                        auto range=plan[request].range;
+                                        const auto mode=plan[request].mode;const auto kind=plan[request].kind;
+                                        ++request;
+                                        if constexpr(Protocol!=PolicyProtocol::Gap) {
+                                            // Adjacent equal-mode intervals have identical union;
+                                            // take each atomic cell once for a complete scan.
+                                            while(request<plan.size() && plan[request].mode==mode && plan[request].kind==kind &&
+                                                  range.has_end && plan[request].range.has_start &&
+                                                  range.EndKey==plan[request].range.StartKey &&
+                                                  (range.end_bound==Bound::Closed || plan[request].range.start_bound==Bound::Closed)) {
+                                                range.has_end=plan[request].range.has_end;
+                                                range.EndKey=plan[request].range.EndKey;range.end_bound=plan[request].range.end_bound;++request;
+                                            }
+                                        }
+                                        if constexpr(Statistics)++s.lock_acquires;
+                                        const auto r=classic->acquire<Policy>(client,mode,range,kind);outcome=r.result;
+                                        if constexpr(Profile)if(r.wait_ns)p.wait->add(r.wait_ns);
+                                        if(outcome!=TxnResult::Ok)break;
+                                    }
+
                                     if(outcome!=TxnResult::Ok)break;
+                                    if(!detail::observe_keys(index,op,after[worker],Protocol==PolicyProtocol::Gap) ||
+                                       !detail::same_observation(before[worker],after[worker],op.kind==OperationKind::RangeRead)) {
+                                        outcome=TxnResult::Conflict;break;
+                                    }
                                 }
                                 if constexpr(Profile)p.call->add(ns(Clock::now()-call_start));
                                 if(outcome!=TxnResult::Ok)break;
-                                if(!detail::observe_keys(index,op,after[worker],Protocol==PolicyProtocol::Gap) ||
-                                   !detail::same_observation(before[worker],after[worker],op.kind==OperationKind::RangeRead)) {
-                                    outcome=TxnResult::Conflict;break;
+                                if(op.kind==OperationKind::RangeRead && op.key<op.end_key) {
+                                    const auto position=std::lower_bound(coverage.begin(),coverage.end(),op.key,
+                                        [](const auto& span,idx_key_t key){return span.first<key;});
+                                    coverage.insert(position,{op.key,op.end_key});
+                                    std::size_t used=0;
+                                    for(const auto span:coverage) {
+                                        if(used && span.first<=coverage[used-1].second)
+                                            coverage[used-1].second=std::max(coverage[used-1].second,span.second);
+                                        else coverage[used++]=span;
+                                    }
+                                    coverage.resize(used);
                                 }
+                                // Entire original query now holds S protection through
+                                // finish(). Still scan data and overlay pending own writes.
                                 if(op.kind==OperationKind::RangeRead) {
                                     if constexpr(Statistics)++s.range_reads;
                                     if(op.end_key<=op.key)continue;

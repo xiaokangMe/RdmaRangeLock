@@ -30,6 +30,7 @@ def main():
         fig.suptitle(f"YCSB-E | {cfg['threads']} threads | {cfg['keys']:,} keys | {cfg['ops']} ops/txn | warmup {cfg['warmup']}s + measure {cfg['duration']}s | one trial/case",fontsize=11)
         fig.tight_layout(); fig.savefig(out/(filename+'.png'),dpi=180); fig.savefig(out/(filename+'.pdf')); plt.close(fig)
     figure('throughput', 'Committed transactions/s', lambda r: float(r['throughput_committed_txn_s']))
+    figure('throughput_log', 'Committed transactions/s (log scale)', lambda r: float(r['throughput_committed_txn_s']), True)
     figure('write_throughput','Committed transactions containing writes/s',lambda r:int(r['committed_with_writes'])/(int(r['elapsed_ns'])/1e9))
     figure('retry_exhausted','Logical transactions exhausting retry limit',lambda r:int(r['retry_exhausted']),True)
     figure('unfinished','Unfinished logical transactions (includes deadline)',lambda r:int(r['logical_unfinished']),True)
@@ -39,6 +40,10 @@ def main():
            '',f'Valid cases: {len(rows)}. Missing cases: {missing}.',
            '', 'Optional latency/row statistics are disabled in this performance sweep. Zero histogram or row fields do not mean no waiting or no reads. Core retry, backoff and completion counters remain enabled.',
            '', 'Record 2PL does not protect gaps or guarantee phantom avoidance. Compare its throughput with that semantic difference in mind. A fixed generated trace is replayed during both windows; inserts can become overwrites after their first successful commit. This is a closed replay experiment, not a growing-table insert benchmark.']
+    if meta.get('provenance_note'):
+        lines += ['',meta['provenance_note'],'','| Algorithms | Source campaign |','|---|---|']
+        for selected in meta['selection']:
+            lines += ['| '+', '.join(selected['algorithms'])+' | '+selected['campaign']+' |']
     for p in cfg['policies']:
         lines+=['',f'## {p}: committed TPS','', '| Theta | '+' | '.join(LABELS[a] for a in cfg['algorithms'])+' |', '|---|'+'---:|'*len(cfg['algorithms'])]
         for z in thetas:

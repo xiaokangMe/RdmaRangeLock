@@ -22,6 +22,8 @@ CONFIG = {
 def main():
     root = Path(__file__).resolve().parents[1]; os.chdir(root)
     config = dict(CONFIG)
+    if os.environ.get('RRL_CLASSIC_ONLY') == '1':
+        config['algorithms'] = ['next-key', 'gap-lock', 'prior-key']
     runner = (root / config['runner']).resolve()
     out = root / 'reports' / ('optimized-ycsbe-' + datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ'))
     out.mkdir(parents=True, exist_ok=False)

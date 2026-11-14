@@ -1,0 +1,34 @@
+{
+  "config": {
+    "old_runner": "/tmp/rrl-before-scan-reuse",
+    "new_runner": "build-precision/rrl_workload_runner",
+    "algorithms": [
+      "next-key",
+      "gap-lock",
+      "prior-key"
+    ],
+    "policies": [
+      "no-wait",
+      "wait-die",
+      "wound-wait"
+    ],
+    "thetas": [
+      0,
+      1.5
+    ],
+    "rounds": 1,
+    "keys": 2097152,
+    "threads": 32,
+    "transactions": 5000,
+    "ops": 10,
+    "range": 32,
+    "seed": 8,
+    "warmup": 1,
+    "duration": 2,
+    "max_attempts": 1000
+  },
+  "binaries": {
+    "old_runner": "a24cb939ef3e01dee059d7cf88303fe48f23e55ef81685a02257759d5718cd5c",
+    "new_runner": "0c1f08e30922907d387af8fcffd6067823e56c7eb9643f7b487065f38083153e"
+  }
+}

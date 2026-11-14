@@ -1,0 +1,9 @@
+Final audit: PASS
+162 unique configurations; exactly one selected measurement per configuration.
+All selected rows match their original stdout; all commands match requested workload/window parameters.
+Every source snapshot matches its captured SHA256.
+Execution errors, capacity errors and retry-exhausted logical transactions: 0.
+Window-end unfinished logical transactions: 27..32 per trial.
+Maximum observed retries for one logical transaction: 297.
+All 32 contexts submitted committed transactions in every trial.
+No starvation-freedom guarantee follows from these finite, single-trial measurements.

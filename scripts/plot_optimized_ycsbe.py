@@ -28,7 +28,12 @@ def main():
             if logarithmic: ax.set_yscale('symlog',linthresh=1)
         axes[-1].legend(fontsize=8)
         fig.suptitle(f"YCSB-E | {cfg['threads']} threads | {cfg['keys']:,} keys | {cfg['ops']} ops/txn | warmup {cfg['warmup']}s + measure {cfg['duration']}s | one trial/case",fontsize=11)
-        fig.tight_layout(); fig.savefig(out/(filename+'.png'),dpi=180); fig.savefig(out/(filename+'.pdf')); plt.close(fig)
+        if meta.get('selection'):
+            fig.text(.5,.008,'Classic algorithms: rerun after scan reuse. Record / Hierarchy / Exact: preceding sweep. Full provenance in metadata.json.',ha='center',fontsize=9)
+            fig.tight_layout(rect=(0,.035,1,1))
+        else:
+            fig.tight_layout()
+        fig.savefig(out/(filename+'.png'),dpi=180); fig.savefig(out/(filename+'.pdf')); plt.close(fig)
     figure('throughput', 'Committed transactions/s', lambda r: float(r['throughput_committed_txn_s']))
     figure('throughput_log', 'Committed transactions/s (log scale)', lambda r: float(r['throughput_committed_txn_s']), True)
     figure('write_throughput','Committed transactions containing writes/s',lambda r:int(r['committed_with_writes'])/(int(r['elapsed_ns'])/1e9))

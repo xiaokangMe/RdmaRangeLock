@@ -132,3 +132,19 @@ Next-key/Prior-key 的 compact 范围锁已经是连续区间的并集，其覆�
 后续按相同10s/10s设置重跑Next-key/Gap/Prior的完整81配置，不把短探针混入
 最终折线。最终汇总明确标注各算法来自哪个完整矩阵和对应二进制hash。
 复测命令：RRL_CLASSIC_ONLY=1 python3 scripts/benchmark_optimized_ycsbe.py。
+
+## 最终结果
+
+reports/optimized-ycsbe-final-20261114T164241Z 为最终162个选择点：Record/
+Hierarchy/Exact来自完整162组矩阵，Next-key/Gap/Prior来自优化后的完整81组
+复测。每种算法的整条曲线来自同一版本/批次，metadata和图注明确注明来源。
+
+最终审计通过：162个唯一配置全部与原始stdout、命令和源码SHA256一致；
+重试耗尽、执行错误、容量错误均为零。单个逻辑事务最多观察到297次重试；
+各轮测量截止时有27–32个未完成事务。所有配置的32个工作context均有提交。
+Release CTest54项通过，21项RDMA环境跳过。没有改变1000次尝试上限。
+
+扫描覆盖复用后，theta=1.5的9个经典算法/策略点相较上一轮单次测量提高约
+4%–35%；中间偏斜有回退，覆盖表维护成本及单次测量波动都可能影响结果。
+详细全部81点比较存于scan_reuse_effect.csv，不宣称全偏斜率均更快。
+这轮解决了实测重试风暴，不等于高争用不存在或有限次必提交的形式化保证。

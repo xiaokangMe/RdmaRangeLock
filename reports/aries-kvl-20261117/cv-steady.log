@@ -1,0 +1,20 @@
+==================
+WARNING: ThreadSanitizer: double lock of a mutex (pid=99474)
+    #0 pthread_cond_wait ../../../../src/libsanitizer/tsan/tsan_interceptors_posix.cpp:1176 (libtsan.so.0+0x654e8)
+    #1 wait<main()::<lambda()> > /usr/include/c++/11/condition_variable:103 (cv-steady+0x2812)
+    #2 main reports/aries-kvl-20261117/cv-tsan-reproducer.cpp:15 (cv-steady+0x2812)
+
+  Location is stack of main thread.
+
+  Location is global '<null>' at 0x000000000000 ([stack]+0x00000001f0e0)
+
+  Mutex M9 (0x7ffdbc2600e0) created at:
+    #0 pthread_mutex_lock ../../../../src/libsanitizer/sanitizer_common/sanitizer_common_interceptors.inc:4240 (libtsan.so.0+0x53908)
+    #1 __gthread_mutex_lock /usr/include/x86_64-linux-gnu/c++/11/bits/gthr-default.h:749 (cv-steady+0x27d8)
+    #2 std::mutex::lock() /usr/include/c++/11/bits/std_mutex.h:100 (cv-steady+0x27d8)
+    #3 std::unique_lock<std::mutex>::lock() /usr/include/c++/11/bits/unique_lock.h:139 (cv-steady+0x27d8)
+    #4 std::unique_lock<std::mutex>::unique_lock(std::mutex&) /usr/include/c++/11/bits/unique_lock.h:69 (cv-steady+0x27d8)
+    #5 main reports/aries-kvl-20261117/cv-tsan-reproducer.cpp:15 (cv-steady+0x27d8)
+
+SUMMARY: ThreadSanitizer: double lock of a mutex /usr/include/c++/11/condition_variable:103 in wait<main()::<lambda()> >
+==================

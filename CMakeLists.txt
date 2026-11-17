@@ -504,3 +504,13 @@ endif()
 add_test(NAME rrl_deneva_insert_runner_test
     COMMAND python3 ${CMAKE_SOURCE_DIR}/test/deneva_insert_runner_test.py $<TARGET_FILE:rrl_workload_runner>)
 set_tests_properties(rrl_deneva_insert_runner_test PROPERTIES TIMEOUT 240)
+
+# Independent, in-memory ARIES/KVL action routines (Mohan 1990).
+add_library(rrl_aries_kvl STATIC src/index/aries_kvl.cpp)
+target_include_directories(rrl_aries_kvl PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_compile_options(rrl_aries_kvl PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(rrl_aries_kvl PUBLIC pthread)
+add_executable(rrl_aries_kvl_test test/aries_kvl_test.cpp)
+target_link_libraries(rrl_aries_kvl_test PRIVATE rrl_aries_kvl)
+add_test(NAME rrl_aries_kvl_test COMMAND rrl_aries_kvl_test)
+set_tests_properties(rrl_aries_kvl_test PROPERTIES TIMEOUT 90)

@@ -282,26 +282,49 @@ struct Index::Impl {
         for(auto* changed:affected) {Hold held(changed,true,tx.page_latches,max_latches);changed->sm=false;++changed->version;}
         event(tx,Phase::SplitPublished,key_name(separator.key));
     }
-    // Root identity does not change (§2.2). Old root contents become children.
+    // Section 2.2: copy the old root contents into a new child page, then split
+    // that copied page. The original root page remains at the same address.
     void split_root(State& tx,Hold& held) {
         Page* page=held.page;const bool was_leaf=page->leaf;
-        Page* left=make_page(was_leaf);Page* right=make_page(was_leaf);
-        left->parent=right->parent=root;
-        const auto middle=page->keys.size()/2;
-        Entry separator=page->keys[middle];
+        page->sm=true;++page->version;
+        Page* copied=make_page(was_leaf);
+        Hold copied_hold(copied,true,tx.page_latches,max_latches);
+        copied->keys=page->keys;copied->children=page->children;
+        copied->parent=root;copied->sm=true;copied->version=page->version+1;
+        copied->prev=was_leaf?nullptr:page->prev;
+        copied->next=was_leaf?nullptr:page->next;
+        for(auto* child:copied->children)child->parent=copied;
+        event(tx,Phase::RootCopied,key_name(page->keys.front().key),copied);
+
+        // The copied page is the page that is split. Retain its identity for
+        // the left half and allocate only the new right sibling.
+        Page* right=make_page(was_leaf);right->parent=root;right->sm=true;
+        const auto middle=copied->keys.size()/2;
+        Entry separator=copied->keys[middle];
         if(was_leaf && unique)separator.rid=0;
-        left->keys.assign(page->keys.begin(),page->keys.begin()+middle);
-        right->keys.assign(page->keys.begin()+middle+(was_leaf?0:1),page->keys.end());
-        if(was_leaf) {left->next=right;right->prev=left;}
+        copied->sm=true;++copied->version;
+        Page* old_next=copied->next;
+        if(was_leaf) {
+            copied->keys.resize(middle);
+            right->keys.assign(page->keys.begin()+middle,page->keys.end());
+            copied->next=right;right->prev=copied;
+        }
         else {
-            left->children.assign(page->children.begin(),page->children.begin()+middle+1);
-            right->children.assign(page->children.begin()+middle+1,page->children.end());
-            for(auto* child:left->children)child->parent=left;
+            right->keys.assign(copied->keys.begin()+middle+1,copied->keys.end());
+            right->children.assign(copied->children.begin()+middle+1,copied->children.end());
+            copied->keys.resize(middle);
+            copied->children.resize(middle+1);
             for(auto* child:right->children)child->parent=right;
         }
-        page->leaf=false;page->keys={separator};page->children={left,right};page->next=page->prev=nullptr;
-        page->sm=false;++page->version;held.release();
-        event(tx,Phase::SplitPublished,key_name(separator.key));
+        right->next=old_next;
+        copied->next=right;
+        copied_hold.release();
+
+        page->leaf=false;page->keys={separator};page->children={copied,right};page->next=page->prev=nullptr;
+        page->sm=false;++page->version;
+        copied->sm=false;++copied->version;right->sm=false;++right->version;
+        event(tx,Phase::SplitPublished,key_name(separator.key),page);
+        held.release();
     }
 
     struct Found {Entry entry;Name name;Page* page;std::size_t slot;};

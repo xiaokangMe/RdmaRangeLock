@@ -18,7 +18,7 @@ enum class Start { Equal, GreaterEqual, Greater };
 enum class Stop { Less, LessEqual, Equal };
 enum class Phase {
     SearchLeaf, ConditionalLock, ReleaseForWait, WaitGranted, Revalidate,
-    Inserted, Deleted, Replicated, SplitStarted, SplitPublished, PageDeleted,
+    Inserted, Deleted, Replicated, SplitStarted, RootCopied, SplitPublished, PageDeleted,
     CursorFast, CursorReposition, UndoInsert, UndoDelete
 };
 struct Entry {

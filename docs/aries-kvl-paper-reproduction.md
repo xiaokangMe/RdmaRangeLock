@@ -20,7 +20,7 @@ C. Mohan. **ARIES/KVL: A Key-Value Locking Method for Concurrency Control of Mul
 - 交错、模型和并发测试：`test/aries_kvl_test.cpp`
 - CMake 目标：`rrl_aries_kvl`、`rrl_aries_kvl_test`
 
-这里的页是内存中的真实 B+ 树节点：有页号、VN、SM-Bit、页 latch、父节点指针，叶页还具有 PrevPage/NextPage。内部节点有 high keys 与 child pointers。根的身份保持不变。插入直接改变叶页内容，满页触发分裂；删除直接移除对应 key/RID，空叶页从树和叶链移除，并向上修改父节点。
+这里的页是内存中的真实 B+ 树节点：有页号、VN、SM-Bit、页 latch、父节点指针，叶页还具有 PrevPage/NextPage。内部节点有 high keys 与 child pointers。根的身份保持不变。根溢出时先把旧根内容复制到新子页，再分裂这个复制页；复制页保留为左半页，根页改成指向左右子页的内部页。插入直接改变叶页内容，满页触发分裂；删除直接移除对应 key/RID，空叶页从树和叶链移除，并向上修改父节点。
 
 **页 latch 保护物理结构；key-value 事务锁的持有状态仍位于独立锁管理器。** 原文也区分这两种对象，并没有要求把事务锁位嵌入叶页的某几个字节。关键是先在受 latch 保护的当前页中确定真实 key/successor，然后按协议请求锁；等待事务锁前释放所有页 latch，唤醒后重新验证。
 
@@ -51,7 +51,7 @@ flowchart TD
 | Figure 7、§5.3 | 已有非唯一 key 只取 IX commit，不请求 successor | `Impl::insert` | IX/IX 并发插入不同 RID；successor 已被 S 锁仍可添加重复实例 |
 | Figure 7、§5.3 | 新 key 的 successor IX instant；原来 successor 持 S/SIX/X 时，当前 key X commit，否则 IX commit | `Impl::insert`、`Locks::request` | S、SIX、X 的锁状态复制；IX successor 不复制 X；unique 新键也不一律取 X |
 | Figure 7 | unique 已存在值需要 S commit，再报告重复 | `Impl::insert` | 唯一键与相同 key/RID 重复检测 |
-| Figure 8、§2.2 | split 完全向上传播之后重启 Insert；树 X、SM-Bit、稳定根 | `split`、`split_root` | 小页多层树、并发分裂、分裂后回滚 |
+| Figure 8、§2.2 | split 完全向上传播之后重启 Insert；树 X、SM-Bit、稳定根；根内容复制到新 child 后分裂该 child | `split`、`split_root` | `root_copy_split` 检查复制页成为左半页且旧 root page id 保持不变；小页多层树、并发分裂、分裂后回滚 |
 | Figure 9、§5.4 | 多实例自身 X commit、不锁 next；可能最后实例 next X commit；自身按条件 X instant/commit | `Impl::erase` | Figure 1 模式与期限矩阵、删除后读者等待、删除回滚 |
 | Figure 10、§2.2 | 空叶真实 unlink；下层 latch 释放后再向上传播；根不换身份 | `delete_page` | 空页删除、删除全部后根回到单页、再次插入 |
 | §6 | rollback 仅页 latch，不重新请求事务锁 | `abort`、事务析构、`undo=true` 分支 | 随机参考模型、读写交错中的物理 undo、只删除自己插入的 RID |
@@ -109,4 +109,4 @@ g++ -std=c++17 -O1 -g -fsanitize=thread -pthread -Iinclude src/index/aries_kvl.c
 TSAN_OPTIONS=halt_on_error=1 timeout 120 build-aries/rrl_aries_kvl_tsan
 ```
 
-最终证据位于 `reports/aries-kvl-20261117/`，包括源码 hash、编译日志、12 组测试、10 次整套重复、ASan/UBSan 和 TSan 日志。测试通过是当前实现的验证证据，不是协议正确性的形式化证明，也不能代替物理布局与性能复现。
+最终证据位于 `reports/aries-kvl-20261117/`，包括源码 hash、编译日志、13 组测试、10 次整套重复、ASan/UBSan 和 TSan 日志。测试通过是当前实现的验证证据，不是协议正确性的形式化证明，也不能代替物理布局与性能复现。

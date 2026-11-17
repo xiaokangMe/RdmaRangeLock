@@ -1,0 +1,26 @@
+Internal ctest changing into directory: /home/dell/RdmaRangeLock-nextkey-paper-20261117/build-aries
+Test project /home/dell/RdmaRangeLock-nextkey-paper-20261117/build-aries
+    Start 78: rrl_aries_kvl_test
+    Test #78: rrl_aries_kvl_test ...............   Passed    1.24 sec
+    Start 78: rrl_aries_kvl_test
+    Test #78: rrl_aries_kvl_test ...............   Passed    1.27 sec
+    Start 78: rrl_aries_kvl_test
+    Test #78: rrl_aries_kvl_test ...............   Passed    1.37 sec
+    Start 78: rrl_aries_kvl_test
+    Test #78: rrl_aries_kvl_test ...............   Passed    1.24 sec
+    Start 78: rrl_aries_kvl_test
+    Test #78: rrl_aries_kvl_test ...............   Passed    1.26 sec
+    Start 78: rrl_aries_kvl_test
+    Test #78: rrl_aries_kvl_test ...............   Passed    1.24 sec
+    Start 78: rrl_aries_kvl_test
+    Test #78: rrl_aries_kvl_test ...............   Passed    1.21 sec
+    Start 78: rrl_aries_kvl_test
+    Test #78: rrl_aries_kvl_test ...............   Passed    1.16 sec
+    Start 78: rrl_aries_kvl_test
+    Test #78: rrl_aries_kvl_test ...............   Passed    1.27 sec
+    Start 78: rrl_aries_kvl_test
+1/1 Test #78: rrl_aries_kvl_test ...............   Passed    1.25 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =  12.53 sec

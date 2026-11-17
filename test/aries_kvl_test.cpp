@@ -50,6 +50,21 @@ void basic_and_undo() {
     }
 }
 
+void root_split_copies_then_splits_child() {
+    Index index(4,false);index.load({{10,1,1},{20,2,2},{30,3,3}});
+    std::uint64_t copied_page=0,root_page=0,left_page=0;
+    index.set_observer([&](const Event& e) {
+        if(e.phase==Phase::RootCopied)copied_page=e.page;
+        if(e.phase==Phase::SplitPublished && e.page)root_page=e.page;
+        if(e.phase==Phase::SearchLeaf && e.key==10)left_page=e.page;
+    });
+    auto writer=index.begin();ok(index.insert(*writer,{40,4,4}));ok(index.commit(*writer));
+    auto reader=index.begin();Entry row;ok(index.fetch(*reader,10,Start::Equal,row));ok(index.commit(*reader));
+    require(copied_page!=0 && copied_page==left_page,"the copied root page is the retained left page after its split");
+    require(root_page==1 && root_page!=copied_page,"the original root page remains the root after splitting the copied page");
+    require(index.validate() && index.inspect()==std::vector<Entry>({{10,1,1},{20,2,2},{30,3,3},{40,4,4}}),"root-copy split preserves all entries");
+}
+
 void duplicate_cursor() {
     Index index(4,false);std::vector<Entry> seed;
     for(std::uint64_t rid=1;rid<=32;++rid)seed.push_back({50,rid,rid});
@@ -268,7 +283,8 @@ void concurrent_repeatable_scans() {
 int main() {
     try {
         for(const auto& test:std::vector<std::pair<const char*,void(*)()>>{
-            {"basic_and_undo",basic_and_undo},{"duplicate_cursor",duplicate_cursor},
+            {"basic_and_undo",basic_and_undo},{"root_copy_split",root_split_copies_then_splits_child},
+            {"duplicate_cursor",duplicate_cursor},
             {"figure1_modes_eof",figure1_modes_and_eof},{"compatible_inserters",compatible_inserters},{"replication",replication_interleaving},
             {"figure4",figure4_reposition},{"delete_wait_abort",delete_wait_and_abort},
             {"cursor_own_change",cursor_after_own_change},{"deadlock",deadlock_and_timeout},

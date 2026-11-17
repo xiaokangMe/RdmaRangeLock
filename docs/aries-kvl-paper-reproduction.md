@@ -18,7 +18,8 @@ C. Mohan. **ARIES/KVL: A Key-Value Locking Method for Concurrency Control of Mul
 - 公共接口：`include/index/aries_kvl.h`
 - 独立实现：`src/index/aries_kvl.cpp`
 - 交错、模型和并发测试：`test/aries_kvl_test.cpp`
-- CMake 目标：`rrl_aries_kvl`、`rrl_aries_kvl_test`
+- CMake 目标：`rrl_aries_kvl`、`rrl_aries_kvl_test`、`rrl_aries_kvl_runner`
+- 独立 YCSB-E 驱动：`benchmarks/aries_kvl_runner.cpp`；矩阵配置：`scripts/benchmark_aries_kvl_ycsbe.py`
 
 这里的页是内存中的真实 B+ 树节点：有页号、VN、SM-Bit、页 latch、父节点指针，叶页还具有 PrevPage/NextPage。内部节点有 high keys 与 child pointers。根的身份保持不变。根溢出时先把旧根内容复制到新子页，再分裂这个复制页；复制页保留为左半页，根页改成指向左右子页的内部页。插入直接改变叶页内容，满页触发分裂；删除直接移除对应 key/RID，空叶页从树和叶链移除，并向上修改父节点。
 
@@ -72,7 +73,7 @@ Instant 请求只检查当时兼容性，不建立新的持锁项；原先已经
 6. **页内存回收。** 从树中移除的页保留到索引析构，游标页号不会引用已释放内存；尚未引入安全并发回收机制。测试会验证树内已 unlink，并不等于已归还内存。
 7. **恢复不属于本文给出的协议步骤。** 原文引言明确说 logging/recovery aspects 不在本文覆盖范围，并说明 ARIES/KVL 锁协议可与 WAL 或 shadow-page recovery 配合；§7 又将恢复细节指向 MoLe89。因此本分支不实现 WAL、LSN、持久化提交或崩溃恢复，这不是用本论文无法逐项对照的伪代码自行补造恢复算法。这里的事务 abort 仅为并发测试所需的内存 undo。
 8. **单索引原型。** RID X 锁用于建模插删前已有数据记录锁的前提，锁名与 key 锁分离。目前没有跨索引共享的数据表管理器；Entry 的 value 是测试载荷，不是 System R 数据页实现。
-9. **执行器。** 当前暴露直接事务/游标 API 和测试入口，尚未接入独立 YCSB-E 性能驱动；没有将旧 compact 执行器套到本实现上，也没有新画吞吐曲线。
+9. **执行器。** 独立 YCSB-E 性能驱动直接调用本实现的事务、Insert、open/next 游标 API，不链接旧通用事务执行器。95% 扫描 / 5% 插入，每事务 10 操作；插入追加新 RID，重复键可以跨叶页。各点从新索引开始，预热和测量之间保留已提交插入。生成请求的固定 trace 只用于负载重放，不用于预注册锁名或预划分范围。驱动的事务超时、重试上限、计时和统计方式属于实验设置，不是论文原文规定。
 
 因此准确称呼是：**按 ARIES/KVL 论文给出的并发控制与叶页组织算法实现的内存 B+ 树原型**。它没有复现原系统的字节级页格式、完整数据库产品或原文实验环境；论文未定义的 WAL/恢复由用户明确排除。
 

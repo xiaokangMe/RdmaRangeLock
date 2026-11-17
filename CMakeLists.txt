@@ -514,3 +514,8 @@ add_executable(rrl_aries_kvl_test test/aries_kvl_test.cpp)
 target_link_libraries(rrl_aries_kvl_test PRIVATE rrl_aries_kvl)
 add_test(NAME rrl_aries_kvl_test COMMAND rrl_aries_kvl_test)
 set_tests_properties(rrl_aries_kvl_test PROPERTIES TIMEOUT 90)
+
+# Standalone YCSB-E runner: never links the legacy transaction executor.
+add_executable(rrl_aries_kvl_runner benchmarks/aries_kvl_runner.cpp)
+target_link_libraries(rrl_aries_kvl_runner PRIVATE rrl_aries_kvl)
+target_compile_options(rrl_aries_kvl_runner PRIVATE -Wall -Wextra -Wpedantic)

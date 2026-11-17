@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Independent ARIES/KVL YCSB-E sweep; edit CONFIG before running."""
+import argparse
 import csv
 import datetime
 import hashlib
@@ -30,6 +31,12 @@ CONFIG = {
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--threads", type=int, default=CONFIG["threads"], help="override CONFIG worker count")
+    args = parser.parse_args()
+    if args.threads < 1:
+        parser.error("--threads must be positive")
+    CONFIG["threads"] = args.threads
     root = Path(__file__).resolve().parents[1]
     os.chdir(root)
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")

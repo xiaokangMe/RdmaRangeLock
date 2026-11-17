@@ -1,0 +1,11 @@
+trace ready theta=1.1 inserts=2498/50000
+loaded 4096/2097152
+loaded 266240/2097152
+loaded 528384/2097152
+loaded 790528/2097152
+loaded 1052672/2097152
+loaded 1314816/2097152
+loaded 1576960/2097152
+loaded 1839104/2097152
+load complete 14.2364s height=4; warmup
+warmup commits=11104 size=2102708; measure

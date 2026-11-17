@@ -46,10 +46,10 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
        !converter || (!cfg.coordinator_host.empty() && !cfg.txn_state_port)))
         throw std::invalid_argument("granularity conversion requires fixed buckets and local/native RDMA state");
     if(cfg.dag_hierarchy) {
-        detail::check_dag_geometry(trace.config().hierarchy_bucket_width,cfg.hierarchy_index_paths,cfg.hierarchy_read_path);
+        detail::check_dag_geometry(workload_bucket_width(trace.config()),cfg.hierarchy_index_paths,cfg.hierarchy_read_path);
         auto* object=dynamic_cast<ObjectLockManager*>(&physical);
         if(cfg.protocol!=PolicyProtocol::Hierarchy || cfg.leaf_hierarchy || cfg.deneva_insert_behavior ||
-           !object || !object->matches_dag(trace.config().hierarchy_bucket_width,cfg.hierarchy_index_paths) ||
+           !object || !object->matches_dag(workload_bucket_width(trace.config()),cfg.hierarchy_index_paths) ||
            (!cfg.coordinator_host.empty() && !cfg.txn_state_port))
             throw std::invalid_argument("DAG requires exact objects and local/native RDMA state");
     }
@@ -77,8 +77,8 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
     std::vector<Worker> parts(count);
     std::vector<std::vector<detail::HierarchyRequest>> plans;
     if(cfg.protocol==PolicyProtocol::Hierarchy && !cfg.leaf_hierarchy && !cfg.separator_hierarchy && !conversions)for(const auto& t:trace.transactions())
-        plans.push_back(cfg.dag_hierarchy?detail::dag_plan(t,trace.config().hierarchy_bucket_width,cfg.hierarchy_index_paths,cfg.hierarchy_read_path):
-            detail::hierarchy_plan(t,trace.config().hierarchy_bucket_width));
+        plans.push_back(cfg.dag_hierarchy?detail::dag_plan(t,workload_bucket_width(trace.config()),cfg.hierarchy_index_paths,cfg.hierarchy_read_path):
+            detail::hierarchy_plan(t,workload_bucket_width(trace.config())));
     for(std::size_t w=0;w<count;++w) {
         if(cfg.protocol==PolicyProtocol::None) {
             clients.emplace_back(nullptr);
@@ -124,10 +124,10 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
     if(conversions) {
         std::size_t bucket_capacity=0;
         for(const auto& txn:trace.transactions()) {
-            const auto full=detail::hierarchy_plan(txn,trace.config().hierarchy_bucket_width);
+            const auto full=detail::hierarchy_plan(txn,workload_bucket_width(trace.config()));
             bucket_capacity=std::max(bucket_capacity,static_cast<std::size_t>(std::count_if(full.begin(),full.end(),[](const auto& r){return r.phase==1;})));
             std::vector<std::vector<detail::HierarchyRequest>> ops;
-            for(const auto& op:txn.operations){TransactionTrace one;one.operations.push_back(op);ops.push_back(detail::hierarchy_plan(one,trace.config().hierarchy_bucket_width));}
+            for(const auto& op:txn.operations){TransactionTrace one;one.operations.push_back(op);ops.push_back(detail::hierarchy_plan(one,workload_bucket_width(trace.config())));}
             operation_plans.push_back(std::move(ops));
         }
         for(auto& runtime:runtime_buckets)runtime.reserve(bucket_capacity,maxops);
@@ -204,13 +204,14 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
                     return nullptr;
                 };
                 const auto account_value=[&](idx_key_t key,const std::uint64_t* fallback) {
-                    if(const auto* own=own_write(key)) {
+                    if(const auto* own=own_write(key); own && !(own->append_duplicate && fallback)) {
                         if(!own->remove){++s.rows_found;s.checksum+=key^*own->value;}
                     } else if(fallback){++s.rows_found;s.checksum+=key^*fallback;}
                 };
                 const auto account_inserted=[&](const KeyRangeEnt& range,const std::vector<KeyValue>& rows) {
                     for(const auto& own:pending) {
-                        if(own.remove || own_write(own.key)!=&own || !range.contains(own.key))continue;
+                        if(own.remove || (!own.append_duplicate && own_write(own.key)!=&own) || !range.contains(own.key))continue;
+                        if(own.append_duplicate) {++s.rows_found;s.checksum+=own.key^*own.value;continue;}
                         const auto found=std::lower_bound(rows.begin(),rows.end(),own.key,[](const KeyValue& r,idx_key_t k){return r.key<k;});
                         if(found==rows.end() || found->key!=own.key)account_value(own.key,nullptr);
                     }
@@ -358,7 +359,7 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
                                 if(n==verified.size() || verified[n].key!=row.key) {
                                     outcome=TxnResult::Conflict;break;
                                 }
-                                account_value(row.key,static_cast<const std::uint64_t*>(verified[n].value));
+                                account_value(row.key,static_cast<const std::uint64_t*>(deneva_insert_trace(trace.config()) ? row.value : verified[n].value));
                             }
                             // Record-only scans do not lock gaps. Newly inserted
                             // keys are deliberately not consumed without a lock.
@@ -433,7 +434,7 @@ static RunStats run_policy_workload_impl(BTreeIndex& index,IRangeLockManager& ph
                                 pending.erase(std::remove_if(pending.begin(),pending.end(),[&](const IndexMutation& value){return value.key==op.key;}),pending.end());
                                 if(physical.unlock(id,KeyRangeEnt::point(leaf.id),LockKind::Node)!=RCOK){outcome=TxnResult::Error;break;}
                                 ++m.deneva_early_unlocks;
-                            }else pending.push_back({op.key,&op.value,op.kind==OperationKind::Delete});
+                            }else pending.push_back({op.key,&op.value,op.kind==OperationKind::Delete,deneva_insert_trace(trace.config()) && op.kind==OperationKind::Insert});
                         }
                     }
                     if(conversions && outcome==TxnResult::Ok) {

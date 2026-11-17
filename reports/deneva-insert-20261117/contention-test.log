@@ -1,0 +1,22 @@
+record-2pl no-wait commits 34155 final entries 22887 capacity aborts 0
+record-2pl wait-die commits 28262 final entries 21948 capacity aborts 0
+record-2pl wound-wait commits 5125 final entries 18805 capacity aborts 0
+next-key no-wait commits 22339 final entries 20778 capacity aborts 0
+next-key wait-die commits 18652 final entries 20185 capacity aborts 0
+next-key wound-wait commits 5812 final entries 19141 capacity aborts 0
+gap-lock no-wait commits 19278 final entries 20081 capacity aborts 0
+gap-lock wait-die commits 14789 final entries 19405 capacity aborts 0
+gap-lock wound-wait commits 5123 final entries 18821 capacity aborts 0
+prior-key no-wait commits 21371 final entries 20548 capacity aborts 0
+prior-key wait-die commits 18318 final entries 20141 capacity aborts 0
+prior-key wound-wait commits 5874 final entries 19184 capacity aborts 0
+hierarchical no-wait commits 140910 final entries 40887 capacity aborts 0
+hierarchical wait-die commits 43497 final entries 25891 capacity aborts 0
+hierarchical wound-wait commits 7843 final entries 20146 capacity aborts 0
+exact-range no-wait commits 94156 final entries 33012 capacity aborts 0
+exact-range wait-die commits 40256 final entries 24758 capacity aborts 0
+exact-range wound-wait commits 7393 final entries 19911 capacity aborts 0
+precision-lock no-wait commits 103222 final entries 34405 capacity aborts 0
+precision-lock wait-die commits 65384 final entries 29180 capacity aborts 0
+precision-lock wound-wait commits 7753 final entries 20079 capacity aborts 0
+32-thread skewed Insert smoke: 21 runs passed

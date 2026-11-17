@@ -24,6 +24,7 @@ RC BTreeLatch::init(std::size_t order) {
     order_ = order;
     root_.reset();
     size_.store(0, std::memory_order_relaxed);
+    duplicates_.store(false, std::memory_order_relaxed);
     return RCOK;
 }
 
@@ -77,12 +78,12 @@ void BTreeLatch::split_internal(Page& page, std::unique_ptr<Page>& right,
 // Only reached with the tree-wide guard held exclusively, so a plain
 // recursive descent is safe and no concurrent split can be observed.
 std::unique_ptr<BTreeLatch::Page> BTreeLatch::insert_recursive(
-    Page& page, idx_key_t key, void* value, idx_key_t& separator) {
+    Page& page, idx_key_t key, void* value, idx_key_t& separator, bool duplicate) {
     std::unique_lock<std::shared_mutex> page_lock(page.latch);
     if (page.is_leaf) {
-        const auto pos = std::lower_bound(page.keys.begin(), page.keys.end(), key);
+        const auto pos = duplicate ? std::upper_bound(page.keys.begin(), page.keys.end(), key) : std::lower_bound(page.keys.begin(), page.keys.end(), key);
         const std::size_t index = static_cast<std::size_t>(pos - page.keys.begin());
-        if (pos != page.keys.end() && *pos == key) {
+        if (!duplicate && pos != page.keys.end() && *pos == key) {
             page.values[index] = value;
             return nullptr;
         }
@@ -98,7 +99,7 @@ std::unique_ptr<BTreeLatch::Page> BTreeLatch::insert_recursive(
     const auto pos = std::upper_bound(page.keys.begin(), page.keys.end(), key);
     const std::size_t child_index = static_cast<std::size_t>(pos - page.keys.begin());
     idx_key_t child_separator = 0;
-    auto right_child = insert_recursive(*page.children[child_index], key, value, child_separator);
+    auto right_child = insert_recursive(*page.children[child_index], key, value, child_separator, duplicate);
     if (right_child == nullptr) return nullptr;
     page.keys.insert(page.keys.begin() + static_cast<std::ptrdiff_t>(child_index), child_separator);
     page.children.insert(page.children.begin() + static_cast<std::ptrdiff_t>(child_index + 1), std::move(right_child));
@@ -114,10 +115,16 @@ RC BTreeLatch::insert(idx_key_t key, void* value) {
     return insert_new(key, value);
 }
 
-// Inserts a key that is known not to be in the tree. One shared-latch descent
+RC BTreeLatch::insert_duplicate(idx_key_t key, void* value) {
+    if (order_ == 0) return ERROR;
+    duplicates_.store(true, std::memory_order_relaxed);
+    return insert_new(key, value, true);
+}
+
+// Inserts a key, or appends an equal key for a Deneva Insert. One shared-latch descent
 // plus an exclusive leaf latch covers the common case; a full leaf falls
 // through to the crabbing split path.
-RC BTreeLatch::insert_new(idx_key_t key, void* value) {
+RC BTreeLatch::insert_new(idx_key_t key, void* value, bool duplicate) {
     for (int attempt = 0; attempt < 4; ++attempt) {
         std::shared_lock<std::shared_mutex> root_shared(root_guard_);
         if (root_ == nullptr) break;
@@ -145,9 +152,9 @@ RC BTreeLatch::insert_new(idx_key_t key, void* value) {
         // restarts; holding the parent across the upgrade instead made every
         // update contend on the parent latch for no benefit.
         if (!page->keys.empty() && key > page->keys.back()) continue;
-        const auto pos = std::lower_bound(page->keys.begin(), page->keys.end(), key);
+        const auto pos = duplicate ? std::upper_bound(page->keys.begin(), page->keys.end(), key) : std::lower_bound(page->keys.begin(), page->keys.end(), key);
         const std::size_t index = static_cast<std::size_t>(pos - page->keys.begin());
-        if (pos != page->keys.end() && *pos == key) {
+        if (!duplicate && pos != page->keys.end() && *pos == key) {
             page->values[index] = value;
             return RCOK;
         }
@@ -159,10 +166,10 @@ RC BTreeLatch::insert_new(idx_key_t key, void* value) {
         }
         break;  // leaf is full: fall through to the crabbing split path
     }
-    return insert_pessimistic(key, value);
+    return insert_pessimistic(key, value, duplicate);
 }
 
-RC BTreeLatch::insert_descent(idx_key_t key, void* value) {
+RC BTreeLatch::insert_descent(idx_key_t key, void* value, bool duplicate) {
     std::shared_lock<std::shared_mutex> root_shared(root_guard_);
     if (root_ == nullptr) return WAIT;
 
@@ -191,9 +198,9 @@ RC BTreeLatch::insert_descent(idx_key_t key, void* value) {
         page = child;
     }
 
-    const auto pos = std::lower_bound(page->keys.begin(), page->keys.end(), key);
+    const auto pos = duplicate ? std::upper_bound(page->keys.begin(), page->keys.end(), key) : std::lower_bound(page->keys.begin(), page->keys.end(), key);
     const std::size_t index = static_cast<std::size_t>(pos - page->keys.begin());
-    if (pos != page->keys.end() && *pos == key) {
+    if (!duplicate && pos != page->keys.end() && *pos == key) {
         page->values[index] = value;
         return RCOK;
     }
@@ -224,7 +231,7 @@ RC BTreeLatch::insert_descent(idx_key_t key, void* value) {
     return WAIT;
 }
 
-RC BTreeLatch::insert_pessimistic(idx_key_t key, void* value) {
+RC BTreeLatch::insert_pessimistic(idx_key_t key, void* value, bool duplicate) {
     // Root creation and root splits are the only structural steps that need the
     // tree-wide guard exclusively. Both are rare: the root gains one separator
     // per height increase.
@@ -255,15 +262,15 @@ RC BTreeLatch::insert_pessimistic(idx_key_t key, void* value) {
         }
         if (full) {
             std::unique_lock<std::shared_mutex> exclusive(root_guard_);
-            return insert_forcing_root_split(key, value);
+            return insert_forcing_root_split(key, value, duplicate);
         }
-        const RC rc = insert_descent(key, value);
+        const RC rc = insert_descent(key, value, duplicate);
         if (rc != WAIT) return rc;
     }
     return ERROR;
 }
 
-RC BTreeLatch::insert_forcing_root_split(idx_key_t key, void* value) {
+RC BTreeLatch::insert_forcing_root_split(idx_key_t key, void* value, bool duplicate) {
     if (root_ == nullptr) {
         auto page = make_page(true);
         page->keys.push_back(key);
@@ -273,7 +280,7 @@ RC BTreeLatch::insert_forcing_root_split(idx_key_t key, void* value) {
         return RCOK;
     }
     idx_key_t separator = 0;
-    auto right = insert_recursive(*root_, key, value, separator);
+    auto right = insert_recursive(*root_, key, value, separator, duplicate);
     if (right != nullptr) {
         auto new_root = make_page(false);
         new_root->keys.push_back(separator);
@@ -431,7 +438,7 @@ void BTreeLatch::scan_range_into(const KeyRangeEnt& range, std::vector<KeyValue>
     std::shared_lock<std::shared_mutex> page_lock(page->latch);
     while (!page->is_leaf) {
         Page* child = range.has_start
-            ? page->children[static_cast<std::size_t>(std::upper_bound(page->keys.begin(), page->keys.end(), range.StartKey) - page->keys.begin())].get()
+            ? page->children[static_cast<std::size_t>((duplicates_.load(std::memory_order_relaxed) ? std::lower_bound(page->keys.begin(), page->keys.end(), range.StartKey) : std::upper_bound(page->keys.begin(), page->keys.end(), range.StartKey)) - page->keys.begin())].get()
             : page->children.front().get();
         std::shared_lock<std::shared_mutex> child_lock(child->latch);
         page_lock.unlock();
@@ -488,8 +495,8 @@ bool BTreeLatch::validate_page(const Page* page, const Page* expected_parent,
         idx_key_t child_min = 0, child_max = 0;
         if (!validate_page(page->children[i].get(), page, depth + 1, &child_min, &child_max,
                            leaf_count, leaf_depth)) return false;
-        if (have_previous && previous_max >= child_min) return false;
-        if (i < page->keys.size() && child_max >= page->keys[i]) return false;
+        if (have_previous && (duplicates_.load(std::memory_order_relaxed) ? previous_max > child_min : previous_max >= child_min)) return false;
+        if (i < page->keys.size() && (duplicates_.load(std::memory_order_relaxed) ? child_max > page->keys[i] : child_max >= page->keys[i])) return false;
         if (i > 0 && page->keys[i - 1] != child_min) return false;
         previous_max = child_max;
         have_previous = true;
@@ -543,7 +550,7 @@ bool BTreeLatch::hierarchy_cover_into(const KeyRangeEnt& range,std::vector<Index
 
 bool BTreeLatch::key_neighbors(idx_key_t key,IndexKeyNeighbors& out) const {
     std::shared_lock<std::shared_mutex> guard(root_guard_);
-    return detail::host_key_neighbors(root_.get(),key,out,true);
+    return detail::host_key_neighbors(root_.get(),key,out,true,duplicates_.load(std::memory_order_relaxed));
 }
 bool BTreeLatch::key_range_into(const KeyRangeEnt& range,std::vector<idx_key_t>& out) const {
     std::shared_lock<std::shared_mutex> guard(root_guard_);

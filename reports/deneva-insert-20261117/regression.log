@@ -1,0 +1,34 @@
+Internal ctest changing into directory: /home/dell/RdmaRangeLock-record2pl-20261112/build-record
+Test project /home/dell/RdmaRangeLock-record2pl-20261112/build-record
+      Start  4: rrl_deneva_insert_test
+ 1/14 Test  #4: rrl_deneva_insert_test ..............   Passed    0.04 sec
+      Start  8: rrl_v2_btree_latch_test
+ 2/14 Test  #8: rrl_v2_btree_latch_test .............   Passed    0.04 sec
+      Start  9: rrl_v2_btree_stress_test
+ 3/14 Test  #9: rrl_v2_btree_stress_test ............   Passed    2.01 sec
+      Start 10: rrl_v2_btree_erase_test
+ 4/14 Test #10: rrl_v2_btree_erase_test .............   Passed    0.02 sec
+      Start 11: rrl_workload_trace_test
+ 5/14 Test #11: rrl_workload_trace_test .............   Passed    0.09 sec
+      Start 25: rrl_runner_config_test
+ 6/14 Test #25: rrl_runner_config_test ..............   Passed    0.28 sec
+      Start 35: rrl_record_lock_table_test
+ 7/14 Test #35: rrl_record_lock_table_test ..........   Passed    1.10 sec
+      Start 36: rrl_compact_exact_runner_test
+ 8/14 Test #36: rrl_compact_exact_runner_test .......   Passed    3.02 sec
+      Start 37: rrl_compact_hierarchy_runner_test
+ 9/14 Test #37: rrl_compact_hierarchy_runner_test ...   Passed    2.54 sec
+      Start 38: rrl_compact_record_runner_test
+10/14 Test #38: rrl_compact_record_runner_test ......   Passed    2.27 sec
+      Start 39: rrl_compact_key_runner_test
+11/14 Test #39: rrl_compact_key_runner_test .........   Passed    8.03 sec
+      Start 50: rrl_runtime_warmup_test
+12/14 Test #50: rrl_runtime_warmup_test .............   Passed    4.01 sec
+      Start 61: rrl_key_neighbors_test
+13/14 Test #61: rrl_key_neighbors_test ..............   Passed    0.01 sec
+      Start 75: rrl_compact_precision_runner_test
+14/14 Test #75: rrl_compact_precision_runner_test ...   Passed    2.55 sec
+
+100% tests passed, 0 tests failed out of 14
+
+Total Test time (real) =  26.00 sec

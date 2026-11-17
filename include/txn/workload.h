@@ -28,6 +28,8 @@ struct WorkloadConfig {
     size_t operations_per_transaction{10};
     // Disable only for repeated-key regression workloads / historical traces.
     bool ycsb_unique_keys{true};
+    // Enabled by the local benchmark runner; false preserves historical API fixtures.
+    bool deneva_ycsb_insert{false};
     size_t range_length{10};
     size_t threads{1};
     // When non-zero the run_* drivers keep executing transactions until the
@@ -44,6 +46,20 @@ struct WorkloadConfig {
     double hotspot_opn_fraction{0.8};
     uint64_t seed{7};
 };
+
+constexpr idx_key_t kDenevaKeyScale = 10000;
+inline bool deneva_insert_trace(const WorkloadConfig& c) {
+    return is_ycsb_e(c.kind) && c.deneva_ycsb_insert;
+}
+inline idx_key_t workload_key_scale(const WorkloadConfig& c) {
+    return deneva_insert_trace(c) ? kDenevaKeyScale : 1;
+}
+inline idx_key_t workload_seed_key(const WorkloadConfig& c, std::size_t rank) {
+    return rank * workload_key_scale(c);
+}
+inline std::size_t workload_bucket_width(const WorkloadConfig& c) {
+    return c.hierarchy_bucket_width * workload_key_scale(c);
+}
 
 struct Operation { OperationKind kind{OperationKind::Read}; idx_key_t key{0}; idx_key_t end_key{0}; uint64_t value{0}; };
 struct TransactionTrace { txnid_t txn_id{0}; std::vector<Operation> operations; };

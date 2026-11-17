@@ -61,7 +61,7 @@ inline bool host_hierarchy_cover(BTreePage* root,const KeyRangeEnt& query,
 // Retain each parent while choosing/following its child; no upward latch
 // acquisition or simultaneous right->left sibling latches. At most O(height)
 // nodes for each extreme, including a cross-leaf predecessor/successor.
-inline bool host_key_neighbors(BTreePage* root,idx_key_t key,IndexKeyNeighbors& out,bool concurrent) {
+inline bool host_unique_key_neighbors(BTreePage* root,idx_key_t key,IndexKeyNeighbors& out,bool concurrent) {
     out={};if(!root)return true;
     auto extreme=[&](auto&& self,BTreePage* page,bool largest)->idx_key_t {
         std::shared_lock<std::shared_mutex> held;
@@ -90,12 +90,44 @@ inline bool host_key_neighbors(BTreePage* root,idx_key_t key,IndexKeyNeighbors& 
     };
     search(search,root);return true;
 }
+inline bool host_key_neighbors(BTreePage* root,idx_key_t key,IndexKeyNeighbors& out,bool concurrent,bool duplicates=false) {
+    if(!duplicates)return host_unique_key_neighbors(root,key,out,concurrent);
+    out={};if(!root)return true;
+    // Search strict neighbors separately. Equal keys can occupy several leaves
+    // after a Deneva duplicate insert; neither neighbor may equal the probe.
+    auto seek=[&](auto&& self,BTreePage* page,int kind,idx_key_t& answer)->bool {
+        std::shared_lock<std::shared_mutex> held;
+        if(concurrent)held=std::shared_lock<std::shared_mutex>(page->latch);
+        if(page->is_leaf) {
+            auto it=kind==1?std::upper_bound(page->keys.begin(),page->keys.end(),key):
+                            std::lower_bound(page->keys.begin(),page->keys.end(),key);
+            if(kind==-1) {if(it==page->keys.begin())return false;answer=*--it;return true;}
+            if(it==page->keys.end())return false;
+            answer=*it;return true;
+        }
+        const auto it=kind==1?std::upper_bound(page->keys.begin(),page->keys.end(),key):
+                             std::lower_bound(page->keys.begin(),page->keys.end(),key);
+        auto slot=static_cast<std::size_t>(it-page->keys.begin());
+        if(self(self,page->children[slot].get(),kind,answer))return true;
+        if(kind==-1) {
+            while(slot)if(self(self,page->children[--slot].get(),kind,answer))return true;
+        } else {
+            while(++slot<page->children.size())if(self(self,page->children[slot].get(),kind,answer))return true;
+        }
+        return false;
+    };
+    idx_key_t candidate=0;
+    out.present=seek(seek,root,0,candidate) && candidate==key;
+    out.has_predecessor=seek(seek,root,-1,out.predecessor);
+    out.has_successor=seek(seek,root,1,out.successor);
+    return true;
+}
 inline bool host_key_range(BTreePage* root,const KeyRangeEnt& range,std::vector<idx_key_t>& out,bool concurrent) {
     out.clear();if(!root || range.empty())return true;
     auto* page=root;std::shared_lock<std::shared_mutex> held;
     if(concurrent)held=std::shared_lock<std::shared_mutex>(page->latch);
     while(!page->is_leaf) {
-        const auto slot=range.has_start?std::upper_bound(page->keys.begin(),page->keys.end(),range.StartKey)-page->keys.begin():0;
+        const auto slot=range.has_start?std::lower_bound(page->keys.begin(),page->keys.end(),range.StartKey)-page->keys.begin():0;
         auto* child=page->children[slot].get();std::shared_lock<std::shared_mutex> next;
         if(concurrent)next=std::shared_lock<std::shared_mutex>(child->latch);
         held=std::move(next);page=child;
@@ -103,7 +135,7 @@ inline bool host_key_range(BTreePage* root,const KeyRangeEnt& range,std::vector<
     for(;;) {
         for(auto key:page->keys) {
             if(range.has_end && (key>range.EndKey || (key==range.EndKey && range.end_bound==Bound::Open)))return true;
-            if(range.contains(key))out.push_back(key);
+            if(range.contains(key) && (out.empty() || out.back()!=key))out.push_back(key);
         }
         auto* next=page->next;if(!next)return true;
         std::shared_lock<std::shared_mutex> guard;

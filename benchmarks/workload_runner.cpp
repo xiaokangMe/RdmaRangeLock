@@ -218,6 +218,9 @@ void load_config(const std::string& path, WorkloadConfig& config,
             if(key=="hierarchy_escalation_threshold")policy.hierarchy_escalation_threshold=n;
             else policy.hierarchy_deescalate_after=n;
             measured=true;
+        } else if (key == "ycsb_insert_behavior") {
+            if(value.kind!=ConfigScalar::String || (value.text!="deneva" && value.text!="legacy-upsert"))throw std::invalid_argument("ycsb_insert_behavior must be deneva or legacy-upsert");
+            config.deneva_ycsb_insert=value.text=="deneva";
         } else if (key == "hierarchy_behavior") {
             if(value.kind!=ConfigScalar::String || (value.text!="strict" && value.text!="deneva"))throw std::invalid_argument("hierarchy_behavior must be strict or deneva");
             policy.deneva_insert_behavior=value.text=="deneva";measured=true;
@@ -275,6 +278,7 @@ void load_config(const std::string& path, WorkloadConfig& config,
 
 int run(int argc, char** argv) {
     WorkloadConfig config;
+    config.deneva_ycsb_insert = true;
     IntegrationOptions extra;
     PolicyRunConfig policy;
     bool measured = false;
@@ -331,6 +335,10 @@ int run(int argc, char** argv) {
             if(option=="--hierarchy-escalation-threshold")policy.hierarchy_escalation_threshold=n;
             else policy.hierarchy_deescalate_after=n;
             measured=true;
+        }
+        else if(option=="--ycsb-insert-behavior") {
+            if(value!="deneva" && value!="legacy-upsert")throw std::invalid_argument("ycsb-insert-behavior must be deneva or legacy-upsert");
+            config.deneva_ycsb_insert=value=="deneva";
         }
         else if(option=="--hierarchy-behavior") {
             if(value!="strict" && value!="deneva")throw std::invalid_argument("hierarchy-behavior must be strict or deneva");
@@ -585,6 +593,11 @@ int run(int argc, char** argv) {
     in_addr address{};
     if (::inet_pton(AF_INET, rdma_host.c_str(), &address) != 1)
         throw std::invalid_argument("rdma-host must be an IPv4 address");
+    if(deneva_insert_trace(config) && (policy.leaf_hierarchy || policy.dag_hierarchy || policy.separator_hierarchy ||
+        policy.native_object_locks || policy.deneva_insert_behavior))
+        throw std::invalid_argument("Deneva duplicate Insert supports local record/range/fixed-bucket protocols; physical hierarchy requires explicit legacy-upsert");
+    if(deneva_insert_trace(config) && index_name!="v2")
+        throw std::invalid_argument("Deneva duplicate Insert currently requires local v2; use explicit legacy-upsert for other backends");
     auto trace = WorkloadTrace::generate(config);
     if(hot_schedule) {
         std::unordered_map<idx_key_t,std::size_t> write_frequency;
@@ -805,7 +818,7 @@ int run(int argc, char** argv) {
                 std::min(config.threads*policy.coroutines,config.transaction_count) :
                 resolve_connection_count(config.threads,rdma_connections);
             locks.set_connection_count(active_connections);
-            locks.set_bucket_width(config.hierarchy_bucket_width);
+            locks.set_bucket_width(workload_bucket_width(config));
             if (!locks.connect(rdma_host,rdma_port)) throw std::runtime_error("RDMA range lock connect/layout mismatch");
             if(policy.rdma_lock_slots_per_shard && locks.diagnostics().slots_per_shard!=policy.rdma_lock_slots_per_shard)
                 throw std::runtime_error("RDMA range lock capacity differs from configuration");
@@ -826,7 +839,7 @@ int run(int argc, char** argv) {
             }
             rdma_failure=locks.last_failure(); rdma_failure_shard=locks.last_failure_shard();
         } else {
-            LockManager locks; locks.set_bucket_width(config.hierarchy_bucket_width);
+            LockManager locks; locks.set_bucket_width(workload_bucket_width(config));
             stats = run_policy_workload(*index,locks,trace,policy);
         }
     } else if (cc == "record-2pl") {
@@ -840,7 +853,7 @@ int run(int argc, char** argv) {
               stats=run_policy_workload(*index,locks,trace,policy);}
     } else if (cc == "hierarchical") {
         LockManager locks;
-        locks.set_bucket_width(config.hierarchy_bucket_width);
+        locks.set_bucket_width(workload_bucket_width(config));
         stats = run_hierarchical_lock(*index, locks, trace, config.threads);
     } else if (cc == "rdma-next-key" || cc == "rdma-prior-key" || cc == "rdma-hierarchical") {
         RemoteLockManager locks;
@@ -850,7 +863,7 @@ int run(int argc, char** argv) {
             std::cerr << "failed to connect RDMA lock server at " << rdma_host << ":" << rdma_port << "\n";
             return 2;
         }
-        locks.set_bucket_width(config.hierarchy_bucket_width);
+        locks.set_bucket_width(workload_bucket_width(config));
         if (cc == "rdma-next-key") stats = run_next_key_lock(*index, locks, trace, config.threads);
         else if(cc=="rdma-prior-key") {policy.protocol=PolicyProtocol::PriorKey;policy.max_attempts=1;policy.use_coroutines=false;
             stats=run_policy_workload(*index,locks,trace,policy);}
@@ -902,7 +915,7 @@ int run(int argc, char** argv) {
         std::cout << ",data_backend,data_rdma_operations,data_read_bytes,data_write_bytes,data_latch_wait_ns,coroutines,active_contexts,warmup_seconds,warmup_committed,warmup_aborted,warmup_elapsed_ns,coroutine_switches_total,state_rdma_operations,hierarchy_layout,native_object_locks,hierarchy_behavior,isolation_semantics,deneva_early_inserts,deneva_early_unlocks,deneva_split_aborts,deneva_partial_write_aborts,execution_mode";
         std::cout << ",hierarchy_index_paths,hierarchy_read_path";
         std::cout << ",hierarchy_escalation_threshold,hierarchy_deescalate_after,escalation_attempts,escalations,escalation_failures,deescalation_attempts,deescalations,deescalation_failures";
-        std::cout << ",trace_zipf_theta,trace_key_count,trace_transaction_count,trace_operations_per_transaction,trace_range_length,trace_seed,trace_ycsb_unique_keys,trace_key_distribution,trace_scan_semantics,trace_request_distribution,trace_hotspot_data_fraction,trace_hotspot_opn_fraction";
+        std::cout << ",trace_zipf_theta,trace_key_count,trace_transaction_count,trace_operations_per_transaction,trace_range_length,trace_seed,trace_ycsb_unique_keys,trace_key_distribution,trace_scan_semantics,trace_request_distribution,trace_hotspot_data_fraction,trace_hotspot_opn_fraction,ycsb_insert_behavior,trace_key_scale,index_entries_final";
         std::cout << ",rdma_lock_slots_per_shard";
         for(std::size_t shard=0;shard<kRemoteLockShards;++shard)
             std::cout << ",rdma_lock_slot_peak_" << shard << ",rdma_lock_capacity_required_" << shard;
@@ -983,7 +996,8 @@ int run(int argc, char** argv) {
                   << ',' << config.range_length << ',' << config.seed << ',' << config.ycsb_unique_keys
                   << ',' << (ycsb?WorkloadTrace::key_distribution(config):"not-applicable")
                   << ',' << (is_ycsb_e(config.kind)?"fixed-key-width-clipped":"not-applicable")
-                  << ',' << config.request_distribution << ',' << config.hotspot_data_fraction << ',' << config.hotspot_opn_fraction;
+                  << ',' << config.request_distribution << ',' << config.hotspot_data_fraction << ',' << config.hotspot_opn_fraction
+                  << ',' << (deneva_insert_trace(config)?"deneva":"legacy-upsert") << ',' << workload_key_scale(config) << ',' << index->size();
         std::cout << ',' << rdma_diag.slots_per_shard;
         for(std::size_t shard=0;shard<kRemoteLockShards;++shard)
             std::cout << ',' << rdma_diag.slot_peaks[shard] << ',' << rdma_diag.capacity_required[shard];
@@ -1104,6 +1118,7 @@ int run(int argc, char** argv) {
                   << ",hotspot_data_fraction=" << config.hotspot_data_fraction << ",hotspot_opn_fraction=" << config.hotspot_opn_fraction
                   << ",zipf_theta=" << std::setprecision(17) << config.zipf_theta
                   << ",keys=" << config.key_count << ",trace_txns=" << config.transaction_count
+                  << ",ycsb_insert_behavior=" << (deneva_insert_trace(config)?"deneva":"legacy-upsert") << ",key_scale=" << workload_key_scale(config) << ",index_entries_final=" << index->size()
                   << ",ops_per_txn=" << config.operations_per_transaction << ",range=" << config.range_length
                   << ",seed=" << config.seed << ",ycsb_unique_keys=" << config.ycsb_unique_keys
                   << ",index=" << index_name << ",cc=" << cc

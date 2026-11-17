@@ -1,0 +1,15 @@
+{
+  "branch": "codex/record2pl-compact-20261112",
+  "source_host": "10.102.35.66",
+  "source_root": "/home/dell/RdmaRangeLock-record2pl-20261112",
+  "runner": "build-record/rrl_workload_runner",
+  "scope": "local YCSB-E fixed replay, decimal keys and physical duplicate append; retain 10 operations and 95/5 mix",
+  "regression_tests_passed": 14,
+  "runner_cases_passed": 63,
+  "contention_cases_passed": 21,
+  "contention_threads": 32,
+  "contention_theta": 1.3,
+  "contention_initial_keys": 16384,
+  "contention_duration_seconds": 1,
+  "formal_performance_campaign": false
+}

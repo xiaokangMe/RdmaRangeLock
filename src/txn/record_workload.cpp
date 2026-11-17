@@ -55,7 +55,7 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
     for(const auto& txn:trace.transactions()) {
         maxops=std::max(maxops,txn.operations.size());
         for(const auto& op:txn.operations)
-            if(op.kind!=OperationKind::RangeRead && op.key>=trace.config().key_count)sparse.push_back(op.key);
+            if(op.kind!=OperationKind::RangeRead && (op.key % workload_key_scale(trace.config()) || op.key / workload_key_scale(trace.config()) >= trace.config().key_count))sparse.push_back(op.key);
     }
     // Resource registration/preallocation is outside the measurement, like
     // trace generation and seed loading. Missing reads also have stable IDs.
@@ -71,11 +71,11 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
         exact_plans=std::make_unique<detail::CompactExactPlans>(trace);
         records=std::make_unique<RecordLockTable>(exact_plans->nodes,std::vector<idx_key_t>{},count);
     } else if constexpr(Protocol==PolicyProtocol::Record) {
-        records=std::make_unique<RecordLockTable>(trace.config().key_count,std::move(sparse),count);
+        records=std::make_unique<RecordLockTable>(trace.config().key_count,std::move(sparse),count,workload_key_scale(trace.config()));
     } else {
         std::vector<idx_key_t> coordinates;
         coordinates.reserve(trace.config().key_count);
-        for(std::size_t k=0;k<trace.config().key_count;++k)coordinates.push_back(k);
+        for(std::size_t k=0;k<trace.config().key_count;++k)coordinates.push_back(workload_seed_key(trace.config(), k));
         // Include preloaded resources as well as all keys the benchmark admits.
         // This is a fixed-key-universe specialization, not conflict prediction.
         if(index.preloaded() || cfg.index_preloaded) {
@@ -98,6 +98,9 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
     std::size_t held_budget=0;
     if(maxops && trace.config().range_length+1 > SIZE_MAX/maxops)held_budget=cfg.lock_budget;
     else held_budget=std::min<std::size_t>(cfg.lock_budget,maxops*(trace.config().range_length+1));
+    // Duplicate appends grow the number of distinct inserted decimal keys in
+    // a scan. Initial scan width is no longer an upper bound on lock count.
+    if(deneva_insert_trace(trace.config()))held_budget=cfg.lock_budget;
     held_budget=std::max<std::size_t>(held_budget,1);
     if constexpr(Protocol!=PolicyProtocol::Record) {
         // An interval includes point and gap atoms; long sparse gaps can span
@@ -195,7 +198,7 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
                             return nullptr;
                         };
                         auto account_value=[&](idx_key_t key,const std::uint64_t* value) {
-                            if(const auto* own=own_write(key)) {if(!own->remove){if constexpr(Statistics){++s.rows_found;s.checksum+=key^*own->value;}}}
+                            if(const auto* own=own_write(key); own && !(own->append_duplicate && value)) {if(!own->remove){if constexpr(Statistics){++s.rows_found;s.checksum+=key^*own->value;}}}
                             else if(value){if constexpr(Statistics){++s.rows_found;s.checksum+=key^*value;}}
                         };
                         auto acquire=[&](idx_key_t key,LockMode mode) {
@@ -253,10 +256,11 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
                                     if constexpr(Statistics)s.rows_scanned+=rows.size();
                                     for(const auto& row:rows)account_value(row.key,static_cast<const std::uint64_t*>(row.value));
                                     for(const auto& own:pending) {
-                                        if(own.remove || own_write(own.key)!=&own || !range.contains(own.key))continue;
+                                        if(own.remove || (!own.append_duplicate && own_write(own.key)!=&own) || !range.contains(own.key))continue;
+                                    if(own.append_duplicate) {if constexpr(Statistics){++s.rows_found;s.checksum+=own.key^*own.value;}continue;}
                                         const auto found=std::lower_bound(rows.begin(),rows.end(),own.key,
                                             [](const KeyValue& row,idx_key_t key){return row.key<key;});
-                                        if(found==rows.end() || found->key!=own.key)account_value(own.key,nullptr);
+                                        if(own.append_duplicate || found==rows.end() || found->key!=own.key)account_value(own.key,nullptr);
                                     }
                                 } else if(op.kind==OperationKind::Read) {
                                     if constexpr(Statistics)++s.reads;
@@ -269,7 +273,7 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
                                         else if(op.kind==OperationKind::Insert)++s.inserts;
                                         else ++s.deletes;
                                     }
-                                    pending.push_back({op.key,&op.value,op.kind==OperationKind::Delete});
+                                    pending.push_back({op.key,&op.value,op.kind==OperationKind::Delete,deneva_insert_trace(trace.config()) && op.kind==OperationKind::Insert});
                                 }
                                 continue;
                             } else if constexpr(Protocol!=PolicyProtocol::Record) {
@@ -363,10 +367,11 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
                                     if constexpr(Statistics)s.rows_scanned+=rows.size();
                                     for(const auto& row:rows)account_value(row.key,static_cast<const std::uint64_t*>(row.value));
                                     for(const auto& own:pending) {
-                                        if(own.remove || own_write(own.key)!=&own || !range.contains(own.key))continue;
+                                        if(own.remove || (!own.append_duplicate && own_write(own.key)!=&own) || !range.contains(own.key))continue;
+                                    if(own.append_duplicate) {if constexpr(Statistics){++s.rows_found;s.checksum+=own.key^*own.value;}continue;}
                                         const auto it=std::lower_bound(rows.begin(),rows.end(),own.key,
                                             [](const KeyValue& row,idx_key_t key){return row.key<key;});
-                                        if(it==rows.end() || it->key!=own.key)account_value(own.key,nullptr);
+                                        if(own.append_duplicate || it==rows.end() || it->key!=own.key)account_value(own.key,nullptr);
                                     }
                                 } else if(op.kind==OperationKind::Read) {
                                     if constexpr(Statistics)++s.reads;
@@ -379,7 +384,7 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
                                         else if(op.kind==OperationKind::Insert)++s.inserts;
                                         else ++s.deletes;
                                     }
-                                    pending.push_back({op.key,&op.value,op.kind==OperationKind::Delete});
+                                    pending.push_back({op.key,&op.value,op.kind==OperationKind::Delete,deneva_insert_trace(trace.config()) && op.kind==OperationKind::Insert});
                                 }
                                 continue;
                             }
@@ -400,14 +405,15 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
                                 for(const auto& row:rows) {
                                     while(n<verified.size() && verified[n].key<row.key)++n;
                                     if(n==verified.size() || verified[n].key!=row.key){outcome=TxnResult::Conflict;break;}
-                                    account_value(row.key,static_cast<const std::uint64_t*>(verified[n].value));
+                                    account_value(row.key,static_cast<const std::uint64_t*>(deneva_insert_trace(trace.config()) ? row.value : verified[n].value));
                                 }
                                 if(outcome!=TxnResult::Ok)break;
                                 for(const auto& own:pending) {
-                                    if(own.remove || own_write(own.key)!=&own || !range.contains(own.key))continue;
+                                    if(own.remove || (!own.append_duplicate && own_write(own.key)!=&own) || !range.contains(own.key))continue;
+                                    if(own.append_duplicate) {if constexpr(Statistics){++s.rows_found;s.checksum+=own.key^*own.value;}continue;}
                                     const auto found=std::lower_bound(verified.begin(),verified.end(),own.key,
                                         [](const KeyValue& row,idx_key_t key){return row.key<key;});
-                                    if(found==verified.end() || found->key!=own.key)account_value(own.key,nullptr);
+                                    if(own.append_duplicate || found==verified.end() || found->key!=own.key)account_value(own.key,nullptr);
                                 }
                             } else {
                                 const bool read=op.kind==OperationKind::Read;
@@ -425,7 +431,7 @@ RunStats run_record_impl(BTreeIndex& index,const WorkloadTrace& trace,const Poli
                                         else if(op.kind==OperationKind::Insert)++s.inserts;
                                         else ++s.deletes;
                                     }
-                                    pending.push_back({op.key,&op.value,op.kind==OperationKind::Delete});
+                                    pending.push_back({op.key,&op.value,op.kind==OperationKind::Delete,deneva_insert_trace(trace.config()) && op.kind==OperationKind::Insert});
                                 }
                             }
                         }

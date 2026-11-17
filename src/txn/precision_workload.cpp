@@ -120,7 +120,7 @@ RunStats run_precision_impl(BTreeIndex& index,const WorkloadTrace& trace,const P
                             return nullptr;
                         };
                         auto account_value=[&](idx_key_t key,const std::uint64_t* value) {
-                            if(const auto* own=own_write(key)) {if(!own->remove){if constexpr(Statistics){++s.rows_found;s.checksum+=key^*own->value;}}}
+                            if(const auto* own=own_write(key); own && !(own->append_duplicate && value)) {if(!own->remove){if constexpr(Statistics){++s.rows_found;s.checksum+=key^*own->value;}}}
                             else if(value){if constexpr(Statistics){++s.rows_found;s.checksum+=key^*value;}}
                         };
                         std::size_t op_number=0;
@@ -154,10 +154,11 @@ RunStats run_precision_impl(BTreeIndex& index,const WorkloadTrace& trace,const P
                                 if constexpr(Statistics)s.rows_scanned+=rows.size();
                                 for(const auto& row:rows)account_value(row.key,static_cast<const std::uint64_t*>(row.value));
                                 for(const auto& own:pending) {
-                                    if(own.remove || own_write(own.key)!=&own || !range.contains(own.key))continue;
+                                    if(own.remove || (!own.append_duplicate && own_write(own.key)!=&own) || !range.contains(own.key))continue;
+                                    if(own.append_duplicate) {if constexpr(Statistics){++s.rows_found;s.checksum+=own.key^*own.value;}continue;}
                                     const auto found=std::lower_bound(rows.begin(),rows.end(),own.key,
                                         [](const KeyValue& row,idx_key_t key){return row.key<key;});
-                                    if(found==rows.end() || found->key!=own.key)account_value(own.key,nullptr);
+                                    if(own.append_duplicate || found==rows.end() || found->key!=own.key)account_value(own.key,nullptr);
                                 }
                             } else if(op.kind==OperationKind::Read) {
                                 if constexpr(Statistics)++s.reads;
@@ -170,7 +171,7 @@ RunStats run_precision_impl(BTreeIndex& index,const WorkloadTrace& trace,const P
                                     else if(op.kind==OperationKind::Insert)++s.inserts;
                                     else ++s.deletes;
                                 }
-                                pending.push_back({op.key,&op.value,op.kind==OperationKind::Delete});
+                                pending.push_back({op.key,&op.value,op.kind==OperationKind::Delete,deneva_insert_trace(trace.config()) && op.kind==OperationKind::Insert});
                             }
                         }
                         if(outcome==TxnResult::Ok)outcome=client.template prepare_commit<Policy>();

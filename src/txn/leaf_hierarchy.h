@@ -4,9 +4,9 @@
 namespace rrl::detail {
 inline std::vector<idx_key_t> object_record_keys(const WorkloadTrace& trace) {
     std::vector<idx_key_t> keys;keys.reserve(trace.config().key_count);
-    for(std::size_t key=0;key<trace.config().key_count;++key)keys.push_back(key);
+    for(std::size_t key=0;key<trace.config().key_count;++key)keys.push_back(workload_seed_key(trace.config(),key));
     for(const auto& txn:trace.transactions())for(const auto& op:txn.operations)
-        if(op.key>=trace.config().key_count)keys.push_back(op.key);
+        keys.push_back(op.key);
     std::sort(keys.begin(),keys.end());keys.erase(std::unique(keys.begin(),keys.end()),keys.end());return keys;
 }
 // Gray et al. (1976): ancestor intentions before descendant S/X.

@@ -1,0 +1,22 @@
+record-2pl no-wait generic/compact equal; warmup+timed replay grows physical entries
+record-2pl wait-die generic/compact equal; warmup+timed replay grows physical entries
+record-2pl wound-wait generic/compact equal; warmup+timed replay grows physical entries
+next-key no-wait generic/compact equal; warmup+timed replay grows physical entries
+next-key wait-die generic/compact equal; warmup+timed replay grows physical entries
+next-key wound-wait generic/compact equal; warmup+timed replay grows physical entries
+gap-lock no-wait generic/compact equal; warmup+timed replay grows physical entries
+gap-lock wait-die generic/compact equal; warmup+timed replay grows physical entries
+gap-lock wound-wait generic/compact equal; warmup+timed replay grows physical entries
+prior-key no-wait generic/compact equal; warmup+timed replay grows physical entries
+prior-key wait-die generic/compact equal; warmup+timed replay grows physical entries
+prior-key wound-wait generic/compact equal; warmup+timed replay grows physical entries
+hierarchical no-wait generic/compact equal; warmup+timed replay grows physical entries
+hierarchical wait-die generic/compact equal; warmup+timed replay grows physical entries
+hierarchical wound-wait generic/compact equal; warmup+timed replay grows physical entries
+exact-range no-wait generic/compact equal; warmup+timed replay grows physical entries
+exact-range wait-die generic/compact equal; warmup+timed replay grows physical entries
+exact-range wound-wait generic/compact equal; warmup+timed replay grows physical entries
+precision-lock no-wait generic/compact equal; warmup+timed replay grows physical entries
+precision-lock wait-die generic/compact equal; warmup+timed replay grows physical entries
+precision-lock wound-wait generic/compact equal; warmup+timed replay grows physical entries
+Deneva Insert runner: 63 runs passed

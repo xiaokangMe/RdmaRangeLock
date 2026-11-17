@@ -88,6 +88,12 @@ void ycsb(TransactionTrace& t, const WorkloadConfig& c, std::mt19937_64& g, cons
             o.kind = read(g) ? OperationKind::Read : OperationKind::Update;
             o.key = k;
         }
+        if (deneva_insert_trace(c)) {
+            o.key *= kDenevaKeyScale;
+            if (o.kind == OperationKind::Insert) o.key += g() % kDenevaKeyScale;
+            else o.end_key *= kDenevaKeyScale;
+            mx = std::max(mx, size_t(o.end_key));
+        }
         mx = std::max(mx, size_t(o.key));
         t.operations.push_back(o);
         ++i;
@@ -125,6 +131,15 @@ void new_order(TransactionTrace& t, const WorkloadConfig& c, std::mt19937_64& g,
 using SeedValues = std::unordered_map<idx_key_t, std::uint64_t>;
 
 bool seed_index(BTreeIndex& index, const WorkloadTrace& trace, SeedValues& seed) {
+    if (deneva_insert_trace(trace.config())) {
+        for (size_t k = 0; k < trace.config().key_count; ++k) {
+            const auto encoded = workload_seed_key(trace.config(), k);
+            auto [it, added] = seed.emplace(encoded, k);
+            (void)added;
+            if (index.insert(encoded, &it->second) != RCOK) return false;
+        }
+        return true;
+    }
     std::unordered_set<idx_key_t> insert_keys;
     for (const auto& txn : trace.transactions())
         for (const auto& op : txn.operations)
@@ -243,6 +258,10 @@ WorkloadTrace WorkloadTrace::generate(const WorkloadConfig& c) {
     if (is_ycsb_e(c.kind) && (!c.range_length ||
         c.key_count > std::numeric_limits<idx_key_t>::max() - c.range_length))
         throw std::invalid_argument("YCSB-E scan width must be positive and key/range must not overflow");
+    if (deneva_insert_trace(c) &&
+        (c.key_count > std::numeric_limits<idx_key_t>::max() / kDenevaKeyScale ||
+         c.hierarchy_bucket_width > std::numeric_limits<idx_key_t>::max() / kDenevaKeyScale))
+        throw std::invalid_argument("Deneva fixed-point key/bucket overflow");
     const std::string distribution=key_distribution(c);
     if (!std::isfinite(c.hotspot_data_fraction) || c.hotspot_data_fraction<0 || c.hotspot_data_fraction>1 ||
         !std::isfinite(c.hotspot_opn_fraction) || c.hotspot_opn_fraction<0 || c.hotspot_opn_fraction>1)
@@ -308,8 +327,9 @@ bool record_lock_result(Acc& acc, std::atomic<bool>& stopped, RC rc) {
 // A write error invalidates the run: there is no undo log in this harness.
 // Do not report a partially applied write set as a committed transaction.
 bool apply_write(BTreeIndex& index, const Operation& op, LocalAcc& acc,
-                 std::atomic<bool>& stopped) {
+                 std::atomic<bool>& stopped, bool deneva = false) {
     const RC rc = op.kind == OperationKind::Delete ? index.erase(op.key)
+        : deneva && op.kind == OperationKind::Insert ? index.insert_duplicate(op.key, const_cast<uint64_t*>(&op.value))
         : index.insert(op.key, const_cast<uint64_t*>(&op.value));
     // Delete of a missing key is a workload no-op; other non-RCOK values fail.
     if (rc == RCOK || (op.kind == OperationKind::Delete && rc == Abort)) return true;
@@ -321,9 +341,9 @@ bool apply_write(BTreeIndex& index, const Operation& op, LocalAcc& acc,
 void finish_transaction(BTreeIndex& index, IRangeLockManager& locks, txnid_t tid,
                         const std::vector<const Operation*>& writes, bool ok,
                         LocalAcc& acc, std::atomic<bool>& stopped,
-                        std::uint64_t* release_ns = nullptr) {
+                        std::uint64_t* release_ns = nullptr, bool deneva = false) {
     if (ok) for (const auto* op : writes)
-        if (!apply_write(index, *op, acc, stopped)) { ok = false; break; }
+        if (!apply_write(index, *op, acc, stopped, deneva)) { ok = false; break; }
     // The commit/abort decision precedes strict-2PL release. A release failure
     // invalidates measurement even when the writes were already committed.
     if (acc.held || acc.lock_errors) {
@@ -381,15 +401,15 @@ RunStats run_workload(BTreeIndex& index, const WorkloadTrace& trace, size_t thre
                     }
                     case OperationKind::Update:
                         ++a.updates;
-                        ok = apply_write(index, op, a, stopped);
+                        ok = apply_write(index, op, a, stopped, deneva_insert_trace(trace.config()));
                         break;
                     case OperationKind::Insert:
                         ++a.inserts;
-                        ok = apply_write(index, op, a, stopped);
+                        ok = apply_write(index, op, a, stopped, deneva_insert_trace(trace.config()));
                         break;
                     case OperationKind::Delete:
                         ++a.deletes;
-                        ok = apply_write(index, op, a, stopped);
+                        ok = apply_write(index, op, a, stopped, deneva_insert_trace(trace.config()));
                         break;
                     case OperationKind::RangeRead: {
                         ++a.ranges;
@@ -471,7 +491,7 @@ RunStats run_record_2pl(BTreeIndex& index, LockManager& locks, const WorkloadTra
                     }
                     if (!ok) break;
                 }
-                finish_transaction(index, locks, tid, writes, ok, a, stopped);
+                finish_transaction(index, locks, tid, writes, ok, a, stopped, nullptr, deneva_insert_trace(trace.config()));
                 if (stop_after_txn) break;
             }
         });
@@ -511,7 +531,7 @@ RunStats run_hierarchical_lock(BTreeIndex& index, IRangeLockManager& locks,
     plans.reserve(trace.transactions().size());
     size_t max_ops = 0;
     for (const auto& txn : trace.transactions()) {
-        plans.push_back(detail::hierarchy_plan(txn, trace.config().hierarchy_bucket_width));
+        plans.push_back(detail::hierarchy_plan(txn, workload_bucket_width(trace.config())));
         max_ops = std::max(max_ops, txn.operations.size());
     }
     std::atomic<bool> stopped{false};
@@ -584,7 +604,7 @@ RunStats run_hierarchical_lock(BTreeIndex& index, IRangeLockManager& locks,
                 const auto committed_before = a.committed;
                 const auto aborted_before = a.aborted;
                 std::uint64_t release_ns = 0;
-                finish_transaction(index, locks, tid, writes, ok, a, stopped, diagnose ? &release_ns : nullptr);
+                finish_transaction(index, locks, tid, writes, ok, a, stopped, diagnose ? &release_ns : nullptr, deneva_insert_trace(trace.config()));
                 if (diagnose) {
                     auto& d = progress[worker];
                     const auto now = elapsed();

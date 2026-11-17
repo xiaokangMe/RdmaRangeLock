@@ -47,6 +47,7 @@ struct IndexMutation {
     idx_key_t key{0};
     const std::uint64_t* value{nullptr};
     bool remove{false};
+    bool append_duplicate{false};
 };
 
 // Common offset representation for every RDMA protocol. The host BTreePage
@@ -96,6 +97,9 @@ public:
     virtual ~BTreeIndex() = default;
     virtual RC init(std::size_t order) = 0;
     virtual RC insert(idx_key_t key, void* value) = 0;
+    // Deneva's dynamic Insert appends a physical entry even for an existing key.
+    // Unsupported backends fail explicitly rather than silently performing upsert.
+    virtual RC insert_duplicate(idx_key_t, void*) { return ERROR; }
     virtual RC erase(idx_key_t key) = 0;
     virtual bool lookup(idx_key_t key, void*& value) const = 0;
     virtual std::vector<KeyValue> scan_range(const KeyRangeEnt& range) const = 0;
@@ -118,7 +122,8 @@ public:
     }
     virtual RC apply_batch(const std::vector<IndexMutation>& changes) {
         for (const auto& change : changes) {
-            const auto rc = change.remove ? erase(change.key) :
+            const auto rc = change.remove ? erase(change.key) : change.append_duplicate ?
+                insert_duplicate(change.key, const_cast<std::uint64_t*>(change.value)) :
                 insert(change.key, const_cast<std::uint64_t*>(change.value));
             if (rc != RCOK && !(change.remove && rc == Abort)) return rc;
         }
@@ -170,6 +175,7 @@ public:
     ~BTreeLatch() override = default;
     RC init(std::size_t order) override;
     RC insert(idx_key_t key, void* value) override;
+    RC insert_duplicate(idx_key_t key, void* value) override;
     RC erase(idx_key_t key) override;
     bool lookup(idx_key_t key, void*& value) const override;
     std::vector<KeyValue> scan_range(const KeyRangeEnt& range) const override;
@@ -186,11 +192,11 @@ public:
 private:
     using Page = BTreePage;
     std::unique_ptr<Page> make_page(bool leaf) const;
-    RC insert_new(idx_key_t key, void* value);
-    RC insert_descent(idx_key_t key, void* value);
-    RC insert_pessimistic(idx_key_t key, void* value);
-    RC insert_forcing_root_split(idx_key_t key, void* value);
-    std::unique_ptr<Page> insert_recursive(Page& page, idx_key_t key, void* value, idx_key_t& separator);
+    RC insert_new(idx_key_t key, void* value, bool duplicate = false);
+    RC insert_descent(idx_key_t key, void* value, bool duplicate = false);
+    RC insert_pessimistic(idx_key_t key, void* value, bool duplicate = false);
+    RC insert_forcing_root_split(idx_key_t key, void* value, bool duplicate = false);
+    std::unique_ptr<Page> insert_recursive(Page& page, idx_key_t key, void* value, idx_key_t& separator, bool duplicate = false);
     void split_leaf(Page& page, std::unique_ptr<Page>& right, idx_key_t& separator);
     void split_internal(Page& page, std::unique_ptr<Page>& right, idx_key_t& separator);
     static bool range_ended(const KeyRangeEnt& range, idx_key_t key);
@@ -205,6 +211,7 @@ private:
     // Writers increment under different leaf latches, so the count must be
     // atomic; readers only need a relaxed load.
     std::atomic<std::size_t> size_{0};
+    std::atomic<bool> duplicates_{false};
     std::unique_ptr<Page> root_;
     // Guards the root pointer only. Structural writes latch pages, and the
     // exclusive mode is used just for root creation, root split and root

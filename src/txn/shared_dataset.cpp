@@ -10,6 +10,12 @@ TreeSeed make_shared_seed(const WorkloadTrace& trace) {
     // Deneva loads records before running transactions. Construct that image
     // directly; building a throwaway local index here wastes O(table) nodes
     // on both the data server and every one-sided client at large scale.
+    if(deneva_insert_trace(trace.config())) {
+        TreeSeed seed;seed.reserve(trace.config().key_count);
+        for(std::size_t k=0;k<trace.config().key_count;++k)
+            seed.emplace_back(workload_seed_key(trace.config(),k),k);
+        return seed;
+    }
     std::unordered_set<idx_key_t> inserts;
     for(const auto& txn:trace.transactions())for(const auto& op:txn.operations)
         if(op.kind==OperationKind::Insert)inserts.insert(op.key);

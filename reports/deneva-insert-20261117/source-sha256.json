@@ -1,0 +1,20 @@
+{
+  "benchmarks/workload_runner.cpp": "42259b11cec8236eba9404982b03cb2cfe194174cf8937297d00095e0b1693af",
+  "docs/deneva-ycsbe-insert.md": "84ac71f77a3eea80a0c2fc6d73c05b155ab66284ef5ca3bd734a38776ab11382",
+  "include/index/btree.h": "67d8482432e43c620ca1fc48cfc20620e90b1db02addf6e5cd6d49ef739ce020",
+  "include/lock/record_lock_table.h": "f7ce34a2b21edc67d09d461c846ee23b87f1f6629c71a8a0ade5147c37707d3b",
+  "include/txn/workload.h": "689908d0dd755a75f8f0e687a46c2f1f539d1015ae05e615a222fdc88fda1394",
+  "src/index/leaf_cover.h": "f6eff1a92bac777c2e9657ddf059ef3ccbb72d09aefd57a06cb51866b0f6a778",
+  "src/index/v2_btree_latch.cpp": "c2235a6b922e1f3f0649e2142c826678cf04d21908b8f4aceb81a605aa169614",
+  "src/txn/compact_hierarchy_plan.h": "af8712ea775dfeedb61e8795f9ec4cd2175083a23d77b90f81e6efa85ae23dda",
+  "src/txn/leaf_hierarchy.h": "1c79f847746534988394b4c5e7d459d2aec6d195aff7f9453013184172396e5d",
+  "src/txn/policy_workload.cpp": "07c3d3b35775f182fd2b75bcf0eaeca1335db889ef689793474bd2bf5cb46323",
+  "src/txn/precision_workload.cpp": "d2db6fca8f340aa414fd3bc559b1d2cbd84e028b289eec8c4486e8053004db32",
+  "src/txn/record_workload.cpp": "34479f05ad41f2b81ce40b3a84493eddf45ff12b26a5b29a259d9cf5f6d83ab4",
+  "src/txn/shared_dataset.cpp": "6210d9e555015d2a02056f6144adbf228fd5a254db6da6ceffc95867d652f2ad",
+  "src/txn/workload.cpp": "35249644ec28a3a93498cc6e9be5a93247f9174dd5afecc10771a41b75d405bb",
+  "test/deneva_insert_contention_test.py": "39c06b6f52e0a984a8d0bb865ca521b26c8a0c1183114f798c761adee9594e19",
+  "test/deneva_insert_runner_test.py": "db340515a2faab4da37ca4f61d71cb8a4763ca5475dd93ab86d9c73cc35b6d40",
+  "test/deneva_insert_test.cpp": "04e2633c5e7754728058685f5981a606d0ec5ae092b447a8b762b59d59babfa3",
+  "CMakeLists.txt": "078624f5f4ec3909aaa1a8e2977fa1663f415760821d4eff16a3e6fa0e68a3f1"
+}

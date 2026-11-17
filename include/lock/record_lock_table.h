@@ -26,12 +26,13 @@ public:
     };
 
     RecordLockTable(std::size_t dense_keys, std::vector<idx_key_t> sparse_keys,
-                    std::size_t contexts)
-        : dense_(dense_keys), contexts_(contexts), sparse_(std::move(sparse_keys)) {
+                    std::size_t contexts, idx_key_t stride = 1)
+        : dense_(dense_keys), contexts_(contexts), stride_(stride), sparse_(std::move(sparse_keys)) {
+        if (!stride_) throw std::invalid_argument("zero record key stride");
         if (!contexts || contexts > max_contexts) throw std::invalid_argument("compact record table requires 1..64 contexts");
         std::sort(sparse_.begin(), sparse_.end());
         sparse_.erase(std::remove_if(sparse_.begin(), sparse_.end(),
-            [&](idx_key_t key) { return key < dense_; }), sparse_.end());
+            [&](idx_key_t key) { return key % stride_ == 0 && key / stride_ < dense_; }), sparse_.end());
         sparse_.erase(std::unique(sparse_.begin(), sparse_.end()), sparse_.end());
         if (dense_ > SIZE_MAX / sizeof(Word) || sparse_.size() > SIZE_MAX / sizeof(Word) - dense_)
             throw std::invalid_argument("record table capacity overflow");
@@ -42,7 +43,13 @@ public:
     RecordLockTable& operator=(const RecordLockTable&) = delete;
 
     Word* locate(idx_key_t key) const noexcept {
-        if (key < dense_) return words_.get() + key;
+        if (stride_ == 1) {
+            if (key < dense_) return words_.get() + key;
+        } else if (stride_ == 10000) {
+            // Constant division compiles to multiply/shift, not integer div.
+            const auto rank = key / 10000;
+            if (rank < dense_ && rank * 10000 == key) return words_.get() + rank;
+        } else if (key % stride_ == 0 && key / stride_ < dense_) return words_.get() + key / stride_;
         const auto it = std::lower_bound(sparse_.begin(), sparse_.end(), key);
         return it != sparse_.end() && *it == key ? words_.get() + dense_ + (it - sparse_.begin()) : nullptr;
     }
@@ -239,6 +246,7 @@ public:
 
 private:
     const std::size_t dense_, contexts_;
+    const idx_key_t stride_;
     std::vector<idx_key_t> sparse_;
     std::unique_ptr<Word[]> words_;
     std::unique_ptr<Slot[]> slots_;

@@ -11,7 +11,7 @@ struct CompactHierarchyPlans {
         std::vector<idx_key_t> buckets,records;
         std::vector<std::vector<HierarchyRequest>> logical;
         for(const auto& txn:trace.transactions()) {
-            logical.push_back(hierarchy_plan(txn,trace.config().hierarchy_bucket_width));
+            logical.push_back(hierarchy_plan(txn,workload_bucket_width(trace.config())));
             for(const auto& r:logical.back()) {
                 if(r.phase==1)buckets.push_back(r.range.StartKey);
                 else if(r.phase==2)records.push_back(r.range.StartKey);

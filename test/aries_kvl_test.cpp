@@ -83,6 +83,16 @@ void duplicate_cursor() {
     ok(index.commit(*writer));ok(index.commit(*reader));
     auto scan=index.begin();ok(index.scan(*scan,50,60,rows));require(rows.size()==33,"half-open scan all duplicate RIDs");ok(index.commit(*scan));
     require(index.validate(),"duplicate tree valid");
+
+    Index packed(8,false);packed.load({{50,1,1},{50,2,2},{50,3,3},{60,4,4}});
+    auto packed_tx=packed.begin();Index::Cursor packed_cursor;
+    ok(packed.open(*packed_tx,50,Start::Equal,50,Stop::Equal,packed_cursor,row));
+    const auto key_slot=packed_cursor.slot;
+    require(packed_cursor.rid_slot==0,"cursor starts at first RID in duplicate cluster");
+    ok(packed.next(*packed_tx,packed_cursor,row));
+    require(row.rid==2 && packed_cursor.slot==key_slot && packed_cursor.rid_slot==1,
+            "duplicate key occupies one key-map slot with an ordered RID ordinal");
+    ok(packed.abort(*packed_tx));
 }
 
 void figure1_modes_and_eof() {
@@ -173,6 +183,35 @@ void figure4_reposition() {
     ok(future.get());require(result.key==25 && revalidated>0,"Figure 4 must rediscover key in predecessor page");
     require(!index.held_key(*reader,30) && index.held_key(*reader,25)==LockMode::S,"manual obsolete key lock released");
     ok(index.commit(*reader));
+}
+
+void revalidation_reuses_unchanged_ancestor_path() {
+    Index index(8,false,500ms);std::vector<Entry> seed;
+    for(std::uint64_t n=1;n<=128;++n)seed.push_back({n*10,n,n});
+    index.load(seed);require(index.height()>=3,"path test requires two unchanged internal levels");
+    std::map<idx_key_t,std::uint64_t> page_by_key;std::uint64_t observed_page=0;
+    index.set_observer([&](const Event& e){if(e.phase==Phase::SearchLeaf)observed_page=e.page;});
+    for(const auto& entry:seed) {
+        auto tx=index.begin();Entry row;ok(index.fetch(*tx,entry.key,Start::Equal,row));
+        page_by_key[entry.key]=observed_page;ok(index.commit(*tx));
+    }
+    std::map<std::uint64_t,std::size_t> page_sizes;
+    for(const auto& item:page_by_key)++page_sizes[item.second];
+    idx_key_t target=0;
+    for(const auto& item:page_by_key)if(page_sizes[item.second]<=5){target=item.first;break;}
+    require(target!=0,"find a nonfull leaf with room for two duplicate RIDs");
+    auto owner=index.begin();ok(index.insert(*owner,{target,9000,9000}));
+    auto reader=index.begin();Signal waiting;std::atomic<unsigned> restarted_at_parent{0};
+    index.set_observer([&](const Event& e){
+        if(e.txn==reader->id() && e.phase==Phase::ReleaseForWait && e.key==target)waiting.set();
+        if(e.txn==reader->id() && e.phase==Phase::SearchRestart)++restarted_at_parent;
+    });
+    Entry result;auto future=std::async(std::launch::async,[&]{return index.fetch(*reader,target,Start::Equal,result);});
+    waiting.wait();
+    ok(index.insert(*owner,{target,9001,9001}));
+    ok(index.commit(*owner));ok(future.get());
+    require(result.key==target && restarted_at_parent>0,"after VN change, resume at the deepest unchanged ancestor");
+    ok(index.commit(*reader));require(index.validate(),"path-hinted revalidation keeps tree valid");
 }
 
 void delete_wait_and_abort() {
@@ -287,6 +326,7 @@ int main() {
             {"duplicate_cursor",duplicate_cursor},
             {"figure1_modes_eof",figure1_modes_and_eof},{"compatible_inserters",compatible_inserters},{"replication",replication_interleaving},
             {"figure4",figure4_reposition},{"delete_wait_abort",delete_wait_and_abort},
+            {"vn_path_hint",revalidation_reuses_unchanged_ancestor_path},
             {"cursor_own_change",cursor_after_own_change},{"deadlock",deadlock_and_timeout},
             {"concurrent_splits",concurrent_splits_and_undo},{"random_model",random_model_and_empty_tree},
             {"repeatable_scans",concurrent_repeatable_scans}}) {

@@ -116,9 +116,12 @@ struct Locks {
 };
 
 struct Page {
-    std::uint64_t id{0},version{1};
+    struct RidValue {rid_t rid;std::uint64_t value;};
+    struct Cluster {idx_key_t key;std::vector<RidValue> rids;};
+    std::uint64_t id{0};std::atomic<std::uint64_t> version{1};
     bool leaf{true},sm{false},retired{false};
-    std::vector<Entry> keys;
+    std::vector<Entry> keys; // Internal high keys; leaves store key-map clusters below.
+    std::vector<Cluster> clusters;
     std::vector<Page*> children;
     Page *parent{nullptr},*prev{nullptr},*next{nullptr};
     mutable std::shared_mutex latch;
@@ -162,6 +165,8 @@ struct Index::Transaction::State {
 };
 
 struct Index::Impl {
+    struct PathNode {Page* page;std::uint64_t version;};
+    using SearchPath=std::vector<PathNode>;
     std::size_t order;bool unique;
     std::chrono::milliseconds timeout;
     std::vector<std::unique_ptr<Page>> pages; // retired pages retained: cursor pointers remain valid
@@ -186,8 +191,35 @@ struct Index::Impl {
         page->keys.reserve(order);page->children.reserve(order+1);
         auto* result=page.get();pages.push_back(std::move(page));return result;
     }
+    std::size_t leaf_size(const Page* page) const {
+        std::size_t count=0;for(const auto& cluster:page->clusters)count+=cluster.rids.size();return count;
+    }
+    std::vector<Entry> leaf_entries(const Page* page) const {
+        std::vector<Entry> entries;entries.reserve(leaf_size(page));
+        for(const auto& cluster:page->clusters)
+            for(const auto& rid:cluster.rids)entries.push_back({cluster.key,rid.rid,rid.value});
+        return entries;
+    }
+    void assign_leaf(Page* page,const std::vector<Entry>& entries) {
+        page->keys.clear();page->clusters.clear();
+        std::size_t cluster_count=0;idx_key_t last=0;bool have_last=false;
+        for(const auto& entry:entries)if(!have_last || entry.key!=last) {
+            ++cluster_count;last=entry.key;have_last=true;
+        }
+        page->clusters.reserve(cluster_count);
+        for(const auto& entry:entries) {
+            if(page->clusters.empty() || page->clusters.back().key!=entry.key)
+                page->clusters.push_back({entry.key,{}});
+            page->clusters.back().rids.push_back({entry.rid,entry.value});
+        }
+    }
+    Entry leaf_at(const Page* page,std::size_t key_slot,std::size_t rid_slot) const {
+        const auto& cluster=page->clusters.at(key_slot);const auto& rid=cluster.rids.at(rid_slot);
+        return {cluster.key,rid.rid,rid.value};
+    }
     void event(State& tx,Phase phase,Name name,Page* p=nullptr,LockMode mode=LockMode::S,Duration d=Duration::Commit) {
-        if(observer)observer({phase,tx.id,name.key,name.kind==Name::Eof,p?p->id:0,p?p->version:0,tx.page_latches,mode,d});
+        if(observer)observer({phase,tx.id,name.key,name.kind==Name::Eof,p?p->id:0,
+            p?p->version.load(std::memory_order_acquire):0,tx.page_latches,mode,d});
     }
     bool valid(const Transaction& tx) const {return tx.state_ && tx.state_->index==this && tx.state_->active;}
     void posc(State& tx) {
@@ -195,22 +227,55 @@ struct Index::Impl {
         std::shared_lock<std::shared_mutex> wait(tree_latch);
     }
     // Figure 5: parent is held until the child has its appropriate S/X latch.
-    Hold search(State& tx,const Entry& probe,bool write) {
+    // On re-entry, saved VNs permit restart at the deepest unchanged ancestor.
+    Hold search(State& tx,const Entry& probe,bool write,const SearchPath* hint=nullptr,SearchPath* observed=nullptr) {
         for(;;) {
-            Hold current(root,false,tx.page_latches,max_latches);
-            if(root->leaf && write) {
+            Page* start=root;std::size_t start_depth=0;bool use_hint=false;
+            std::optional<std::shared_lock<std::shared_mutex>> path_guard;
+            if(hint && hint->size()>1 && (*hint)[0].page==root &&
+               root->version.load(std::memory_order_acquire)==(*hint)[0].version) {
+                path_guard.emplace(tree_latch);
+                for(std::size_t n=1;n+1<hint->size();++n) {
+                    if((*hint)[n].page->version.load(std::memory_order_acquire)!=(*hint)[n].version)break;
+                    start=(*hint)[n].page;start_depth=n;
+                }
+                use_hint=true;
+            }
+            Hold current(start,false,tx.page_latches,max_latches);
+            if(start==root && root->leaf && write) {
                 current.release();current=Hold(root,true,tx.page_latches,max_latches);
                 if(!root->leaf)continue;
             }
+            if(start!=root && current.page->version.load(std::memory_order_acquire)!=(*hint)[start_depth].version) {
+                current.release();path_guard.reset();hint=nullptr;start=root;start_depth=0;use_hint=false;
+                continue;
+            }
+            if(observed) {
+                observed->clear();
+                if(use_hint)observed->insert(observed->end(),hint->begin(),hint->begin()+start_depth+1);
+                else observed->push_back({current.page,current.page->version.load(std::memory_order_acquire)});
+            }
+            if(use_hint && start_depth>0)event(tx,Phase::SearchRestart,key_name(probe.key),current.page);
             bool restart=false;
             for(;;) {
                 Page* page=current.page;
                 if(page->sm || page->retired) {current.release();posc(tx);restart=true;break;}
                 if(page->leaf){event(tx,Phase::SearchLeaf,key_name(probe.key),page);return current;}
-                const auto slot=std::upper_bound(page->keys.begin(),page->keys.end(),probe,less)-page->keys.begin();
-                Page* child=page->children[slot];
+                Page* child=nullptr;
+                const auto depth=observed?observed->size()-1:0;
+                if(use_hint && observed && depth+1<hint->size() &&
+                   (*hint)[depth].page==page &&
+                   (*hint)[depth].version==page->version.load(std::memory_order_acquire)) {
+                    child=(*hint)[depth+1].page;
+                    event(tx,Phase::SearchHint,key_name(probe.key),child);
+                } else {
+                    use_hint=false;
+                    const auto slot=std::upper_bound(page->keys.begin(),page->keys.end(),probe,less)-page->keys.begin();
+                    child=page->children[slot];
+                }
                 // All nonroot page types remain fixed for their entire lifetime.
                 Hold next(child,write && child->leaf,tx.page_latches,max_latches);
+                if(observed)observed->push_back({next.page,next.page->version.load(std::memory_order_acquire)});
                 current=std::move(next);
             }
             if(restart)continue;
@@ -245,19 +310,24 @@ struct Index::Impl {
         std::unique_lock<std::shared_mutex> tree(tree_latch,std::try_to_lock);
         if(!tree.owns_lock()){leaf.release();posc(tx);return;}
         Page* page=leaf.page;
-        if(page->retired || page->keys.size()<order-1){leaf.release();return;}
-        event(tx,Phase::SplitStarted,key_name(page->keys.front().key),page);
+        const auto used=page->leaf?leaf_size(page):page->keys.size();
+        if(page->retired || used<(page->leaf?order-1:order)){leaf.release();return;}
+        const auto first_key=page->leaf?page->clusters.front().key:page->keys.front().key;
+        event(tx,Phase::SplitStarted,key_name(first_key),page);
         ++splits;
         if(page==root) {split_root(tx,leaf);return;}
         std::vector<Page*> affected;
         page->sm=true;++page->version;affected.push_back(page);
         Page* right=make_page(true);right->sm=true;right->parent=page->parent;
-        const auto middle=page->keys.size()/2;
-        right->keys.assign(page->keys.begin()+middle,page->keys.end());page->keys.resize(middle);
+        const auto original_next=page->next;
+        const auto entries=leaf_entries(page);const auto middle=entries.size()/2;
+        assign_leaf(right,std::vector<Entry>(entries.begin()+middle,entries.end()));
+        assign_leaf(page,std::vector<Entry>(entries.begin(),entries.begin()+middle));
         right->prev=page;right->next=page->next;
         page->next=right;affected.push_back(right);
+        right->next=original_next;
         if(right->next) {Hold sibling(right->next,true,tx.page_latches,max_latches);sibling.page->prev=right;++sibling.page->version;}
-        Entry separator=right->keys.front();if(unique)separator.rid=0;
+        Entry separator=leaf_entries(right).front();if(unique)separator.rid=0;
         Page* parent=page->parent;
         leaf.release(); // no upward page-latch acquisition with a child latched
         for(;;) {
@@ -289,27 +359,30 @@ struct Index::Impl {
         page->sm=true;++page->version;
         Page* copied=make_page(was_leaf);
         Hold copied_hold(copied,true,tx.page_latches,max_latches);
-        copied->keys=page->keys;copied->children=page->children;
-        copied->parent=root;copied->sm=true;copied->version=page->version+1;
+        copied->keys=page->keys;copied->clusters=page->clusters;copied->children=page->children;
+        copied->parent=root;copied->sm=true;copied->version=page->version.load(std::memory_order_acquire)+1;
         copied->prev=was_leaf?nullptr:page->prev;
         copied->next=was_leaf?nullptr:page->next;
         for(auto* child:copied->children)child->parent=copied;
-        event(tx,Phase::RootCopied,key_name(page->keys.front().key),copied);
+        const auto root_first=was_leaf?page->clusters.front().key:page->keys.front().key;
+        event(tx,Phase::RootCopied,key_name(root_first),copied);
 
         // The copied page is the page that is split. Retain its identity for
         // the left half and allocate only the new right sibling.
         Page* right=make_page(was_leaf);right->parent=root;right->sm=true;
-        const auto middle=copied->keys.size()/2;
-        Entry separator=copied->keys[middle];
-        if(was_leaf && unique)separator.rid=0;
         copied->sm=true;++copied->version;
+        Entry separator;
         Page* old_next=copied->next;
         if(was_leaf) {
-            copied->keys.resize(middle);
-            right->keys.assign(page->keys.begin()+middle,page->keys.end());
+            const auto entries=leaf_entries(copied);const auto middle=entries.size()/2;
+            separator=entries[middle];
+            assign_leaf(copied,std::vector<Entry>(entries.begin(),entries.begin()+middle));
+            assign_leaf(right,std::vector<Entry>(entries.begin()+middle,entries.end()));
+            if(unique)separator.rid=0;
             copied->next=right;right->prev=copied;
         }
         else {
+            const auto middle=copied->keys.size()/2;separator=copied->keys[middle];
             right->keys.assign(copied->keys.begin()+middle+1,copied->keys.end());
             right->children.assign(copied->children.begin()+middle+1,copied->children.end());
             copied->keys.resize(middle);
@@ -320,32 +393,51 @@ struct Index::Impl {
         copied->next=right;
         copied_hold.release();
 
-        page->leaf=false;page->keys={separator};page->children={copied,right};page->next=page->prev=nullptr;
+        page->leaf=false;page->keys={separator};page->clusters.clear();page->children={copied,right};page->next=page->prev=nullptr;
         page->sm=false;++page->version;
         copied->sm=false;++copied->version;right->sm=false;++right->version;
         event(tx,Phase::SplitPublished,key_name(separator.key),page);
         held.release();
     }
 
-    struct Found {Entry entry;Name name;Page* page;std::size_t slot;};
+    struct Found {Entry entry;Name name;Page* page;std::size_t slot,rid_slot;};
     Found candidate(State& tx,Hold& first,Hold& second,const Entry& probe,bool strict) {
         auto* page=first.page;
-        auto position=strict?std::upper_bound(page->keys.begin(),page->keys.end(),probe,less):
-                             std::lower_bound(page->keys.begin(),page->keys.end(),probe,less);
-        if(position!=page->keys.end())return {*position,key_name(position->key),page,std::size_t(position-page->keys.begin())};
+        auto cluster=std::lower_bound(page->clusters.begin(),page->clusters.end(),probe.key,
+            [](const Page::Cluster& item,idx_key_t key){return item.key<key;});
+        if(cluster!=page->clusters.end() && cluster->key==probe.key) {
+            auto rid=strict?std::upper_bound(cluster->rids.begin(),cluster->rids.end(),probe.rid,
+                [](rid_t value,const Page::RidValue& item){return value<item.rid;}):
+                std::lower_bound(cluster->rids.begin(),cluster->rids.end(),probe.rid,
+                [](const Page::RidValue& item,rid_t value){return item.rid<value;});
+            if(rid!=cluster->rids.end()) {
+                const auto key_slot=std::size_t(cluster-page->clusters.begin());
+                const auto rid_slot=std::size_t(rid-cluster->rids.begin());
+                const auto entry=leaf_at(page,key_slot,rid_slot);
+                return {entry,key_name(entry.key),page,key_slot,rid_slot};
+            }
+            ++cluster;
+        }
+        if(cluster!=page->clusters.end()) {
+            const auto key_slot=std::size_t(cluster-page->clusters.begin());
+            const auto entry=leaf_at(page,key_slot,0);
+            return {entry,key_name(entry.key),page,key_slot,0};
+        }
         if(page->next) {
             second=Hold(page->next,false,tx.page_latches,max_latches);
-            if(second.page->keys.empty() || second.page->retired)return {{},eof_name(),nullptr,0};
-            return {second.page->keys.front(),key_name(second.page->keys.front().key),second.page,0};
+            if(second.page->clusters.empty() || second.page->retired)return {{},eof_name(),nullptr,0,0};
+            const auto entry=leaf_at(second.page,0,0);
+            return {entry,key_name(entry.key),second.page,0,0};
         }
-        return {{},eof_name(),page,page->keys.size()};
+        return {{},eof_name(),page,page->clusters.size(),0};
     }
     // Figure 6: conditionally lock under both leaf latches; wait with neither.
     // A manual-duration wait grant is converted to Commit only after revalidation.
     Status fetch_pair(State& tx,Entry probe,bool strict,Entry& result,Cursor* cursor=nullptr) {
         std::optional<Temporary> temporary;
+        SearchPath hint,path;bool has_hint=false;
         for(;;) {
-            Hold first=search(tx,probe,false),second;
+            Hold first=search(tx,probe,false,has_hint?&hint:nullptr,&path),second;
             auto found=candidate(tx,first,second,probe,strict);
             if(!found.page){second.release();first.release();posc(tx);continue;}
             if(cursor && cursor->positioned && cursor->stop==Stop::Equal &&
@@ -362,26 +454,29 @@ struct Index::Impl {
             auto locked=same_value?Reply{Status::Ok,{}}:
                 conditional(tx,found.name,LockMode::S,Duration::Commit,found.page);
             if(locked.status!=Status::Ok) {
-                const auto page_id=found.page->id,version=found.page->version;
+                const auto page_id=found.page->id;
+                const auto version=found.page->version.load(std::memory_order_acquire);
                 Page* saved_page=found.page;const bool was_first=saved_page==first.page;
+                hint=path;has_hint=true;
                 second.release();first.release();
                 drop_temporary(tx,temporary);
                 const auto status=wait(tx,found.name,LockMode::S,Duration::Manual,temporary);
                 if(status!=Status::Ok)return status;
                 ++revalidations;
-                // Restart at the root is always safe, including Figure 4's
-                // unchanged second page. VN-based ancestor shortcut is optional.
+                // Re-search the first-leaf candidate even when the lock came
+                // from the second leaf (Figure 4); search() uses saved VNs to
+                // resume at the deepest unchanged ancestor where possible.
                 if(observer)observer({Phase::Revalidate,tx.id,found.name.key,found.name.kind==Name::Eof,page_id,version,0,LockMode::S,Duration::Manual});
                 // Section 5.1: unchanged FIRST leaf is a cheap VN revalidation.
                 // This shortcut is forbidden for the second leaf (Figure 4).
                 Hold revisit(saved_page,false,tx.page_latches,max_latches);
-                if(was_first && saved_page->version==version && saved_page->leaf && !saved_page->retired && !saved_page->sm) {
+                if(was_first && saved_page->version.load(std::memory_order_acquire)==version && saved_page->leaf && !saved_page->retired && !saved_page->sm) {
                     const auto promoted=conditional(tx,found.name,LockMode::S,Duration::Commit,saved_page);
                     if(promoted.status!=Status::Ok)throw std::logic_error("manual S lock lost before promotion");
                     temporary.reset();
                     if(found.name.kind==Name::Eof){if(cursor)cursor->done=true;return Status::NotFound;}
                     result=found.entry;
-                    if(cursor){cursor->txn=tx.id;cursor->current=result;cursor->page=page_id;cursor->version=version;cursor->slot=found.slot;cursor->positioned=true;}
+                    if(cursor){cursor->txn=tx.id;cursor->current=result;cursor->page=page_id;cursor->version=version;cursor->slot=found.slot;cursor->rid_slot=found.rid_slot;cursor->positioned=true;}
                     return Status::Ok;
                 }
                 continue;
@@ -391,7 +486,7 @@ struct Index::Impl {
             result=found.entry;
             if(cursor) {
                 cursor->txn=tx.id;cursor->current=result;cursor->page=found.page->id;
-                cursor->version=found.page->version;cursor->slot=found.slot;cursor->positioned=true;
+                cursor->version=found.page->version.load(std::memory_order_acquire);cursor->slot=found.slot;cursor->rid_slot=found.rid_slot;cursor->positioned=true;
             }
             return Status::Ok;
         }
@@ -400,16 +495,19 @@ struct Index::Impl {
     Status insert(State& tx,Entry entry,bool undo=false) {
         if(!undo) {auto status=record_x(tx,entry.rid);if(status!=Status::Ok)return status;}
         const Entry probe=unique?Entry{entry.key,0,0}:entry;
+        SearchPath hint,path;bool has_hint=false;
         for(;;) {
-            Hold first=search(tx,probe,true),second;
+            Hold first=search(tx,probe,true,has_hint?&hint:nullptr,&path),second;
             auto* leaf=first.page;
-            if(leaf->keys.size()>=order-1){split(tx,first);continue;}
-            auto pos=std::lower_bound(leaf->keys.begin(),leaf->keys.end(),probe,less);
-            auto equal=pos!=leaf->keys.end() && pos->key==entry.key;
+            if(leaf_size(leaf)>=order-1){split(tx,first);continue;}
+            auto entries=leaf_entries(leaf);
+            auto pos=std::lower_bound(entries.begin(),entries.end(),probe,less);
+            auto equal=pos!=entries.end() && pos->key==entry.key;
             if(equal && (unique || same_pair(*pos,entry))) {
                 if(undo)throw std::logic_error("undo insertion found existing pair");
                 const auto reply=conditional(tx,key_name(entry.key),LockMode::S,Duration::Commit,leaf);
                 if(reply.status==Status::Ok)return Status::Duplicate;
+                hint=path;has_hint=true;
                 first.release();std::optional<Temporary> unused;
                 const auto status=wait(tx,key_name(entry.key),LockMode::S,Duration::Commit,unused);
                 if(status!=Status::Ok)return status;
@@ -417,17 +515,18 @@ struct Index::Impl {
             }
             // Same-key instances immediately before the RID insertion point
             // also avoid the next-key request in the nonunique case.
-            equal=equal || (pos!=leaf->keys.begin() && (pos-1)->key==entry.key);
+            equal=equal || (pos!=entries.begin() && (pos-1)->key==entry.key);
             Name next=eof_name();bool need_next=!equal;
             if(need_next) {
-                if(pos!=leaf->keys.end())next=key_name(pos->key);
+                if(pos!=entries.end())next=key_name(pos->key);
                 else if(leaf->next) {
                     second=Hold(leaf->next,false,tx.page_latches,max_latches);
-                    if(second.page->keys.empty() || second.page->retired) {second.release();first.release();posc(tx);continue;}
-                    next=key_name(second.page->keys.front().key);
+                    if(second.page->clusters.empty() || second.page->retired) {second.release();first.release();posc(tx);continue;}
+                    next=key_name(second.page->clusters.front().key);
                     if(next.key==entry.key && unique && !undo) {
                         const auto reply=conditional(tx,key_name(entry.key),LockMode::S,Duration::Commit,second.page);
                         if(reply.status==Status::Ok)return Status::Duplicate;
+                        hint=path;has_hint=true;
                         second.release();first.release();std::optional<Temporary> unused;
                         const auto status=wait(tx,key_name(entry.key),LockMode::S,Duration::Commit,unused);
                         if(status!=Status::Ok)return status;
@@ -440,6 +539,7 @@ struct Index::Impl {
             if(!undo && need_next) {
                 const auto next_lock=conditional(tx,next,LockMode::IX,Duration::Instant,leaf);
                 if(next_lock.status!=Status::Ok) {
+                    hint=path;has_hint=true;
                     second.release();first.release();std::optional<Temporary> unused;
                     auto status=wait(tx,next,LockMode::IX,Duration::Instant,unused);
                     if(status!=Status::Ok)return status;
@@ -452,6 +552,7 @@ struct Index::Impl {
             if(!undo) {
                 auto own=conditional(tx,key_name(entry.key),mode,Duration::Commit,leaf);
                 if(own.status!=Status::Ok) {
+                    hint=path;has_hint=true;
                     first.release();std::optional<Temporary> unused;
                     auto status=wait(tx,key_name(entry.key),mode,Duration::Commit,unused);
                     if(status!=Status::Ok)return status;
@@ -461,7 +562,8 @@ struct Index::Impl {
                 // Volatile undo record, reserved before mutation. This is not WAL.
                 tx.undo.push_back({true,entry});
             }
-            leaf->keys.insert(std::lower_bound(leaf->keys.begin(),leaf->keys.end(),entry,less),entry);
+            entries.insert(std::lower_bound(entries.begin(),entries.end(),entry,less),entry);
+            assign_leaf(leaf,entries);
             ++leaf->version;++records;
             if(undo){++undos;event(tx,Phase::UndoDelete,key_name(entry.key),leaf);}
             else {++inserts;event(tx,Phase::Inserted,key_name(entry.key),leaf,mode);}
@@ -485,11 +587,11 @@ struct Index::Impl {
             if(found==parent->children.end())throw std::logic_error("missing deleted child");
             const auto slot=std::size_t(found-parent->children.begin());parent->children.erase(found);
             if(!parent->keys.empty())parent->keys.erase(parent->keys.begin()+(slot?slot-1:0));
-            if(parent==root && parent->children.empty()) {parent->leaf=true;parent->keys.clear();parent->sm=false;break;}
+            if(parent==root && parent->children.empty()) {parent->leaf=true;parent->keys.clear();parent->clusters.clear();parent->sm=false;break;}
             if(!parent->children.empty()) {
                 if(parent==root)while(!root->leaf && root->children.size()==1) {
                     Page* child=root->children.front();Hold child_hold(child,true,tx.page_latches,max_latches);
-                    root->leaf=child->leaf;root->keys=std::move(child->keys);root->children=std::move(child->children);
+                    root->leaf=child->leaf;root->keys=std::move(child->keys);root->clusters=std::move(child->clusters);root->children=std::move(child->children);
                     for(auto* grandchild:root->children)grandchild->parent=root;
                     if(root->leaf){root->prev=nullptr;root->next=nullptr;}
                     child->retired=true;child->sm=true;++child->version;++root->version;
@@ -504,20 +606,22 @@ struct Index::Impl {
     Status erase(State& tx,Entry probe,bool undo=false) {
         if(!undo){auto status=record_x(tx,probe.rid);if(status!=Status::Ok)return status;}
         std::optional<Temporary> temporary;
+        SearchPath hint,path;bool has_hint=false;
         for(;;) {
-            Hold first=search(tx,probe,true),second;auto* leaf=first.page;
-            auto position=std::lower_bound(leaf->keys.begin(),leaf->keys.end(),probe,less);
-            if(position==leaf->keys.end() || !same_pair(*position,probe))return Status::NotFound;
-            const auto slot=std::size_t(position-leaf->keys.begin());const Entry removed=*position;
-            bool multiple=(slot && leaf->keys[slot-1].key==probe.key) ||
-                (slot+1<leaf->keys.size() && leaf->keys[slot+1].key==probe.key);
+            Hold first=search(tx,probe,true,has_hint?&hint:nullptr,&path),second;auto* leaf=first.page;
+            auto entries=leaf_entries(leaf);
+            auto position=std::lower_bound(entries.begin(),entries.end(),probe,less);
+            if(position==entries.end() || !same_pair(*position,probe))return Status::NotFound;
+            const auto slot=std::size_t(position-entries.begin());const Entry removed=*position;
+            bool multiple=(slot && entries[slot-1].key==probe.key) ||
+                (slot+1<entries.size() && entries[slot+1].key==probe.key);
             Name next=eof_name();
             if(!multiple) {
-                if(slot+1<leaf->keys.size())next=key_name(leaf->keys[slot+1].key);
+                if(slot+1<entries.size())next=key_name(entries[slot+1].key);
                 else if(leaf->next) {
                     second=Hold(leaf->next,false,tx.page_latches,max_latches);
-                    if(second.page->keys.empty() || second.page->retired){second.release();first.release();posc(tx);continue;}
-                    next=key_name(second.page->keys.front().key);
+                    if(second.page->clusters.empty() || second.page->retired){second.release();first.release();posc(tx);continue;}
+                    next=key_name(second.page->clusters.front().key);
                     if(next.key==probe.key)multiple=true;
                 }
             }
@@ -526,6 +630,7 @@ struct Index::Impl {
             if(!undo && successor_needed) {
                 auto reply=conditional(tx,next,LockMode::X,Duration::Commit,leaf);
                 if(reply.status!=Status::Ok) {
+                    hint=path;has_hint=true;
                     second.release();first.release();drop_temporary(tx,temporary);
                     auto status=wait(tx,next,LockMode::X,Duration::Manual,temporary);
                     if(status!=Status::Ok)return status;
@@ -539,6 +644,7 @@ struct Index::Impl {
             if(!undo) {
                 auto reply=conditional(tx,key_name(probe.key),LockMode::X,duration,leaf);
                 if(reply.status!=Status::Ok) {
+                    hint=path;has_hint=true;
                     first.release();std::optional<Temporary> unused;
                     auto status=wait(tx,key_name(probe.key),LockMode::X,duration,unused);
                     if(status!=Status::Ok)return status;
@@ -546,12 +652,12 @@ struct Index::Impl {
                 }
             }
             std::unique_lock<std::shared_mutex> tree;
-            if(leaf!=root && leaf->keys.size()==1) {
+            if(leaf!=root && leaf_size(leaf)==1) {
                 tree=std::unique_lock<std::shared_mutex>(tree_latch,std::try_to_lock);
                 if(!tree.owns_lock()){first.release();posc(tx);continue;}
             }
             if(!undo)tx.undo.push_back({false,removed});
-            leaf->keys.erase(leaf->keys.begin()+slot);++leaf->version;--records;
+            entries.erase(entries.begin()+slot);assign_leaf(leaf,entries);++leaf->version;--records;
             if(undo){++undos;event(tx,Phase::UndoInsert,key_name(probe.key),leaf);}
             else {++deletes;event(tx,Phase::Deleted,key_name(probe.key),leaf,LockMode::X,duration);}
             if(tree.owns_lock())delete_page(tx,first,tree);
@@ -629,20 +735,31 @@ Status Index::next(Transaction& transaction,Cursor& cursor,Entry& result) {
         std::lock_guard<std::mutex> directory(impl_->page_directory);
         if(cursor.page && cursor.page<=impl_->pages.size())page=impl_->pages[cursor.page-1].get();
     }
-    if(page) {
+        if(page) {
         Hold first(page,false,tx.page_latches,impl_->max_latches),second;
-        if(!page->retired && !page->sm && page->leaf && page->version==cursor.version &&
-           cursor.slot<page->keys.size() && same_pair(page->keys[cursor.slot],cursor.current)) {
-            // Section 5.2: an unchanged VN makes the saved slot valid. Advance
-            // directly instead of searching this leaf for the same key again.
-            Impl::Found found{{},eof_name(),page,page->keys.size()};
-            const auto slot=cursor.slot+1;
-            if(slot<page->keys.size())found={page->keys[slot],key_name(page->keys[slot].key),page,slot};
-            else if(page->next) {
-                second=Hold(page->next,false,tx.page_latches,impl_->max_latches);
-                if(second.page->retired || second.page->sm || second.page->keys.empty())found.page=nullptr;
-                else found={second.page->keys.front(),key_name(second.page->keys.front().key),second.page,0};
-            }
+            if(!page->retired && !page->sm && page->leaf && page->version.load(std::memory_order_acquire)==cursor.version &&
+               cursor.slot<page->clusters.size() && cursor.rid_slot<page->clusters[cursor.slot].rids.size() &&
+               same_pair(impl_->leaf_at(page,cursor.slot,cursor.rid_slot),cursor.current)) {
+                // Section 5.2: continue by the saved key-map slot and RID
+                // ordinal; do not search the current key again.
+                Impl::Found found{{},eof_name(),page,page->clusters.size(),0};
+                const auto& cluster=page->clusters[cursor.slot];
+                if(cursor.rid_slot+1<cluster.rids.size()) {
+                    const auto rid_slot=cursor.rid_slot+1;
+                    const auto entry=impl_->leaf_at(page,cursor.slot,rid_slot);
+                    found={entry,key_name(entry.key),page,cursor.slot,rid_slot};
+                } else if(cursor.slot+1<page->clusters.size()) {
+                    const auto key_slot=cursor.slot+1;
+                    const auto entry=impl_->leaf_at(page,key_slot,0);
+                    found={entry,key_name(entry.key),page,key_slot,0};
+                } else if(page->next) {
+                    second=Hold(page->next,false,tx.page_latches,impl_->max_latches);
+                    if(second.page->retired || second.page->sm || second.page->clusters.empty())found.page=nullptr;
+                    else {
+                        const auto entry=impl_->leaf_at(second.page,0,0);
+                        found={entry,key_name(entry.key),second.page,0,0};
+                    }
+                }
             if(found.page) {
                 // section 5.2: same key value needs no second S lock. An equality
                 // scan ending its duplicate cluster need not lock the next key.
@@ -658,7 +775,7 @@ Status Index::next(Transaction& transaction,Cursor& cursor,Entry& result) {
                         cursor.done=true;return Status::NotFound;
                     }
                     result=found.entry;cursor.current=result;cursor.page=found.page->id;
-                    cursor.version=found.page->version;cursor.slot=found.slot;return Status::Ok;
+                    cursor.version=found.page->version.load(std::memory_order_acquire);cursor.slot=found.slot;cursor.rid_slot=found.rid_slot;return Status::Ok;
                 }
             }
         }
@@ -683,25 +800,35 @@ void Index::load(const std::vector<Entry>& entries) {
 std::vector<Entry> Index::inspect() const {
     std::shared_lock<std::shared_mutex> tree(impl_->tree_latch);
     auto* page=impl_->root;while(!page->leaf)page=page->children.front();
-    std::vector<Entry> rows;for(;page;page=page->next)rows.insert(rows.end(),page->keys.begin(),page->keys.end());return rows;
+    std::vector<Entry> rows;for(;page;page=page->next) {
+        auto entries=impl_->leaf_entries(page);rows.insert(rows.end(),entries.begin(),entries.end());
+    }return rows;
 }
 bool Index::validate() const {
     std::shared_lock<std::shared_mutex> tree(impl_->tree_latch);
     std::size_t count=0,leaf_depth=0;Page* previous=nullptr;bool have_leaf=false;
     auto visit=[&](auto&& self,Page* page,Page* parent,std::size_t depth,std::optional<Entry> low,std::optional<Entry> high)->bool {
-        if(page->parent!=parent || page->retired || page->sm || page->keys.size()>=impl_->order ||
-           !std::is_sorted(page->keys.begin(),page->keys.end(),less))return false;
+        if(page->parent!=parent || page->retired || page->sm ||
+           (page->leaf?impl_->leaf_size(page):page->keys.size())>=impl_->order)return false;
         if(page->leaf) {
-            if(page!=impl_->root && page->keys.empty())return false;
+            if(!page->keys.empty() || (page!=impl_->root && page->clusters.empty()))return false;
             if(have_leaf && depth!=leaf_depth)return false;
             have_leaf=true;leaf_depth=depth;
             if(page->prev!=previous || (previous && previous->next!=page))return false;
-            for(const auto& entry:page->keys) {
+            auto entries=impl_->leaf_entries(page);
+            if(!std::is_sorted(entries.begin(),entries.end(),less))return false;
+            for(const auto& cluster:page->clusters) {
+                if(cluster.rids.empty())return false;
+                if(!std::is_sorted(cluster.rids.begin(),cluster.rids.end(),
+                    [](const Page::RidValue& a,const Page::RidValue& b){return a.rid<b.rid;}))return false;
+            }
+            for(const auto& entry:entries) {
                 if((low && less(entry,*low)) || (high && !less(entry,*high)))return false;
                 ++count;
             }
             previous=page;return true;
         }
+        if(!page->clusters.empty() || !std::is_sorted(page->keys.begin(),page->keys.end(),less))return false;
         if(page->children.size()!=page->keys.size()+1)return false;
         for(std::size_t n=0;n<page->children.size();++n)
             if(!self(self,page->children[n],page,depth+1,n?std::optional<Entry>(page->keys[n-1]):low,

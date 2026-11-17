@@ -17,7 +17,7 @@ enum class Status { Ok, NotFound, Duplicate, Deadlock, Timeout, Invalid };
 enum class Start { Equal, GreaterEqual, Greater };
 enum class Stop { Less, LessEqual, Equal };
 enum class Phase {
-    SearchLeaf, ConditionalLock, ReleaseForWait, WaitGranted, Revalidate,
+    SearchLeaf, SearchHint, SearchRestart, ConditionalLock, ReleaseForWait, WaitGranted, Revalidate,
     Inserted, Deleted, Replicated, SplitStarted, RootCopied, SplitPublished, PageDeleted,
     CursorFast, CursorReposition, UndoInsert, UndoDelete
 };
@@ -67,7 +67,7 @@ public:
         txnid_t txn{0};
         Entry current;
         std::uint64_t page{0}, version{0};
-        std::size_t slot{0};
+        std::size_t slot{0}, rid_slot{0};
         idx_key_t stop_key{0};
         Stop stop{Stop::Less};
         bool positioned{false}, done{false};

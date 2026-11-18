@@ -1,0 +1,538 @@
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+trace ready theta=0 inserts=2526/50000
+loaded 4096/2097152
+loaded 266240/2097152
+loaded 528384/2097152
+loaded 790528/2097152
+loaded 1052672/2097152
+loaded 1314816/2097152
+loaded 1576960/2097152
+loaded 1839104/2097152
+load complete 14.2455s height=4; warmup
+[New Thread 0x7ffff798d640 (LWP 141449)]
+[New Thread 0x7ffff718c640 (LWP 141450)]
+[New Thread 0x7ffff698b640 (LWP 141451)]
+[New Thread 0x7ffff618a640 (LWP 141452)]
+[New Thread 0x7ffff5989640 (LWP 141453)]
+[New Thread 0x7ffff5188640 (LWP 141454)]
+[New Thread 0x7ffff4987640 (LWP 141455)]
+[New Thread 0x7ffff4186640 (LWP 141456)]
+[New Thread 0x7ffff3985640 (LWP 141457)]
+[New Thread 0x7ffff3184640 (LWP 141458)]
+[New Thread 0x7ffff2983640 (LWP 141459)]
+[New Thread 0x7ffff2182640 (LWP 141460)]
+[New Thread 0x7ffff1981640 (LWP 141461)]
+[New Thread 0x7ffff1180640 (LWP 141462)]
+[New Thread 0x7ffff097f640 (LWP 141463)]
+[New Thread 0x7ffff017e640 (LWP 141464)]
+[New Thread 0x7fffef97d640 (LWP 141465)]
+[New Thread 0x7fffef17c640 (LWP 141466)]
+[New Thread 0x7fffee97b640 (LWP 141467)]
+[New Thread 0x7fffee17a640 (LWP 141468)]
+[New Thread 0x7fffed979640 (LWP 141469)]
+[New Thread 0x7fffed178640 (LWP 141470)]
+[New Thread 0x7fffec977640 (LWP 141471)]
+[New Thread 0x7fffec176640 (LWP 141472)]
+[New Thread 0x7fffeb975640 (LWP 141473)]
+[New Thread 0x7fffeb174640 (LWP 141474)]
+[New Thread 0x7fffea973640 (LWP 141475)]
+[New Thread 0x7fffea172640 (LWP 141476)]
+[New Thread 0x7fffe9971640 (LWP 141477)]
+[New Thread 0x7fffe9170640 (LWP 141478)]
+[New Thread 0x7fffe896f640 (LWP 141479)]
+[New Thread 0x7fffe816e640 (LWP 141480)]
+[Thread 0x7ffff3184640 (LWP 141458) exited]
+[Thread 0x7fffe896f640 (LWP 141479) exited]
+[Thread 0x7ffff4186640 (LWP 141456) exited]
+[Thread 0x7fffed178640 (LWP 141470) exited]
+[Thread 0x7ffff618a640 (LWP 141452) exited]
+[Thread 0x7fffea973640 (LWP 141475) exited]
+[Thread 0x7ffff4987640 (LWP 141455) exited]
+[Thread 0x7fffe816e640 (LWP 141480) exited]
+[Thread 0x7fffeb174640 (LWP 141474) exited]
+[Thread 0x7fffec977640 (LWP 141471) exited]
+[Thread 0x7ffff097f640 (LWP 141463) exited]
+[Thread 0x7ffff5989640 (LWP 141453) exited]
+[Thread 0x7ffff798d640 (LWP 141449) exited]
+[Thread 0x7fffec176640 (LWP 141472) exited]
+[Thread 0x7ffff2983640 (LWP 141459) exited]
+[Thread 0x7fffed979640 (LWP 141469) exited]
+[Thread 0x7ffff3985640 (LWP 141457) exited]
+[Thread 0x7fffee97b640 (LWP 141467) exited]
+[Thread 0x7ffff5188640 (LWP 141454) exited]
+[Thread 0x7fffee17a640 (LWP 141468) exited]
+[Thread 0x7ffff1981640 (LWP 141461) exited]
+[Thread 0x7ffff2182640 (LWP 141460) exited]
+[Thread 0x7fffea172640 (LWP 141476) exited]
+[Thread 0x7fffef97d640 (LWP 141465) exited]
+[Thread 0x7fffeb975640 (LWP 141473) exited]
+[Thread 0x7ffff698b640 (LWP 141451) exited]
+[Thread 0x7fffe9170640 (LWP 141478) exited]
+[Thread 0x7fffe9971640 (LWP 141477) exited]
+[Thread 0x7ffff017e640 (LWP 141464) exited]
+[Thread 0x7fffef17c640 (LWP 141466) exited]
+[Thread 0x7ffff718c640 (LWP 141450) exited]
+[Thread 0x7ffff1180640 (LWP 141462) exited]
+warmup commits=700 size=2097509; measure
+[New Thread 0x7fffe816e640 (LWP 141481)]
+[New Thread 0x7fffe896f640 (LWP 141482)]
+[New Thread 0x7fffe9170640 (LWP 141483)]
+[New Thread 0x7fffe9971640 (LWP 141484)]
+[New Thread 0x7ffff798d640 (LWP 141485)]
+[New Thread 0x7ffff718c640 (LWP 141486)]
+[New Thread 0x7ffff698b640 (LWP 141487)]
+[New Thread 0x7ffff618a640 (LWP 141488)]
+[New Thread 0x7ffff5989640 (LWP 141489)]
+[New Thread 0x7ffff5188640 (LWP 141490)]
+[New Thread 0x7ffff4987640 (LWP 141491)]
+[New Thread 0x7ffff4186640 (LWP 141492)]
+[New Thread 0x7ffff3985640 (LWP 141493)]
+[New Thread 0x7ffff3184640 (LWP 141494)]
+[New Thread 0x7ffff2983640 (LWP 141495)]
+[New Thread 0x7ffff2182640 (LWP 141496)]
+[New Thread 0x7ffff1981640 (LWP 141497)]
+[New Thread 0x7ffff1180640 (LWP 141498)]
+[New Thread 0x7ffff097f640 (LWP 141499)]
+[New Thread 0x7ffff017e640 (LWP 141500)]
+[New Thread 0x7fffef97d640 (LWP 141501)]
+[New Thread 0x7fffef17c640 (LWP 141502)]
+[New Thread 0x7fffee97b640 (LWP 141503)]
+[New Thread 0x7fffee17a640 (LWP 141504)]
+[New Thread 0x7fffed979640 (LWP 141505)]
+[New Thread 0x7fffed178640 (LWP 141506)]
+[New Thread 0x7fffec977640 (LWP 141507)]
+[New Thread 0x7fffec176640 (LWP 141508)]
+[New Thread 0x7fffeb975640 (LWP 141509)]
+[New Thread 0x7fffeb174640 (LWP 141510)]
+[New Thread 0x7fffea973640 (LWP 141511)]
+[New Thread 0x7fffea172640 (LWP 141512)]
+
+Thread 1 "rrl_aries_kvl_r" received signal SIGINT, Interrupt.
+__futex_abstimed_wait_common64 (private=128, cancel=true, abstime=0x0, op=265, expected=141481, futex_word=0x7fffe816e910) at ./nptl/futex-internal.c:57
+57	./nptl/futex-internal.c: No such file or directory.
+
+Thread 65 (Thread 0x7fffea172640 (LWP 141512) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 64 (Thread 0x7fffea973640 (LWP 141511) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 63 (Thread 0x7fffeb174640 (LWP 141510) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 62 (Thread 0x7fffeb975640 (LWP 141509) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 61 (Thread 0x7fffec176640 (LWP 141508) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 60 (Thread 0x7fffec977640 (LWP 141507) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 59 (Thread 0x7fffed178640 (LWP 141506) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 58 (Thread 0x7fffed979640 (LWP 141505) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 57 (Thread 0x7fffee17a640 (LWP 141504) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 56 (Thread 0x7fffee97b640 (LWP 141503) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 55 (Thread 0x7fffef17c640 (LWP 141502) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 54 (Thread 0x7fffef97d640 (LWP 141501) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 53 (Thread 0x7ffff017e640 (LWP 141500) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 52 (Thread 0x7ffff097f640 (LWP 141499) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 51 (Thread 0x7ffff1180640 (LWP 141498) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 50 (Thread 0x7ffff1981640 (LWP 141497) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 49 (Thread 0x7ffff2182640 (LWP 141496) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 48 (Thread 0x7ffff2983640 (LWP 141495) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 47 (Thread 0x7ffff3184640 (LWP 141494) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 46 (Thread 0x7ffff3985640 (LWP 141493) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 45 (Thread 0x7ffff4186640 (LWP 141492) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 44 (Thread 0x7ffff4987640 (LWP 141491) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 43 (Thread 0x7ffff5188640 (LWP 141490) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 42 (Thread 0x7ffff5989640 (LWP 141489) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 41 (Thread 0x7ffff618a640 (LWP 141488) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 40 (Thread 0x7ffff698b640 (LWP 141487) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 39 (Thread 0x7ffff718c640 (LWP 141486) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 38 (Thread 0x7ffff798d640 (LWP 141485) "rrl_aries_kvl_r"):
+#0  0x00007ffff7af75fe in _int_free (av=0x7fff40000030, p=0x7fff40017250, have_lock=0) at ./malloc/malloc.c:4438
+#1  0x00007ffff7afa373 in __GI___libc_free (mem=<optimized out>) at ./malloc/malloc.c:3391
+#2  0x000055555555d297 in std::_Rb_tree<unsigned long, std::pair<unsigned long const, rrl::aries::(anonymous namespace)::Holding>, std::_Select1st<std::pair<unsigned long const, rrl::aries::(anonymous namespace)::Holding> >, std::less<unsigned long>, std::allocator<std::pair<unsigned long const, rrl::aries::(anonymous namespace)::Holding> > >::_M_erase(std::_Rb_tree_node<std::pair<unsigned long const, rrl::aries::(anonymous namespace)::Holding> >*) [clone .isra.0] ()
+#3  0x000055555555e6e6 in rrl::aries::(anonymous namespace)::Locks::finish(unsigned long) ()
+#4  0x000055555555f814 in rrl::aries::Index::commit(rrl::aries::Index::Transaction&) ()
+#5  0x000055555555acf9 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#6  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#7  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#8  0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 37 (Thread 0x7fffe9971640 (LWP 141484) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 36 (Thread 0x7fffe9170640 (LWP 141483) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 35 (Thread 0x7fffe896f640 (LWP 141482) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 34 (Thread 0x7fffe816e640 (LWP 141481) "rrl_aries_kvl_r"):
+#0  futex_wait (private=0, expected=2, futex_word=0x555555826068) at ../sysdeps/nptl/futex-internal.h:146
+#1  __GI___lll_lock_wait (futex=futex@entry=0x555555826068, private=0) at ./nptl/lowlevellock.c:49
+#2  0x00007ffff7aecf22 in lll_mutex_lock_optimized (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:48
+#3  ___pthread_mutex_lock (mutex=0x555555826068) at ./nptl/pthread_mutex_lock.c:93
+#4  0x0000555555561999 in rrl::aries::(anonymous namespace)::Locks::request(unsigned long, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, bool, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >) ()
+#5  0x0000555555562504 in rrl::aries::Index::Impl::conditional(rrl::aries::Index::Transaction::State&, rrl::aries::(anonymous namespace)::Name, rrl::LockMode, rrl::aries::Duration, rrl::aries::(anonymous namespace)::Page*) ()
+#6  0x0000555555564702 in rrl::aries::Index::next(rrl::aries::Index::Transaction&, rrl::aries::Index::Cursor&, rrl::aries::Entry&) ()
+#7  0x000055555555abba in std::thread::_State_impl<std::thread::_Invoker<std::tuple<run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007ffff7e61253 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007ffff7ae99e3 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:442
+#10 0x00007ffff7b7b860 in clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+Thread 1 (Thread 0x7ffff7a50740 (LWP 141445) "rrl_aries_kvl_r"):
+#0  __futex_abstimed_wait_common64 (private=128, cancel=true, abstime=0x0, op=265, expected=141481, futex_word=0x7fffe816e910) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=128, abstime=0x0, clockid=0, expected=141481, futex_word=0x7fffe816e910) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x7fffe816e910, expected=141481, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=128) at ./nptl/futex-internal.c:139
+#3  0x00007ffff7aeb544 in __pthread_clockjoin_ex (threadid=140737087202880, thread_return=0x0, clockid=0, abstime=0x0, block=<optimized out>) at ./nptl/pthread_join_common.c:105
+#4  0x00007ffff7e612c7 in std::thread::join() () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#5  0x000055555555a008 in run(rrl::aries::Index&, std::vector<std::vector<Op, std::allocator<Op> >, std::allocator<std::vector<Op, std::allocator<Op> > > > const&, Config const&, double, std::atomic<unsigned long>&) ()
+#6  0x0000555555559273 in main ()
+[Inferior 1 (process 141445) detached]
+{"algorithm":"aries-kvl-paper","policy":"wait-deadlock-detect","theta":0,"keys":2097152,"threads":32,"trace_txns":5000,"ops":10,"range_length":32,"seed":8,"order":128,"lock_timeout_ms":100,"max_attempts":1000,"trace_inserts":2526,"trace_operations":50000,"load_s":14.245494266,"after_warmup_size":2097509,"final_size":2100189,"height":4,"valid":true,"warmup":{"commits":700,"tps":700,"late_commits":0,"attempts":732,"deadlocks":0,"timeouts":0,"exhausted":0,"unfinished":32,"errors":0,"committed_scans":6643,"committed_inserts":357,"late_inserts":0,"committed_scan_rows":212575,"checksum":2257882355880858,"window_s":1,"drain_s":0.005326908},"measurement":{"commits":5295,"tps":661.875,"late_commits":0,"attempts":5327,"deadlocks":0,"timeouts":0,"exhausted":0,"unfinished":32,"errors":0,"committed_scans":50270,"committed_inserts":2680,"late_inserts":0,"committed_scan_rows":1609845,"checksum":24543168398479212,"window_s":8,"drain_s":0.005069317},"metrics":{"lock_requests":1672676,"lock_waits":14,"instant_requests":2187,"revalidations":15,"replications":0,"splits":0,"physical_inserts":2691,"undo_actions":11,"cursor_fast":1614875,"cursor_repositions":9,"live_lock_names":0,"max_page_latches":2}}
